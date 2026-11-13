@@ -1,6 +1,6 @@
 # Questrix
 
-> *Level up your real life.*
+> _Level up your real life._
 
 A gamified, mobile-first habit tracker (installable PWA): daily habits, reminders, points, streaks, a customizable avatar and a social feed.
 
