@@ -7,3 +7,5 @@ supabase/.temp
 supabase/.branches
 QUESTRIX_BUILD_PLAN.md
 docs/BUILD_PLAN.md
+playwright-report
+test-results

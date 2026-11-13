@@ -16,6 +16,7 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       NEXT_PUBLIC_SUPABASE_URL: http://127.0.0.1:54321
       NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy-anon-key
@@ -39,11 +40,13 @@ jobs:
   db-tests:
     name: db-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: supabase/setup-cli@v3
         with:
           version: 3.1.0
-      - run: supabase start
+      # Only the services the DB tests need (postgres, auth, API gateway).
+      - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,postgres-meta
       - run: supabase db reset
       - run: supabase test db

@@ -14,7 +14,7 @@ The single source of truth is [docs/BUILD_PLAN.md](docs/BUILD_PLAN.md), a copy o
 pnpm dev                 # dev server
 pnpm lint                # eslint .
 pnpm typecheck           # next typegen && tsc --noEmit
-pnpm test                # vitest run (tests/unit)
+pnpm test                # vitest run (all *.test.ts[x] except tests/e2e)
 pnpm test:e2e            # Playwright (from Phase 3)
 pnpm format:check        # prettier
 pnpm build
