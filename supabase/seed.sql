@@ -1,0 +1,2 @@
+-- Local development seed data (applied by `supabase db reset`).
+-- Shop items and demo data are added in later phases.
