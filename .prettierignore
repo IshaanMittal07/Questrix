@@ -1,0 +1,9 @@
+.next
+node_modules
+coverage
+pnpm-lock.yaml
+next-env.d.ts
+supabase/.temp
+supabase/.branches
+QUESTRIX_BUILD_PLAN.md
+docs/BUILD_PLAN.md
