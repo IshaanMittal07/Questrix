@@ -1,0 +1,47 @@
+<div
+  style="
+    background: #070a12;
+    color: #e8eeff;
+    font-family:
+      system-ui,
+      -apple-system,
+      Segoe UI,
+      sans-serif;
+    padding: 32px;
+    text-align: center;
+  "
+>
+  <h1 style="letter-spacing: 0.3em; font-size: 20px; margin: 0 0 16px">
+    QUESTRIX
+  </h1>
+  <p style="margin: 0 0 8px; color: #8a96b8">Your sign-in code</p>
+  <p
+    style="
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: 0.25em;
+      margin: 0 0 24px;
+    "
+  >
+    {{ .Token }}
+  </p>
+  <p style="margin: 0 0 16px; color: #8a96b8">
+    Enter it in the app, or tap the button on this device:
+  </p>
+  <a
+    href="{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=email"
+    style="
+      display: inline-block;
+      background: #22e5ff;
+      color: #070a12;
+      font-weight: 700;
+      padding: 12px 24px;
+      border-radius: 999px;
+      text-decoration: none;
+    "
+    >Sign in to Questrix</a
+  >
+  <p style="margin: 24px 0 0; color: #8a96b8; font-size: 12px">
+    If you didn't request this, you can ignore this email.
+  </p>
+</div>
