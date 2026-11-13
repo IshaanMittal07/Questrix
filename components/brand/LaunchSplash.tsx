@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /** sessionStorage key: the splash plays once per browser session. */
 export const SPLASH_KEY = "qx-splash-seen";
@@ -15,7 +15,12 @@ const WORD = "QUESTRIX";
 const GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#%&";
 export const SPLASH_TOTAL_MS = 2400;
 export const SPLASH_REDUCED_MS = 800; // 600 ms static + 200 ms fade
-const SCRAMBLE_START_MS = 1100;
+/**
+ * CSS owns the timeline: the splash closes on the overlay's `qx-out`
+ * animationend. This timer is only a safety net (e.g. animation events not
+ * delivered), so it gets slack for a late first paint.
+ */
+export const SPLASH_FALLBACK_GRACE_MS = 600;
 const SCRAMBLE_TICK_MS = 40;
 const FIRST_LOCK_MS = 300; // after scramble start
 const LOCK_STAGGER_MS = 50;
@@ -43,10 +48,29 @@ function prefersReducedMotion() {
 export function LaunchSplash() {
   const [visible, setVisible] = useState(true);
   const [text, setText] = useState(WORD);
+  const scrambleRef = useRef<ReturnType<typeof setInterval> | undefined>(
+    undefined,
+  );
 
   const finish = useCallback(() => {
     document.documentElement.dataset.splash = "seen";
     setVisible(false);
+  }, []);
+
+  /** Started by the wordmark's CSS reveal, so it stays in sync with paint. */
+  const startScramble = useCallback(() => {
+    if (scrambleRef.current !== undefined || prefersReducedMotion()) return;
+    let elapsed = 0;
+    setText(scrambleFrame(0));
+    scrambleRef.current = setInterval(() => {
+      elapsed += SCRAMBLE_TICK_MS;
+      if (elapsed >= SCRAMBLE_END_MS) {
+        clearInterval(scrambleRef.current);
+        setText(WORD);
+      } else {
+        setText(scrambleFrame(elapsed));
+      }
+    }, SCRAMBLE_TICK_MS);
   }, []);
 
   useEffect(() => {
@@ -64,46 +88,18 @@ export function LaunchSplash() {
       // Storage disabled (e.g. private mode): the splash plays on every load.
     }
 
-    const reduced = prefersReducedMotion();
-    // The CSS animation started with the HTML, so time the JS side from
-    // navigation start: late hydration must not extend the overlay.
-    const sinceNavigation = performance.now();
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let interval: ReturnType<typeof setInterval> | undefined;
-
-    timers.push(
-      setTimeout(
-        finish,
-        Math.max(
-          0,
-          (reduced ? SPLASH_REDUCED_MS : SPLASH_TOTAL_MS) - sinceNavigation,
-        ),
-      ),
+    // Fallback only: measured from navigation start so late hydration can't
+    // extend the overlay, plus grace for a late first paint of the CSS.
+    const base = prefersReducedMotion() ? SPLASH_REDUCED_MS : SPLASH_TOTAL_MS;
+    const fallback = setTimeout(
+      finish,
+      Math.max(0, base - performance.now()) + SPLASH_FALLBACK_GRACE_MS,
     );
-
-    // Skip the scramble entirely if hydration happened after it should start.
-    if (!reduced && sinceNavigation <= SCRAMBLE_START_MS) {
-      timers.push(
-        setTimeout(() => {
-          let elapsed = 0;
-          setText(scrambleFrame(0));
-          interval = setInterval(() => {
-            elapsed += SCRAMBLE_TICK_MS;
-            if (elapsed >= SCRAMBLE_END_MS) {
-              clearInterval(interval);
-              setText(WORD);
-            } else {
-              setText(scrambleFrame(elapsed));
-            }
-          }, SCRAMBLE_TICK_MS);
-        }, SCRAMBLE_START_MS - sinceNavigation),
-      );
-    }
 
     window.addEventListener("keydown", finish);
     return () => {
-      timers.forEach(clearTimeout);
-      clearInterval(interval);
+      clearTimeout(fallback);
+      clearInterval(scrambleRef.current);
       window.removeEventListener("keydown", finish);
     };
   }, [finish, visible]);
@@ -117,6 +113,14 @@ export function LaunchSplash() {
       // `click` (not pointerdown) so the same tap can't fall through to
       // whatever is under the overlay once it unmounts (ghost click).
       onClick={finish}
+      onAnimationStart={(e) => {
+        if (e.animationName === "qx-in") startScramble();
+      }}
+      onAnimationEnd={(e) => {
+        if (e.target === e.currentTarget && e.animationName === "qx-out") {
+          finish();
+        }
+      }}
     >
       <p className="sr-only" role="status" aria-live="polite">
         Loading Questrix
