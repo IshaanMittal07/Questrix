@@ -63,11 +63,11 @@ describe("Tabs", () => {
           <TabsTrigger value="following">Following</TabsTrigger>
           <TabsTrigger value="everyone">Everyone</TabsTrigger>
         </TabsList>
-        <TabsContent value="following">Friends' posts</TabsContent>
+        <TabsContent value="following">Posts from friends</TabsContent>
         <TabsContent value="everyone">All posts</TabsContent>
       </Tabs>,
     );
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("Friends' posts");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent("Posts from friends");
     await user.click(screen.getByRole("tab", { name: "Everyone" }));
     expect(screen.getByRole("tabpanel")).toHaveTextContent("All posts");
   });
