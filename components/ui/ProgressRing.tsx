@@ -8,6 +8,8 @@ type ProgressRingProps = {
   size?: number;
   strokeWidth?: number;
   label: string;
+  /** Human-readable value, e.g. "20 of 50 XP". */
+  valueText?: string;
   children?: ReactNode;
   className?: string;
 };
@@ -19,6 +21,7 @@ export function ProgressRing({
   size = 64,
   strokeWidth = 6,
   label,
+  valueText,
   children,
   className,
 }: ProgressRingProps) {
@@ -35,6 +38,7 @@ export function ProgressRing({
       aria-valuemin={0}
       aria-valuemax={max}
       aria-valuenow={clamped}
+      aria-valuetext={valueText}
       className={cn("relative inline-grid place-items-center", className)}
       style={{ width: size, height: size }}
     >

@@ -58,14 +58,35 @@ export function ToastProvider({ children }: { children: ReactNode }) {
               toneClass[t.tone],
             )}
           >
-            <RadixToast.Title className="text-sm font-semibold">
-              {t.title}
-            </RadixToast.Title>
-            {t.description ? (
-              <RadixToast.Description className="text-muted mt-1 text-sm">
-                {t.description}
-              </RadixToast.Description>
-            ) : null}
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <RadixToast.Title className="text-sm font-semibold">
+                  {t.title}
+                </RadixToast.Title>
+                {t.description ? (
+                  <RadixToast.Description className="text-muted mt-1 text-sm">
+                    {t.description}
+                  </RadixToast.Description>
+                ) : null}
+              </div>
+              <RadixToast.Close
+                aria-label="Dismiss"
+                className="text-muted hover:text-text -m-2 grid size-11 shrink-0 place-items-center rounded-full"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M6 6l12 12M18 6 6 18" />
+                </svg>
+              </RadixToast.Close>
+            </div>
           </RadixToast.Root>
         ))}
         <RadixToast.Viewport className="fixed inset-x-0 bottom-[calc(var(--tabbar-height)+env(safe-area-inset-bottom)+0.75rem)] z-[90] mx-auto flex w-full max-w-md flex-col gap-2 px-4 outline-none" />

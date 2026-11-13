@@ -9,7 +9,12 @@ export default function TodayPage() {
   return (
     <PagePlaceholder title="Today" phase={4}>
       <Card className="flex items-center gap-4">
-        <ProgressRing value={0} max={50} label="Level 1 progress">
+        <ProgressRing
+          value={0}
+          max={50}
+          label="Level 1 progress"
+          valueText="0 of 50 XP"
+        >
           1
         </ProgressRing>
         <div>

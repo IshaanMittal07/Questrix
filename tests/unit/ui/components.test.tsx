@@ -9,10 +9,18 @@ import { ToastProvider, useToast } from "@/components/ui/Toast";
 
 describe("ProgressRing", () => {
   it("exposes progressbar semantics and clamps the value", () => {
-    render(<ProgressRing value={120} max={50} label="Level progress" />);
+    render(
+      <ProgressRing
+        value={120}
+        max={50}
+        label="Level progress"
+        valueText="50 of 50 XP"
+      />,
+    );
     const bar = screen.getByRole("progressbar", { name: "Level progress" });
     expect(bar).toHaveAttribute("aria-valuenow", "50");
     expect(bar).toHaveAttribute("aria-valuemax", "50");
+    expect(bar).toHaveAttribute("aria-valuetext", "50 of 50 XP");
   });
 });
 
@@ -52,6 +60,18 @@ describe("Sheet", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+
+  it("has a visible close button", async () => {
+    const user = userEvent.setup();
+    render(
+      <Sheet trigger={<Button>Open</Button>} title="Install Questrix">
+        <p>Body</p>
+      </Sheet>,
+    );
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 });
 
 describe("Tabs", () => {
@@ -67,7 +87,9 @@ describe("Tabs", () => {
         <TabsContent value="everyone">All posts</TabsContent>
       </Tabs>,
     );
-    expect(screen.getByRole("tabpanel")).toHaveTextContent("Posts from friends");
+    expect(screen.getByRole("tabpanel")).toHaveTextContent(
+      "Posts from friends",
+    );
     await user.click(screen.getByRole("tab", { name: "Everyone" }));
     expect(screen.getByRole("tabpanel")).toHaveTextContent("All posts");
   });
@@ -92,6 +114,7 @@ describe("Toast", () => {
     );
     await user.click(screen.getByRole("button", { name: "Complete" }));
     expect(await screen.findAllByText("+20 pts")).not.toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
   });
 
   it("throws outside the provider", () => {
