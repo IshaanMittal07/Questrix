@@ -27,9 +27,12 @@ beforeEach(() => {
   sessionStorage.clear();
   delete document.documentElement.dataset.splash;
   mockReducedMotion(false);
+  // Hydration right at navigation start unless a test says otherwise.
+  vi.spyOn(performance, "now").mockReturnValue(0);
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -62,7 +65,39 @@ describe("LaunchSplash", () => {
 
   it("is skipped by a tap", () => {
     render(<LaunchSplash />);
-    fireEvent.pointerDown(screen.getByTestId("launch-splash"));
+    fireEvent.click(screen.getByTestId("launch-splash"));
+    expect(screen.queryByTestId("launch-splash")).not.toBeInTheDocument();
+  });
+
+  it("leaves no listeners or timers running after it closes", () => {
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    render(<LaunchSplash />);
+    fireEvent.click(screen.getByTestId("launch-splash"));
+    expect(removeSpy).toHaveBeenCalledWith("keydown", expect.any(Function));
+    // Both the auto-close and the scramble-start timers are cleared on close.
+    expect(clearSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // A later key press must not touch the (now hidden) splash.
+    delete document.documentElement.dataset.splash;
+    fireEvent.keyDown(window, { key: "a" });
+    expect(document.documentElement.dataset.splash).toBeUndefined();
+  });
+
+  it("times out from navigation start, not from late hydration", () => {
+    vi.mocked(performance.now).mockReturnValue(2000);
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    render(<LaunchSplash />);
+    const word = screen.getByTestId("splash-wordmark");
+    act(() => vi.advanceTimersByTime(399));
+    expect(word.textContent).toBe("QUESTRIX"); // scramble skipped
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByTestId("launch-splash")).not.toBeInTheDocument();
+  });
+
+  it("closes immediately when hydration is later than the animation", () => {
+    vi.mocked(performance.now).mockReturnValue(5000);
+    render(<LaunchSplash />);
+    act(() => vi.advanceTimersByTime(0));
     expect(screen.queryByTestId("launch-splash")).not.toBeInTheDocument();
   });
 
@@ -86,7 +121,6 @@ describe("LaunchSplash", () => {
     expect(word.textContent).not.toBe("QUESTRIX");
     act(() => vi.advanceTimersByTime(700));
     expect(word.textContent).toBe("QUESTRIX");
-    vi.mocked(Math.random).mockRestore();
   });
 
   describe("reduced motion", () => {
@@ -98,7 +132,6 @@ describe("LaunchSplash", () => {
       const word = screen.getByTestId("splash-wordmark");
       act(() => vi.advanceTimersByTime(500));
       expect(word.textContent).toBe("QUESTRIX");
-      vi.mocked(Math.random).mockRestore();
     });
 
     it("closes after 600 ms + fade instead of 2.4 s", () => {

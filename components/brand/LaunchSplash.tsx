@@ -50,6 +50,9 @@ export function LaunchSplash() {
   }, []);
 
   useEffect(() => {
+    // Once hidden, this effect's cleanup has already removed the key listener
+    // and cleared every timer; nothing is left running for the session.
+    if (!visible) return;
     if (document.documentElement.dataset.splash === "seen") {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- sync with the pre-hydration flag
       setVisible(false);
@@ -62,14 +65,24 @@ export function LaunchSplash() {
     }
 
     const reduced = prefersReducedMotion();
+    // The CSS animation started with the HTML, so time the JS side from
+    // navigation start: late hydration must not extend the overlay.
+    const sinceNavigation = performance.now();
     const timers: ReturnType<typeof setTimeout>[] = [];
     let interval: ReturnType<typeof setInterval> | undefined;
 
     timers.push(
-      setTimeout(finish, reduced ? SPLASH_REDUCED_MS : SPLASH_TOTAL_MS),
+      setTimeout(
+        finish,
+        Math.max(
+          0,
+          (reduced ? SPLASH_REDUCED_MS : SPLASH_TOTAL_MS) - sinceNavigation,
+        ),
+      ),
     );
 
-    if (!reduced) {
+    // Skip the scramble entirely if hydration happened after it should start.
+    if (!reduced && sinceNavigation <= SCRAMBLE_START_MS) {
       timers.push(
         setTimeout(() => {
           let elapsed = 0;
@@ -83,7 +96,7 @@ export function LaunchSplash() {
               setText(scrambleFrame(elapsed));
             }
           }, SCRAMBLE_TICK_MS);
-        }, SCRAMBLE_START_MS),
+        }, SCRAMBLE_START_MS - sinceNavigation),
       );
     }
 
@@ -93,7 +106,7 @@ export function LaunchSplash() {
       clearInterval(interval);
       window.removeEventListener("keydown", finish);
     };
-  }, [finish]);
+  }, [finish, visible]);
 
   if (!visible) return null;
 
@@ -101,7 +114,9 @@ export function LaunchSplash() {
     <div
       className="qx-splash"
       data-testid="launch-splash"
-      onPointerDown={finish}
+      // `click` (not pointerdown) so the same tap can't fall through to
+      // whatever is under the overlay once it unmounts (ghost click).
+      onClick={finish}
     >
       <p className="sr-only" role="status" aria-live="polite">
         Loading Questrix
