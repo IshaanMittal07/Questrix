@@ -52,18 +52,19 @@
         max-width: 28ch;
         line-height: 1.5;
       }
-      button {
+      .button {
+        display: inline-flex;
+        align-items: center;
+        text-decoration: none;
         min-height: 44px;
         padding: 0 1.5rem;
-        border: 0;
         border-radius: 999px;
         font: inherit;
         font-weight: 600;
         color: #070a12;
         background: linear-gradient(135deg, #22e5ff, #8b5cff 50%, #ff3dcb);
-        cursor: pointer;
       }
-      button:focus-visible {
+      .button:focus-visible {
         outline: 2px solid #22e5ff;
         outline-offset: 3px;
       }
@@ -74,10 +75,10 @@
       <img src="/icons/icon-192.png" alt="" />
       <h1>You're offline</h1>
       <p>
-        Questrix needs a connection to record progress. Your streak is safe —
-        reconnect and try again.
+        Questrix needs a connection to record progress. Reconnect to keep your
+        streak going.
       </p>
-      <button type="button" onclick="location.reload()">Try again</button>
+      <a class="button" href="/today">Try again</a>
     </main>
   </body>
 </html>
