@@ -1,18 +1,319 @@
 @import "tailwindcss";
 
-/* Placeholder theme; brand tokens and fonts arrive in Phase 1 (plan §2.2). */
+/* ── Brand tokens (plan §2.2) ─────────────────────────────────────────── */
 :root {
-  --background: #070a12;
-  --foreground: #e8eeff;
+  --bg: #070a12;
+  --surface: #0e1424;
+  --surface-2: #151d33;
+  --text: #e8eeff;
+  --text-muted: #8a96b8;
+  --neon-cyan: #22e5ff;
+  --neon-violet: #8b5cff;
+  --neon-magenta: #ff3dcb;
+  --success: #3dffa8;
+  --warning: #ffc83d;
+  --danger: #ff4d6d;
+  --gradient-brand: linear-gradient(
+    135deg,
+    #22e5ff 0%,
+    #8b5cff 50%,
+    #ff3dcb 100%
+  );
+  --tabbar-height: 4rem;
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-cyan: var(--neon-cyan);
+  --color-violet: var(--neon-violet);
+  --color-magenta: var(--neon-magenta);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-display: var(--font-orbitron), var(--font-inter), sans-serif;
+}
+
+@utility bg-brand {
+  background-image: var(--gradient-brand);
+}
+
+@utility text-brand {
+  background-image: var(--gradient-brand);
+  background-clip: text;
+  color: transparent;
+}
+
+@utility focus-ring {
+  outline: 2px solid var(--neon-cyan);
+  outline-offset: 2px;
+}
+
+html {
+  background: var(--bg);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-tap-highlight-color: transparent;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+}
+
+:focus-visible {
+  outline: 2px solid var(--neon-cyan);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Launch splash (plan §2.4) ────────────────────────────────────────── */
+/* Hidden before first paint when already seen this session (see app/layout.tsx). */
+html[data-splash="seen"] .qx-splash {
+  display: none;
+}
+
+.qx-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+  animation: qx-out 300ms ease-in 2100ms forwards;
+}
+
+.qx-splash__scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgb(255 255 255 / 0.035) 0 1px,
+    transparent 1px 4px
+  );
+  animation: qx-scan 1.2s linear infinite;
+}
+
+.qx-splash__grid {
+  position: absolute;
+  left: -50%;
+  right: -50%;
+  bottom: -10%;
+  height: 55%;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgb(34 229 255 / 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(139 92 255 / 0.18) 1px, transparent 1px);
+  background-size: 48px 48px;
+  transform: perspective(300px) rotateX(60deg);
+  transform-origin: bottom;
+  mask-image: linear-gradient(to top, #000 10%, transparent 90%);
+  animation: qx-grid 1.6s linear infinite;
+}
+
+.qx-splash__stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.qx-splash__icon {
+  width: min(40vw, 176px);
+  height: auto;
+  overflow: visible;
+}
+
+.qx-splash__hex {
+  stroke-dasharray: 1200;
+  stroke-dashoffset: 1200;
+  animation: qx-draw 700ms ease-out 200ms forwards;
+}
+
+.qx-splash__pulse {
+  stroke-dasharray: 700;
+  stroke-dashoffset: 700;
+  animation: qx-draw 600ms ease-out 700ms forwards;
+}
+
+.qx-splash__spark {
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(0);
+  animation: qx-pop 400ms ease-out 1000ms forwards;
+}
+
+.qx-splash__burst {
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0;
+  animation: qx-burst 600ms ease-out 1050ms forwards;
+}
+
+.qx-splash__wordmark {
+  position: relative;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(1.75rem, 8vw, 2.75rem);
+  letter-spacing: 0.3em;
+  margin-right: -0.3em; /* optically centre the tracked word */
+  color: var(--text);
+  opacity: 0;
+  animation:
+    qx-in 1ms linear 1100ms forwards,
+    qx-glitch 100ms steps(1) 1800ms 1;
+}
+
+.qx-splash__tagline {
+  font-size: 0.95rem;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  opacity: 0;
+  animation: qx-fade-in 200ms ease-out 1900ms forwards;
+}
+
+@keyframes qx-scan {
+  to {
+    background-position: 0 8px;
+  }
+}
+
+@keyframes qx-grid {
+  to {
+    background-position: 0 48px;
+  }
+}
+
+@keyframes qx-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes qx-pop {
+  0% {
+    transform: scale(0);
+  }
+  70% {
+    transform: scale(1.2);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes qx-burst {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.2);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(3);
+  }
+}
+
+@keyframes qx-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes qx-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 2-frame RGB split */
+@keyframes qx-glitch {
+  0% {
+    text-shadow:
+      -3px 0 rgb(255 61 203 / 0.9),
+      3px 0 rgb(34 229 255 / 0.9);
+    transform: translateX(2px);
+  }
+  50% {
+    text-shadow:
+      3px 0 rgb(255 61 203 / 0.9),
+      -3px 0 rgb(34 229 255 / 0.9);
+    transform: translateX(-2px);
+  }
+  100% {
+    text-shadow: none;
+    transform: none;
+  }
+}
+
+/* Ends hidden + click-through, so the overlay never blocks the app even if JS fails. */
+@keyframes qx-out {
+  to {
+    opacity: 0;
+    transform: scale(1.04);
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
+
+/* Reduced motion: static icon + wordmark for 600 ms, then fade (no scramble/glitch). */
+@media (prefers-reduced-motion: reduce) {
+  .qx-splash {
+    animation: qx-out 200ms ease-in 600ms forwards !important;
+    animation-duration: 200ms !important;
+  }
+  .qx-splash__scanlines,
+  .qx-splash__grid,
+  .qx-splash__burst {
+    display: none;
+  }
+  .qx-splash__hex,
+  .qx-splash__pulse {
+    stroke-dashoffset: 0;
+    animation: none !important;
+  }
+  .qx-splash__spark {
+    transform: none;
+    animation: none !important;
+  }
+  .qx-splash__wordmark,
+  .qx-splash__tagline {
+    opacity: 1;
+    animation: none !important;
+  }
+}
+
+@keyframes qx-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
 }
