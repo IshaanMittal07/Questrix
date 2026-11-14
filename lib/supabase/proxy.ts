@@ -57,7 +57,6 @@ export async function updateSession(request: NextRequest) {
 
   if (!userId) {
     if (isPublic(pathname)) return response;
-    response.cookies.delete(ONBOARDED_COOKIE);
     const res = redirect("/login");
     res.cookies.delete(ONBOARDED_COOKIE);
     return res;

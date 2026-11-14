@@ -7,7 +7,8 @@ import { timezoneSchema, usernameSchema } from "@/lib/validation/profile";
 
 const onboardingSchema = z.object({
   username: usernameSchema,
-  timezone: timezoneSchema,
+  // An unusable device timezone must never block onboarding: fall back to UTC.
+  timezone: timezoneSchema.catch("UTC"),
   avatarBaseId: z.uuid(),
 });
 
@@ -53,10 +54,17 @@ export async function completeOnboarding(
   });
   if (equipError) return { error: "Couldn't save your avatar.", field: "form" };
 
-  const { error } = await supabase
+  let { error } = await supabase
     .from("profiles")
     .update({ username, timezone })
     .eq("id", userId);
+  if (error?.code === "22023") {
+    // Browser and Postgres tz databases disagree: start on UTC (editable in Settings).
+    ({ error } = await supabase
+      .from("profiles")
+      .update({ username, timezone: "UTC" })
+      .eq("id", userId));
+  }
   if (error) {
     return error.code === "23505"
       ? {

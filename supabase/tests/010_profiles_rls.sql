@@ -1,7 +1,7 @@
 -- Phase 2: profiles, inventory, equip_item — RLS, column privileges, triggers.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(32);
+select plan(35);
 
 -- Helpers: act as a given user (or anon) inside this transaction.
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
@@ -84,6 +84,11 @@ select throws_ok(
     where id = '11111111-1111-1111-1111-111111111111'$$,
   '23514', null, 'usernames must match ^[a-z0-9_]{3,20}$');
 
+select throws_ok(
+  $$update public.profiles set username = 'admin'
+    where id = '11111111-1111-1111-1111-111111111111'$$,
+  '23514', null, 'reserved usernames cannot be taken by a direct update');
+
 select pg_temp.as_postgres();
 select is(
   (select display_name from public.profiles where id = '22222222-2222-2222-2222-222222222222'),
@@ -99,6 +104,7 @@ select is(public.username_available('ALICE'), false, 'availability is case-insen
 select is(public.username_available('bob_99'), true, 'free usernames are available');
 select is(public.username_available('no'), false, 'too-short usernames are unavailable');
 select is(public.username_available('admin'), false, 'reserved usernames are unavailable');
+select is(public.username_available('user_222222222222'), false, 'the placeholder namespace is reserved');
 
 -- ── public_profiles + privacy ───────────────────────────────────────────────
 select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
@@ -150,6 +156,8 @@ select throws_ok(
 select pg_temp.as_anon();
 select throws_ok($$select * from public.profiles$$, '42501', null,
   'anonymous users cannot read profiles');
+select throws_ok($$select public.username_available('x_y_z')$$, '42501', null,
+  'anonymous users cannot call username_available');
 
 select * from finish();
 rollback;

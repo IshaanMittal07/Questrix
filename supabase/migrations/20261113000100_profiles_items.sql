@@ -43,6 +43,23 @@ create table public.profiles (
 comment on column public.profiles.onboarded_at is
   'Set by trigger when the user first chooses a username (onboarding step 1). Not client-writable.';
 
+-- Reserved usernames (route names, staff-like names). Enforced in the profiles
+-- trigger and used by username_available.
+create function public.is_reserved_username(p_username text)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  -- user_* is the signup placeholder namespace.
+  select lower(p_username) like 'user\_%' or lower(p_username) = any (array[
+    'admin', 'administrator', 'root', 'support', 'help', 'questrix', 'system',
+    'mod', 'moderator', 'staff', 'official', 'settings', 'today', 'habits',
+    'feed', 'shop', 'profile', 'leaderboard', 'login', 'logout', 'signup',
+    'onboarding', 'auth', 'api', 'u', 'me', 'null', 'undefined'
+  ]);
+$$;
+
 -- Timezone must be a real IANA name. A trigger, not a CHECK: pg_timezone_names isn't immutable.
 create function public.profiles_validate()
 returns trigger
@@ -51,13 +68,18 @@ security definer
 set search_path = ''
 as $$
 begin
-  if not exists (select 1 from pg_catalog.pg_timezone_names where name = new.timezone) then
+  -- Only validate when it changes: profiles are updated on every completion later.
+  if (tg_op = 'INSERT' or new.timezone is distinct from old.timezone)
+     and not exists (select 1 from pg_catalog.pg_timezone_names where name = new.timezone) then
     raise exception 'Unknown timezone: %', new.timezone using errcode = '22023';
   end if;
-  if tg_op = 'UPDATE'
-     and new.username is distinct from old.username
-     and new.onboarded_at is null then
-    new.onboarded_at := now();
+  if tg_op = 'UPDATE' and new.username is distinct from old.username then
+    if public.is_reserved_username(new.username::text) then
+      raise exception 'That username is reserved' using errcode = '23514';
+    end if;
+    if new.onboarded_at is null then
+      new.onboarded_at := now();
+    end if;
   end if;
   return new;
 end;
@@ -235,12 +257,7 @@ security definer
 set search_path = ''
 as $$
   select p_username ~ '^[a-z0-9_]{3,20}$'
-    and p_username not in (
-      'admin', 'administrator', 'root', 'support', 'help', 'questrix', 'system',
-      'mod', 'moderator', 'staff', 'official', 'settings', 'today', 'habits',
-      'feed', 'shop', 'profile', 'leaderboard', 'login', 'logout', 'signup',
-      'onboarding', 'auth', 'api', 'u', 'me', 'null', 'undefined'
-    )
+    and not public.is_reserved_username(p_username)
     and not exists (
       select 1 from public.profiles
       where username = p_username::extensions.citext
@@ -306,5 +323,7 @@ grant execute on function public.handle_new_user() to service_role;
 
 revoke execute on function public.username_available(text) from public, anon;
 revoke execute on function public.equip_item(text, uuid) from public, anon;
+revoke execute on function public.is_reserved_username(text) from public, anon;
+grant execute on function public.is_reserved_username(text) to authenticated;
 grant execute on function public.username_available(text) to authenticated;
 grant execute on function public.equip_item(text, uuid) to authenticated;

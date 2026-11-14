@@ -5,7 +5,7 @@ import { Avatar } from "@/components/avatar/Avatar";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { createClient } from "@/lib/supabase/client";
-import { usernameSchema } from "@/lib/validation/profile";
+import { deviceTimezone, usernameSchema } from "@/lib/validation/profile";
 import { completeOnboarding, type OnboardingState } from "./actions";
 
 type Base = { id: string; name: string; svg: string | null };
@@ -20,9 +20,7 @@ export function OnboardingForm({ avatarBases }: { avatarBases: Base[] }) {
   const [availability, setAvailability] = useState<Availability>("idle");
   const [hint, setHint] = useState<string | null>(null);
   const [baseId, setBaseId] = useState(avatarBases[0]?.id ?? "");
-  const [timezone] = useState(
-    () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-  );
+  const [timezone] = useState(deviceTimezone);
 
   // Debounced availability check while typing.
   useEffect(() => {
@@ -36,14 +34,19 @@ export function OnboardingForm({ avatarBases }: { avatarBases: Base[] }) {
     }
     setAvailability("checking");
     setHint(null);
+    let stale = false;
     const handle = setTimeout(async () => {
       const { data } = await createClient().rpc("username_available", {
         p_username: parsed.data,
       });
+      if (stale) return; // a newer keystroke owns the result
       setAvailability(data ? "available" : "taken");
       setHint(data ? "Available!" : "Taken — try another");
     }, 350);
-    return () => clearTimeout(handle);
+    return () => {
+      stale = true;
+      clearTimeout(handle);
+    };
   }, [username]);
 
   const selectedSvg = avatarBases.find((b) => b.id === baseId)?.svg ?? null;

@@ -39,3 +39,18 @@ export function safeNextPath(
   }
   return next;
 }
+
+/** The device's IANA timezone in canonical form, or UTC if it's unusable. */
+export function deviceTimezone() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz && isValidTimezone(tz) && !tz.startsWith("Etc/Unknown")) {
+      return new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+      }).resolvedOptions().timeZone;
+    }
+  } catch {
+    // fall through
+  }
+  return "UTC";
+}

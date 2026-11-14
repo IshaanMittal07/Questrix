@@ -326,6 +326,7 @@ export type Database = {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
+      is_reserved_username: { Args: { p_username: string }; Returns: boolean };
       username_available: { Args: { p_username: string }; Returns: boolean };
     };
     Enums: {

@@ -1,15 +1,14 @@
 "use client";
 
-import { useActionState, useMemo, useState } from "react";
+import { useActionState, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { deviceTimezone } from "@/lib/validation/profile";
 import { updateTimezone, type SettingsState } from "./actions";
 
-function allTimezones(current: string) {
-  const list =
-    typeof Intl.supportedValuesOf === "function"
-      ? Intl.supportedValuesOf("timeZone")
-      : [];
-  return list.includes(current) ? list : [current, ...list];
+function withValues(list: string[], ...extra: string[]) {
+  const out = [...list];
+  for (const v of extra) if (!out.includes(v)) out.unshift(v);
+  return out;
 }
 
 export function TimezoneForm({ current }: { current: string }) {
@@ -18,7 +17,16 @@ export function TimezoneForm({ current }: { current: string }) {
     {},
   );
   const [value, setValue] = useState(current);
-  const zones = useMemo(() => allTimezones(current), [current]);
+  // Built on the client only: the server's ICU list can differ (hydration).
+  const [zones, setZones] = useState<string[]>([current]);
+  useEffect(() => {
+    const list =
+      typeof Intl.supportedValuesOf === "function"
+        ? Intl.supportedValuesOf("timeZone")
+        : [];
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser-only data
+    setZones(withValues(list, current, deviceTimezone()));
+  }, [current]);
 
   return (
     <form action={action} className="flex flex-col gap-3">
@@ -42,12 +50,7 @@ export function TimezoneForm({ current }: { current: string }) {
         ))}
       </select>
       <div className="flex flex-wrap gap-2">
-        <Button
-          variant="secondary"
-          onClick={() =>
-            setValue(Intl.DateTimeFormat().resolvedOptions().timeZone)
-          }
-        >
+        <Button variant="secondary" onClick={() => setValue(deviceTimezone())}>
           Use this device&apos;s timezone
         </Button>
         <Button type="submit" disabled={pending || value === current}>

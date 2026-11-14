@@ -26,7 +26,8 @@ async function Greeting() {
         <p className="text-muted text-sm">Welcome back,</p>
         <p className="truncate text-lg font-bold">{name}</p>
         <p className="text-muted text-sm">
-          🔥 {profile.current_streak}-day streak · {profile.points_balance} pts
+          <span aria-hidden="true">🔥</span> {profile.current_streak}-day streak
+          · {profile.points_balance} pts
         </p>
       </div>
       <ProgressRing
