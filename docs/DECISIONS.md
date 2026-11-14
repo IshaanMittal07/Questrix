@@ -62,4 +62,8 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **CAPTCHA (Turnstile) is wired but off** until `NEXT_PUBLIC_TURNSTILE_SITE_KEY` is set and CAPTCHA is enabled in hosted Auth. Local dev and CI run without it.
   - **Item foreign keys use `on delete restrict`.** Items are retired with `is_active`, never deleted, so paid inventory can't vanish silently.
   - **`public_profiles` is `security_barrier`.**
-  - **Deferred to Phase 4:** limit timezone changes. Unlimited changes would let a user moving east gain a local day for streaks and points. Tracked as an issue for the completion/streak work.
+  - **Deferred to Phase 4:** limit timezone changes. Unlimited changes would let a user moving east gain a local day for streaks and points. Tracked in #28.
+- **Review round 3 (PR #27):**
+  - **`safeNextPath` hardening:** it rejects control characters and backslashes, then resolves the path against a dummy origin and requires it to stay there. This closes `/%09/evil.com`, which browsers turn into `//evil.com`.
+  - **Accepted risk: login CSRF through email links.** Anyone holding a valid `token_hash` link for their own account can get a victim to tap it and be signed in as them. The confirm button lowers this. Showing "Signed in as …" after sign-in is a candidate for Phase 7 (social), when the risk matters more.
+  - **Check before Phase 6:** `public_profiles` is `security_barrier`, so a `username = $1` lookup (citext equality may not be leakproof) could become a sequential scan. `EXPLAIN` the `/u/[username]` query. If it scans, use a `get_public_profile(p_username)` RPC.

@@ -24,20 +24,27 @@ export const timezoneSchema = z
   .string()
   .refine(isValidTimezone, "Unknown timezone");
 
+// Control characters (browsers strip tab/CR/LF, so "/\t/evil.com" becomes
+// "//evil.com") and backslashes (treated as "/").
+const UNSAFE_PATH_CHARS = /[\u0000-\u001f\u007f\\]/;
+const PATH_BASE = "http://questrix.invalid";
+
 /** Same-origin relative path only (blocks open redirects like //evil.com). */
 export function safeNextPath(
   next: string | null | undefined,
   fallback = "/today",
 ) {
-  if (
-    !next ||
-    !next.startsWith("/") ||
-    next.startsWith("//") ||
-    next.startsWith("/\\")
-  ) {
+  if (!next || !next.startsWith("/") || UNSAFE_PATH_CHARS.test(next)) {
     return fallback;
   }
-  return next;
+  try {
+    // Resolve the way a browser would and require it to stay on our origin.
+    const url = new URL(next, PATH_BASE);
+    if (url.origin !== PATH_BASE) return fallback;
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return fallback;
+  }
 }
 
 /** The device's IANA timezone in canonical form, or UTC if it's unusable. */

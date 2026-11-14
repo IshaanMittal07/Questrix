@@ -18,6 +18,18 @@ test("signed-out visitors are sent to /login", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("unknown ?error= values render the normal login page", async ({
+  page,
+}) => {
+  for (const key of ["__proto__", "constructor", "nope"]) {
+    await page.goto(`/login?error=${key}`);
+    await expect(
+      page.getByRole("button", { name: "Continue with Google" }),
+    ).toBeVisible();
+    await expect(page.locator("main [role=alert]")).toHaveCount(0);
+  }
+});
+
 test("the email link signs in only after a tap, and can't be reused", async ({
   page,
 }, testInfo) => {

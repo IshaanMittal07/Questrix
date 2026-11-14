@@ -38,7 +38,8 @@ Tests: `pnpm test` (unit), `pnpm db:test` (pgTAP), `pnpm build && pnpm test:e2e`
 - **Google:** `skip_nonce_check` must be **off** (it's on only in the local `config.toml`).
 - **Custom SMTP:** set it under **Authentication → Emails → SMTP Settings**. The built-in sender is heavily rate-limited and not meant for production.
 - **Rate limits (Authentication → Rate Limits):** these values are a starting point; tune them from real traffic. Emails sent per hour about 30 (needs custom SMTP), sign-ups and sign-ins per 5 minutes per IP about 30, token verifications per 5 minutes per IP about 30, token refreshes per 5 minutes per IP 150.
-- **CAPTCHA (Cloudflare Turnstile):** create a Turnstile widget for the app's domain. Paste its **secret** under **Authentication → Attack Protection → Enable CAPTCHA protection** (provider: Turnstile), and set its **site key** as `NEXT_PUBLIC_TURNSTILE_SITE_KEY` in Vercel. Do both in the same deploy: with CAPTCHA on and no site key, sign-in requests are rejected.
+- **CAPTCHA (Cloudflare Turnstile):** create a Turnstile widget for the app's domain. Paste its **secret** under **Authentication → Attack Protection → Enable CAPTCHA protection** (provider: Turnstile), and set its **site key** as `NEXT_PUBLIC_TURNSTILE_SITE_KEY` in Vercel. Do both in the same deploy: with CAPTCHA on and no site key, sign-in requests are rejected. **This is a launch gate, not optional:** `/auth/v1/signup` can be used to send email to any address until CAPTCHA is on. When a site-wide CSP is added (Phase 8), allow `https://challenges.cloudflare.com` in `script-src` and `frame-src`.
+- **Passwordless trigger:** `strip_auth_password` on `auth.users` means any password (signup, `updateUser`, admin or dashboard "create user with password") is silently not stored. After the first `supabase db push` to a staging project, check that code sign-in, Google sign-in and admin invites still work.
 
 ## Production setup
 

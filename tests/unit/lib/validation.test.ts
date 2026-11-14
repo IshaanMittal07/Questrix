@@ -18,15 +18,29 @@ describe("usernameSchema", () => {
 });
 
 describe("safeNextPath", () => {
-  it("keeps same-origin paths", () => {
+  it("keeps same-origin paths with query and hash", () => {
     expect(safeNextPath("/habits/new")).toBe("/habits/new");
+    expect(safeNextPath("/u/alice?tab=feed#top")).toBe("/u/alice?tab=feed#top");
   });
-  it.each([null, "", "https://evil.com", "//evil.com", "/\\evil.com", "today"])(
-    "falls back for %j",
-    (bad) => {
-      expect(safeNextPath(bad)).toBe("/today");
-    },
-  );
+  it.each([
+    null,
+    "",
+    "https://evil.com",
+    "//evil.com",
+    "/\\evil.com",
+    "today",
+    "/\t/evil.com",
+    "/\n/evil.com",
+    "/\r/evil.com",
+    "\t//evil.com",
+    "/a\\..\\..\\/evil.com",
+  ])("falls back for %j", (bad) => {
+    expect(safeNextPath(bad)).toBe("/today");
+  });
+  it("never resolves off-origin for a percent-encoded tab (decoded by URLSearchParams)", () => {
+    const next = new URLSearchParams("next=/%09/evil.com").get("next");
+    expect(safeNextPath(next)).toBe("/today");
+  });
 });
 
 describe("isValidTimezone", () => {

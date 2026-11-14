@@ -5,15 +5,19 @@
 --     attacker's password keeps working;
 --   * persistence: a stolen session plants a password that outlives sign-out.
 -- So no password hash is ever stored. An empty hash never matches, so password
--- sign-in always fails with invalid credentials.
+-- sign-in always fails with invalid credentials. NULL (some OAuth/admin paths)
+-- is left as NULL. Invoker rights: the function only rewrites NEW.
+-- NOTE: this makes signUp/updateUser/admin createUser with a password "succeed"
+-- without storing it. A future password feature must drop this trigger.
 create function public.strip_auth_password()
 returns trigger
 language plpgsql
-security definer
 set search_path = ''
 as $$
 begin
-  new.encrypted_password := '';
+  if new.encrypted_password is not null and new.encrypted_password <> '' then
+    new.encrypted_password := '';
+  end if;
   return new;
 end;
 $$;

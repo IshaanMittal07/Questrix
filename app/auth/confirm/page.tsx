@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { Button } from "@/components/ui/Button";
 import { confirmEmailLink } from "./actions";
+import { ConfirmButton } from "./ConfirmButton";
 
 export const metadata: Metadata = {
   title: "Confirm sign-in",
@@ -38,9 +38,7 @@ async function ConfirmForm({ searchParams }: { searchParams: Search }) {
       <input type="hidden" name="token_hash" value={tokenHash} />
       <input type="hidden" name="type" value={type} />
       {next ? <input type="hidden" name="next" value={next} /> : null}
-      <Button type="submit" size="lg">
-        Sign in to Questrix
-      </Button>
+      <ConfirmButton />
     </form>
   );
 }

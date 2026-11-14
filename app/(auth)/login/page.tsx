@@ -13,7 +13,9 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 
 async function LoginError({ searchParams }: { searchParams: Search }) {
   const raw = (await searchParams).error;
-  const message = ERRORS[Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "")];
+  const key = Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "");
+  // Own keys only: "__proto__" or "constructor" must not resolve to built-ins.
+  const message = Object.hasOwn(ERRORS, key) ? ERRORS[key] : undefined;
   if (!message) return null;
   return (
     <p
