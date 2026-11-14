@@ -1,7 +1,7 @@
 -- Phase 2: profiles, inventory, equip_item — RLS, column privileges, triggers.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(35);
+select plan(53);
 
 -- Helpers: act as a given user (or anon) inside this transaction.
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
@@ -88,6 +88,10 @@ select throws_ok(
   $$update public.profiles set username = 'admin'
     where id = '11111111-1111-1111-1111-111111111111'$$,
   '23514', null, 'reserved usernames cannot be taken by a direct update');
+select throws_ok(
+  $$update public.profiles set username = 'user_abcdef123456'
+    where id = '11111111-1111-1111-1111-111111111111'$$,
+  '23514', null, 'the user_ placeholder namespace cannot be taken by a direct update');
 
 select pg_temp.as_postgres();
 select is(
@@ -100,7 +104,7 @@ select isnt(
 -- ── username_available ──────────────────────────────────────────────────────
 select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
 select is(public.username_available('alice'), false, 'taken usernames are unavailable');
-select is(public.username_available('ALICE'), false, 'availability is case-insensitive');
+select is(public.username_available('ALICE'), false, 'upper-case input is rejected (usernames are lowercase)');
 select is(public.username_available('bob_99'), true, 'free usernames are available');
 select is(public.username_available('no'), false, 'too-short usernames are unavailable');
 select is(public.username_available('admin'), false, 'reserved usernames are unavailable');
@@ -123,11 +127,44 @@ select is(
   (select username::text from public.public_profiles where username = 'alice'),
   'alice', 'username stays visible on private profiles');
 
+select pg_temp.as_postgres();
+insert into auth.users (id, email) values
+  ('33333333-3333-3333-3333-333333333333', 'carol@example.com');
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+select is(
+  (select count(*)::int from public.public_profiles
+    where id = '33333333-3333-3333-3333-333333333333'),
+  0, 'users who have not onboarded are hidden from others');
+
+-- ── items ───────────────────────────────────────────────────────────────────
+select pg_temp.as_postgres();
+insert into public.items (slug, name, category, rarity, price, asset, is_active)
+values ('test-retired', 'Retired Cape', 'outfit', 'rare', 100, '{}', false);
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+select is(
+  (select count(*)::int from public.items where slug = 'test-retired'),
+  0, 'inactive items are hidden');
+select throws_ok(
+  $$insert into public.items (slug, name, category, rarity, price, asset)
+    values ('free-crown', 'Free Crown', 'accessory', 'legendary', 0, '{}')$$,
+  '42501', null, 'clients cannot create items');
+
 -- ── inventory + equip_item ──────────────────────────────────────────────────
 select throws_ok(
   $$insert into public.user_items (user_id, item_id)
     select '22222222-2222-2222-2222-222222222222', id from public.items limit 1$$,
   '42501', null, 'clients cannot grant themselves items');
+select cmp_ok(
+  (select count(*)::int from public.user_items), '>', 0,
+  'a user can read their own inventory');
+select is(
+  (select count(*)::int from public.user_items
+    where user_id = '11111111-1111-1111-1111-111111111111'),
+  0, 'a user cannot read another user''s inventory');
+select is(
+  (select count(*)::int from public.equipped_cosmetics
+    where user_id = '11111111-1111-1111-1111-111111111111'),
+  1, 'equipped cosmetics are visible to other signed-in users');
 select throws_ok(
   $$update public.equipped_cosmetics set outfit_id = null$$,
   '42501', null, 'clients cannot write equipped_cosmetics directly');
@@ -152,12 +189,46 @@ select throws_ok(
   $$select public.equip_item('outfit', (select id from public.items where slug = 'test-hoodie'))$$,
   '42501', null, 'unowned items cannot be equipped');
 
+-- ── delete rules + function privileges ─────────────────────────────────────
+select pg_temp.as_postgres();
+select throws_ok(
+  $$delete from public.items where slug = 'base-umbra'$$,
+  '23503', null, 'owned items cannot be deleted (retire them with is_active)');
+select is(has_function_privilege('authenticated', 'public.handle_new_user()', 'execute'),
+  false, 'clients cannot execute handle_new_user');
+select is(has_function_privilege('authenticated', 'public.profiles_validate()', 'execute'),
+  false, 'clients cannot execute profiles_validate');
+select is(has_function_privilege('authenticated', 'public.strip_auth_password()', 'execute'),
+  false, 'clients cannot execute strip_auth_password');
+
+-- ── passwordless auth ───────────────────────────────────────────────────────
+insert into auth.users (id, email, encrypted_password) values
+  ('44444444-4444-4444-4444-444444444444', 'dave@example.com', 'attacker-hash');
+select is(
+  (select encrypted_password from auth.users where id = '44444444-4444-4444-4444-444444444444'),
+  '', 'a password given at signup is never stored');
+update auth.users set encrypted_password = 'planted-hash'
+  where id = '22222222-2222-2222-2222-222222222222';
+select is(
+  (select encrypted_password from auth.users where id = '22222222-2222-2222-2222-222222222222'),
+  '', 'a password set later is never stored');
+
 -- ── anon ────────────────────────────────────────────────────────────────────
 select pg_temp.as_anon();
 select throws_ok($$select * from public.profiles$$, '42501', null,
   'anonymous users cannot read profiles');
 select throws_ok($$select public.username_available('x_y_z')$$, '42501', null,
   'anonymous users cannot call username_available');
+select throws_ok($$select * from public.public_profiles$$, '42501', null,
+  'anonymous users cannot read public_profiles');
+select throws_ok($$select * from public.items$$, '42501', null,
+  'anonymous users cannot read items');
+select throws_ok($$select * from public.equipped_cosmetics$$, '42501', null,
+  'anonymous users cannot read equipped_cosmetics');
+select throws_ok($$select public.equip_item('outfit', null)$$, '42501', null,
+  'anonymous users cannot call equip_item');
+select throws_ok($$select public.is_reserved_username('admin')$$, '42501', null,
+  'anonymous users cannot call is_reserved_username');
 
 select * from finish();
 rollback;

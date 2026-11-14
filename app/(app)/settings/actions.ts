@@ -22,7 +22,12 @@ export async function updateTimezone(
     .from("profiles")
     .update({ timezone: parsed.data })
     .eq("id", userId);
-  if (error) return { error: "Couldn't save. Try again." };
+  if (error) {
+    // 22023: this browser knows the zone, but the server's tz database doesn't.
+    return error.code === "22023"
+      ? { error: "Pick a valid timezone." }
+      : { error: "Couldn't save. Try again." };
+  }
 
   revalidatePath("/settings");
   return { ok: true };

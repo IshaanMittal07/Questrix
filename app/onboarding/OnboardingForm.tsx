@@ -20,14 +20,23 @@ export function OnboardingForm({ avatarBases }: { avatarBases: Base[] }) {
   const [availability, setAvailability] = useState<Availability>("idle");
   const [hint, setHint] = useState<string | null>(null);
   const [baseId, setBaseId] = useState(avatarBases[0]?.id ?? "");
-  const [timezone] = useState(deviceTimezone);
+  // Device-only value: computing it during SSR (UTC on Vercel) breaks hydration.
+  const [timezone, setTimezone] = useState<string | null>(null);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- browser-only data
+    setTimezone(deviceTimezone());
+  }, []);
 
   // Debounced availability check while typing.
   useEffect(() => {
-    if (!username) return;
+    if (!username) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- derived from the input
+      setAvailability("idle");
+      setHint(null);
+      return;
+    }
     const parsed = usernameSchema.safeParse(username);
     if (!parsed.success) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- derived from the input
       setAvailability("invalid");
       setHint(parsed.error.issues[0].message);
       return;
@@ -143,9 +152,9 @@ export function OnboardingForm({ avatarBases }: { avatarBases: Base[] }) {
         </p>
       </div>
 
-      <input type="hidden" name="timezone" value={timezone} />
+      <input type="hidden" name="timezone" value={timezone ?? ""} />
       <p className="text-muted -mt-3 text-xs">
-        Timezone: {timezone} (change it later in Settings)
+        Timezone: {timezone ?? "detecting…"} (change it later in Settings)
       </p>
 
       {state.field === "form" && state.error ? (
@@ -159,6 +168,7 @@ export function OnboardingForm({ avatarBases }: { avatarBases: Base[] }) {
         size="lg"
         disabled={
           pending ||
+          !timezone ||
           availability === "taken" ||
           availability === "invalid" ||
           !username

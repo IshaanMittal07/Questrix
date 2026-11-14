@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
+import { TURNSTILE_SITE_KEY, Turnstile } from "@/components/auth/Turnstile";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase/client";
 import { emailSchema } from "@/lib/validation/profile";
@@ -19,6 +20,8 @@ function callbackUrl() {
 export function LoginForm() {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const [captchaReset, setCaptchaReset] = useState(0);
 
   async function sendMagicLink(e: FormEvent) {
     e.preventDefault();
@@ -27,11 +30,20 @@ export function LoginForm() {
       setStatus({ kind: "error", message: parsed.error.issues[0].message });
       return;
     }
+    if (TURNSTILE_SITE_KEY && !captchaToken) {
+      setStatus({ kind: "error", message: "Please complete the check below." });
+      return;
+    }
     setStatus({ kind: "sending" });
     const { error } = await createClient().auth.signInWithOtp({
       email: parsed.data,
-      options: { emailRedirectTo: callbackUrl(), shouldCreateUser: true },
+      options: {
+        emailRedirectTo: callbackUrl(),
+        shouldCreateUser: true,
+        captchaToken: captchaToken ?? undefined,
+      },
     });
+    setCaptchaReset((n) => n + 1); // tokens are single-use
     setStatus(
       error
         ? { kind: "error", message: error.message }
@@ -111,6 +123,7 @@ export function LoginForm() {
           aria-invalid={status.kind === "error" || undefined}
           aria-describedby={status.kind === "error" ? "login-error" : undefined}
         />
+        <Turnstile onToken={setCaptchaToken} resetKey={captchaReset} />
         <Button type="submit" size="lg" disabled={busy}>
           {busy ? "Sending…" : "Email me a sign-in code"}
         </Button>
@@ -174,9 +187,11 @@ function CodeStep({ email, onBack }: { email: string; onBack: () => void }) {
           inputMode="numeric"
           autoComplete="one-time-code"
           pattern="[0-9]*"
-          maxLength={6}
           value={code}
-          onChange={(e) => setCode(e.target.value)}
+          // Strip spaces/dashes first so a pasted "123 456" isn't cut by maxLength.
+          onChange={(e) =>
+            setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+          }
           className="bg-surface-2 text-text min-h-12 rounded-xl border border-white/10 px-4 text-center text-2xl tracking-[0.4em]"
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? "otp-error" : undefined}

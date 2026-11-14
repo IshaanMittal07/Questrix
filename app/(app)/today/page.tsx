@@ -34,7 +34,7 @@ async function Greeting() {
         value={current}
         max={needed}
         label={`Level ${level} progress`}
-        valueText={`${current} of ${needed} XP`}
+        valueText={`${current} of ${needed} points to the next level`}
       >
         {level}
       </ProgressRing>

@@ -32,6 +32,14 @@ Tests: `pnpm test` (unit), `pnpm db:test` (pgTAP), `pnpm build && pnpm test:e2e`
 - **Authentication → URL Configuration:** set the Site URL to the app URL. Add `https://<app>/auth/callback` and `https://<app>/auth/confirm` to the redirect URLs.
 - **Authentication → Emails → Magic Link** (and **Confirm signup**): paste `supabase/templates/magic_link.html` and set the subject to "Your Questrix sign-in code". The template must contain both `{{ .Token }}` and the `/auth/confirm?token_hash=...` link.
 
+### Auth hardening checklist (before launch)
+
+- **Sign In / Providers → Email:** confirm email **on**, secure password change **on**, minimum password length **≥ 8**, email OTP expiry **≤ 900 s**. The app is passwordless and the `strip_auth_password` trigger stores no password hash, but keep these on as a second layer.
+- **Google:** `skip_nonce_check` must be **off** (it's on only in the local `config.toml`).
+- **Custom SMTP:** set it under **Authentication → Emails → SMTP Settings**. The built-in sender is heavily rate-limited and not meant for production.
+- **Rate limits (Authentication → Rate Limits):** these values are a starting point; tune them from real traffic. Emails sent per hour about 30 (needs custom SMTP), sign-ups and sign-ins per 5 minutes per IP about 30, token verifications per 5 minutes per IP about 30, token refreshes per 5 minutes per IP 150.
+- **CAPTCHA (Cloudflare Turnstile):** create a Turnstile widget for the app's domain. Paste its **secret** under **Authentication → Attack Protection → Enable CAPTCHA protection** (provider: Turnstile), and set its **site key** as `NEXT_PUBLIC_TURNSTILE_SITE_KEY` in Vercel. Do both in the same deploy: with CAPTCHA on and no site key, sign-in requests are rejected.
+
 ## Production setup
 
 _Phases 5 and 8 add Vercel env vars, the Supabase Vault secrets (`app_url`, `cron_secret`), pg_cron jobs and VAPID keys._

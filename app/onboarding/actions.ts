@@ -37,6 +37,17 @@ export async function completeOnboarding(
   const userId = claims?.claims?.sub;
   if (!userId) redirect("/login");
 
+  // Onboarding runs once; renaming afterwards is a separate (Settings) flow.
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("onboarded_at")
+    .eq("id", userId)
+    .maybeSingle();
+  if (profileError || !profile) {
+    return { error: "Couldn't load your profile. Try again.", field: "form" };
+  }
+  if (profile.onboarded_at) redirect("/today");
+
   const { data: available } = await supabase.rpc("username_available", {
     p_username: username,
   });

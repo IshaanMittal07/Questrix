@@ -62,17 +62,20 @@ export async function updateSession(request: NextRequest) {
     return res;
   }
 
-  if (isPublic(pathname) && pathname === "/login") return redirect("/today");
+  if (pathname === "/login") return redirect("/today");
   if (isPublic(pathname)) return response;
 
   // Onboarding gate. The cookie is a per-user cache, so it stores the user id.
   let onboarded = request.cookies.get(ONBOARDED_COOKIE)?.value === userId;
   if (!onboarded) {
-    const { data: profile } = await supabase
+    const { data: profile, error } = await supabase
       .from("profiles")
       .select("onboarded_at")
       .eq("id", userId)
       .maybeSingle();
+    // A failed lookup isn't "not onboarded": don't bounce the user anywhere.
+    // Pages and server actions still enforce access on their own.
+    if (error) return response;
     onboarded = Boolean(profile?.onboarded_at);
     if (onboarded) {
       response.cookies.set(ONBOARDED_COOKIE, userId, {

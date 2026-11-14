@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { waitForSignInCode } from "./helpers/mailpit";
+import { waitForSignInCode, waitForSignInLink } from "./helpers/mailpit";
 
 // Skip the launch splash in E2E (it plays once per session).
 test.beforeEach(async ({ page }) => {
@@ -15,6 +15,37 @@ test("signed-out visitors are sent to /login", async ({ page }) => {
   await expect(page).toHaveURL(/\/login$/);
   await expect(
     page.getByRole("button", { name: "Continue with Google" }),
+  ).toBeVisible();
+});
+
+test("the email link signs in only after a tap, and can't be reused", async ({
+  page,
+}, testInfo) => {
+  const id = `${Date.now().toString(36)}${testInfo.project.name === "iphone-13" ? "i" : "d"}`;
+  const email = `e2e-link-${id}@example.com`;
+
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Email me a sign-in code" }).click();
+  await expect(page.getByText("Check your inbox")).toBeVisible();
+  const link = await waitForSignInLink(email);
+
+  // A GET (what a mail scanner does) must not use up the token.
+  await page.request.get(link);
+  await page.goto(link);
+  await expect(
+    page.getByRole("heading", { name: "Almost there" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Sign in to Questrix" }).click();
+  await expect(page).toHaveURL(/\/onboarding$/);
+
+  // The same link again is spent: back to /login with a message.
+  await page.context().clearCookies();
+  await page.goto(link);
+  await page.getByRole("button", { name: "Sign in to Questrix" }).click();
+  await expect(page).toHaveURL(/\/login\?error=link$/);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "expired or was already used" }),
   ).toBeVisible();
 });
 

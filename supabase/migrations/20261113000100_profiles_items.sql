@@ -135,7 +135,8 @@ grant select on public.items to authenticated;
 -- ── user_items (inventory; written only by SECURITY DEFINER code) ─────────────
 create table public.user_items (
   user_id uuid not null references public.profiles (id) on delete cascade,
-  item_id uuid not null references public.items (id) on delete cascade,
+  -- restrict: retire items with is_active; never silently drop paid inventory.
+  item_id uuid not null references public.items (id) on delete restrict,
   acquired_at timestamptz not null default now(),
   primary key (user_id, item_id)
 );
@@ -154,14 +155,14 @@ grant select on public.user_items to authenticated;
 -- ── equipped_cosmetics (public; written only via equip_item / signup) ─────────
 create table public.equipped_cosmetics (
   user_id uuid primary key references public.profiles (id) on delete cascade,
-  avatar_base_id uuid references public.items (id),
-  outfit_id uuid references public.items (id),
-  accessory_id uuid references public.items (id),
-  name_color_id uuid references public.items (id),
-  name_style_id uuid references public.items (id),
-  title_id uuid references public.items (id),
-  background_id uuid references public.items (id),
-  border_id uuid references public.items (id)
+  avatar_base_id uuid references public.items (id) on delete restrict,
+  outfit_id uuid references public.items (id) on delete restrict,
+  accessory_id uuid references public.items (id) on delete restrict,
+  name_color_id uuid references public.items (id) on delete restrict,
+  name_style_id uuid references public.items (id) on delete restrict,
+  title_id uuid references public.items (id) on delete restrict,
+  background_id uuid references public.items (id) on delete restrict,
+  border_id uuid references public.items (id) on delete restrict
 );
 
 alter table public.equipped_cosmetics enable row level security;
@@ -230,7 +231,8 @@ create trigger on_auth_user_created
 -- ── public_profiles: what other users may see (plan §5.3) ─────────────────────
 -- Owned by postgres without security_invoker, so it bypasses base-table RLS and
 -- exposes only public columns; stats are null for private profiles (except owner).
-create view public.public_profiles as
+-- security_barrier: caller predicates can't be pushed below the privacy filter.
+create view public.public_profiles with (security_barrier) as
 select
   p.id,
   p.username,
