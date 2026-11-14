@@ -3,17 +3,19 @@
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { safeNextPath } from "@/lib/validation/profile";
 
 /** Only the type our email templates issue (sign-in and sign-up confirmation). */
 const ALLOWED_TYPES: EmailOtpType[] = ["email"];
 
-/** Verifies an email link's token hash. POST-only, so link scanners can't burn it. */
+/**
+ * Verifies an email link's token hash. POST-only, so link scanners can't burn it.
+ * No `next` parameter: our templates never set one, and a fixed destination
+ * leaves nothing to abuse as an open redirect.
+ */
 export async function confirmEmailLink(formData: FormData) {
   const tokenHash = formData.get("token_hash");
   const rawType = formData.get("type");
   const type = ALLOWED_TYPES.find((t) => t === rawType);
-  const next = safeNextPath(String(formData.get("next") ?? "") || null);
 
   if (typeof tokenHash === "string" && tokenHash && type) {
     const supabase = await createClient();
@@ -32,7 +34,7 @@ export async function confirmEmailLink(formData: FormData) {
             .eq("id", userId)
             .maybeSingle()
         : { data: null };
-      redirect(profile && !profile.onboarded_at ? "/onboarding" : next);
+      redirect(profile && !profile.onboarded_at ? "/onboarding" : "/today");
     }
   }
   redirect("/login?error=link");

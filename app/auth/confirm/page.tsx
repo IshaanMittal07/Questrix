@@ -22,7 +22,6 @@ async function ConfirmForm({ searchParams }: { searchParams: Search }) {
   const params = await searchParams;
   const tokenHash = first(params.token_hash);
   const type = first(params.type);
-  const next = first(params.next);
 
   if (!tokenHash || !type) {
     return (
@@ -37,7 +36,6 @@ async function ConfirmForm({ searchParams }: { searchParams: Search }) {
     <form action={confirmEmailLink} className="flex flex-col gap-3">
       <input type="hidden" name="token_hash" value={tokenHash} />
       <input type="hidden" name="type" value={type} />
-      {next ? <input type="hidden" name="next" value={next} /> : null}
       <ConfirmButton />
     </form>
   );

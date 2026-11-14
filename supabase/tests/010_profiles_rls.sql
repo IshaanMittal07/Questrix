@@ -1,7 +1,7 @@
 -- Phase 2: profiles, inventory, equip_item — RLS, column privileges, triggers.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(53);
+select plan(54);
 
 -- Helpers: act as a given user (or anon) inside this transaction.
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
@@ -212,6 +212,11 @@ update auth.users set encrypted_password = 'planted-hash'
 select is(
   (select encrypted_password from auth.users where id = '22222222-2222-2222-2222-222222222222'),
   '', 'a password set later is never stored');
+insert into auth.users (id, email, encrypted_password) values
+  ('55555555-5555-5555-5555-555555555555', 'erin@example.com', null);
+select is(
+  (select encrypted_password from auth.users where id = '55555555-5555-5555-5555-555555555555'),
+  null, 'a NULL password stays NULL');
 
 -- ── anon ────────────────────────────────────────────────────────────────────
 select pg_temp.as_anon();

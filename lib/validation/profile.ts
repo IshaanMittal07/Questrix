@@ -40,8 +40,17 @@ export function safeNextPath(
   try {
     // Resolve the way a browser would and require it to stay on our origin.
     const url = new URL(next, PATH_BASE);
-    if (url.origin !== PATH_BASE) return fallback;
-    return `${url.pathname}${url.search}${url.hash}`;
+    const out = `${url.pathname}${url.search}${url.hash}`;
+    // Check the *output* too: dot-segment removal can turn "/..//evil.com"
+    // (same-origin as input) into the protocol-relative "//evil.com".
+    if (
+      url.origin !== PATH_BASE ||
+      !out.startsWith("/") ||
+      out.startsWith("//")
+    ) {
+      return fallback;
+    }
+    return out;
   } catch {
     return fallback;
   }

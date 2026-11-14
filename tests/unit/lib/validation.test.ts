@@ -34,6 +34,11 @@ describe("safeNextPath", () => {
     "/\r/evil.com",
     "\t//evil.com",
     "/a\\..\\..\\/evil.com",
+    "/..//evil.com",
+    "/.//evil.com",
+    "/a/..//evil.com",
+    "/%2e%2e//evil.com",
+    "/%2E//evil.com",
   ])("falls back for %j", (bad) => {
     expect(safeNextPath(bad)).toBe("/today");
   });
