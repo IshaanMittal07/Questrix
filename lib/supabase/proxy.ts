@@ -60,7 +60,10 @@ export async function updateSession(request: NextRequest) {
 
   const first = routeBeforeProfile(Boolean(userId), pathname);
   if (first !== "check-onboarding") return apply(first);
-  if (!userId) return response; // unreachable: only signed-in users get here
+  // Unreachable today; if routing.ts changes, fail closed rather than open.
+  if (!userId) {
+    return apply({ kind: "redirect", to: "/login", clearOnboarded: true });
+  }
 
   // Onboarding gate. The cookie is a per-user cache, so it stores the user id.
   let onboarded: boolean | "unknown" =
