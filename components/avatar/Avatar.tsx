@@ -60,12 +60,13 @@ export function Avatar({
 }
 
 /** Reads the SVG path from an item's `asset` JSON (only trusted /cosmetics/ paths). */
+const COSMETIC_SVG = /^\/cosmetics\/(?:[a-z0-9_-]+\/)*[a-z0-9_-]+\.svg$/i;
+
 export function assetSvg(asset: unknown): string | null {
   if (asset && typeof asset === "object" && "svg" in asset) {
     const svg = (asset as { svg: unknown }).svg;
-    return typeof svg === "string" && svg.startsWith("/cosmetics/")
-      ? svg
-      : null;
+    // Allowlist, not a prefix check: "/cosmetics/../x" would escape the folder.
+    return typeof svg === "string" && COSMETIC_SVG.test(svg) ? svg : null;
   }
   return null;
 }
