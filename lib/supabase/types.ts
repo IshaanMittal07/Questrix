@@ -142,6 +142,79 @@ export type Database = {
           },
         ];
       };
+      habits: {
+        Row: {
+          archived_at: string | null;
+          category: Database["public"]["Enums"]["habit_category"];
+          color: string | null;
+          created_at: string;
+          days_of_week: number[];
+          description: string | null;
+          difficulty: Database["public"]["Enums"]["habit_difficulty"];
+          icon: string | null;
+          id: string;
+          reminder_times: string[];
+          reminders_enabled: boolean;
+          sort_order: number;
+          target_per_day: number;
+          template_key: string | null;
+          title: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          archived_at?: string | null;
+          category: Database["public"]["Enums"]["habit_category"];
+          color?: string | null;
+          created_at?: string;
+          days_of_week?: number[];
+          description?: string | null;
+          difficulty?: Database["public"]["Enums"]["habit_difficulty"];
+          icon?: string | null;
+          id?: string;
+          reminder_times?: string[];
+          reminders_enabled?: boolean;
+          sort_order?: number;
+          target_per_day?: number;
+          template_key?: string | null;
+          title: string;
+          user_id?: string;
+        };
+        Update: {
+          archived_at?: string | null;
+          category?: Database["public"]["Enums"]["habit_category"];
+          color?: string | null;
+          created_at?: string;
+          days_of_week?: number[];
+          description?: string | null;
+          difficulty?: Database["public"]["Enums"]["habit_difficulty"];
+          icon?: string | null;
+          id?: string;
+          reminder_times?: string[];
+          reminders_enabled?: boolean;
+          sort_order?: number;
+          target_per_day?: number;
+          template_key?: string | null;
+          title?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "habits_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "habits_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       items: {
         Row: {
           asset: NonNullable<Json>;
@@ -322,11 +395,14 @@ export type Database = {
       };
     };
     Functions: {
+      archive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       equip_item: {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
+      reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
+      unarchive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       username_available: { Args: { p_username: string }; Returns: boolean };
     };
     Enums: {
