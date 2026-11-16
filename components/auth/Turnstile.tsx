@@ -41,15 +41,17 @@ function loadScript(): Promise<TurnstileApi> {
       script.async = true;
       document.head.appendChild(script);
     }
-    script.addEventListener("load", () =>
-      window.turnstile ? resolve(window.turnstile) : reject(new Error("load")),
-    );
-    // Drop a failed tag so the next mount retries instead of waiting forever
-    // on a script that will never fire load/error again.
-    script.addEventListener("error", () => {
+    // Drop a failed tag (blocked, or a blocker's stub that defines nothing) so
+    // the next mount retries instead of waiting forever on a script that will
+    // never fire load/error again.
+    const fail = () => {
       script!.remove();
       reject(new Error("load"));
-    });
+    };
+    script.addEventListener("load", () =>
+      window.turnstile ? resolve(window.turnstile) : fail(),
+    );
+    script.addEventListener("error", fail);
   });
 }
 

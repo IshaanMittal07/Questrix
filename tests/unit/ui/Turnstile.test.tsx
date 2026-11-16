@@ -65,6 +65,21 @@ describe("Turnstile", () => {
     );
   });
 
+  it("treats a script that loads without defining turnstile as a failure", async () => {
+    const Turnstile = await loadTurnstile("test-site-key");
+    render(<Turnstile onToken={() => {}} resetKey={0} />);
+    const script = document.head.querySelector<HTMLScriptElement>(
+      'script[src*="challenges.cloudflare.com"]',
+    );
+    await act(async () => {
+      script!.dispatchEvent(new Event("load")); // e.g. a blocker's stub
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "security check couldn't load",
+    );
+    expect(script!.isConnected).toBe(false);
+  });
+
   it("shows a widget error, then clears it when a token arrives", async () => {
     type Opts = {
       callback: (t: string) => void;
