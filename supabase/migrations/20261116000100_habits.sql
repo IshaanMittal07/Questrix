@@ -84,10 +84,14 @@ $$;
 -- Strips characters that render as nothing or reorder text, then trims all
 -- whitespace (including no-break space) from both ends; blank becomes null.
 -- Stripped: U+00AD soft hyphen, U+061C Arabic letter mark, U+180E Mongolian
--- vowel separator, U+200B-200F zero-width and LRM/RLM, U+202A-202E bidi
+-- vowel separator, U+200B zero-width space, U+200E-200F LRM/RLM, U+202A-202E bidi
 -- embeddings/overrides, U+2060-206F word joiner, invisible operators and the
 -- bidi isolates U+2066-2069, U+3164 Hangul filler, U+FEFF BOM. Built with
 -- chr() so this source stays ASCII and reviewable.
+-- ZWNJ/ZWJ (U+200C/200D) are kept inside text: they join emoji (a woman
+-- meditating is three code points joined by ZWJ) and are required in
+-- Persian and Indic scripts. They are only trimmed at the ends.
+-- Immutable is fine while nothing indexes on it: \s depends on the DB ctype.
 create function public.habits_clean_text(p_text text)
 returns text
 language sql
@@ -99,12 +103,14 @@ as $$
       pg_catalog.regexp_replace(
         p_text,
         '[' || pg_catalog.chr(173) || pg_catalog.chr(1564) || pg_catalog.chr(6158)
-            || pg_catalog.chr(8203) || '-' || pg_catalog.chr(8207)
+            || pg_catalog.chr(8203) || pg_catalog.chr(8206) || '-' || pg_catalog.chr(8207)
             || pg_catalog.chr(8234) || '-' || pg_catalog.chr(8238)
             || pg_catalog.chr(8288) || '-' || pg_catalog.chr(8303)
             || pg_catalog.chr(12644) || pg_catalog.chr(65279) || ']',
         '', 'g'),
-      '^[\s' || pg_catalog.chr(160) || ']+|[\s' || pg_catalog.chr(160) || ']+$',
+      '^[\s' || pg_catalog.chr(160) || pg_catalog.chr(8204) || pg_catalog.chr(8205)
+        || ']+|[\s' || pg_catalog.chr(160) || pg_catalog.chr(8204) || pg_catalog.chr(8205)
+        || ']+$',
       '', 'g'),
     '');
 $$;
@@ -163,7 +169,7 @@ begin
         where h.user_id = new.user_id
           and h.created_at > now() - interval '24 hours') >= 30 then
       raise exception 'You can create at most 30 habits a day'
-        using errcode = 'QX001', hint = 'Try again tomorrow.';
+        using errcode = 'QX001', hint = 'Try again later.';
     end if;
     if (select count(*) from public.habits h
         where h.user_id = new.user_id
