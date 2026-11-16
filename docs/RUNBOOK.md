@@ -2,7 +2,7 @@
 
 ## Local development
 
-1. Install Node 22+ and pnpm, then run `pnpm install`.
+1. Install Node 22.19+ (latest 22 LTS) and pnpm, then run `pnpm install`.
 2. Start Docker Desktop.
 3. Fill in `supabase/.env` (git-ignored) with the Google OAuth client credentials. See "Google sign-in" below; you can skip this if you don't need Google locally.
 4. Run `pnpm db:start`. It starts the local Supabase stack on ports **55321–55329**: API `55321`, DB `55322`, Studio `55323`, Mailpit `55324`.
