@@ -20,4 +20,8 @@ describe("levels (plan §6.3)", () => {
   it("reports progress within the current level", () => {
     expect(levelProgress(100)).toEqual({ level: 2, current: 50, needed: 150 });
   });
+
+  it("never reports negative progress", () => {
+    expect(levelProgress(-30)).toEqual({ level: 1, current: 0, needed: 50 });
+  });
 });
