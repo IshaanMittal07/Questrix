@@ -2,18 +2,14 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 import type { Database } from "./types";
 import { supabaseEnv } from "./env";
+import {
+  routeBeforeProfile,
+  routeForOnboarding,
+  type RouteDecision,
+} from "./routing";
 
 /** Cookie remembering that onboarding is done (saves a DB read per request). */
 export const ONBOARDED_COOKIE = "qx-onboarded";
-
-const PUBLIC_PATHS = ["/login", "/auth"];
-const ONBOARDING_PATH = "/onboarding";
-
-function isPublic(pathname: string) {
-  return PUBLIC_PATHS.some(
-    (p) => pathname === p || pathname.startsWith(`${p}/`),
-  );
-}
 
 /**
  * Refreshes the Supabase session cookie on every request and gates routes:
@@ -55,29 +51,29 @@ export async function updateSession(request: NextRequest) {
     return res;
   };
 
-  if (!userId) {
-    if (isPublic(pathname)) return response;
-    const res = redirect("/login");
-    res.cookies.delete(ONBOARDED_COOKIE);
+  const apply = (decision: RouteDecision) => {
+    if (decision.kind === "next") return response;
+    const res = redirect(decision.to);
+    if (decision.clearOnboarded) res.cookies.delete(ONBOARDED_COOKIE);
     return res;
-  }
+  };
 
-  if (pathname === "/login") return redirect("/today");
-  if (isPublic(pathname)) return response;
+  const first = routeBeforeProfile(Boolean(userId), pathname);
+  if (first !== "check-onboarding") return apply(first);
+  if (!userId) return response; // unreachable: only signed-in users get here
 
   // Onboarding gate. The cookie is a per-user cache, so it stores the user id.
-  let onboarded = request.cookies.get(ONBOARDED_COOKIE)?.value === userId;
+  let onboarded: boolean | "unknown" =
+    request.cookies.get(ONBOARDED_COOKIE)?.value === userId;
   if (!onboarded) {
     const { data: profile, error } = await supabase
       .from("profiles")
       .select("onboarded_at")
       .eq("id", userId)
       .maybeSingle();
-    // A failed lookup isn't "not onboarded": don't bounce the user anywhere.
-    // Pages and server actions still enforce access on their own.
-    if (error) return response;
-    onboarded = Boolean(profile?.onboarded_at);
-    if (onboarded) {
+    // A failed lookup isn't "not onboarded": routeForOnboarding won't bounce.
+    onboarded = error ? "unknown" : Boolean(profile?.onboarded_at);
+    if (onboarded === true) {
       response.cookies.set(ONBOARDED_COOKIE, userId, {
         httpOnly: true,
         sameSite: "lax",
@@ -88,8 +84,5 @@ export async function updateSession(request: NextRequest) {
     }
   }
 
-  if (!onboarded && pathname !== ONBOARDING_PATH)
-    return redirect(ONBOARDING_PATH);
-  if (onboarded && pathname === ONBOARDING_PATH) return redirect("/today");
-  return response;
+  return apply(routeForOnboarding(onboarded, pathname));
 }
