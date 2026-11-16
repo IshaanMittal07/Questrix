@@ -18,6 +18,13 @@ test("signed-out visitors are sent to /login", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("the login redirect remembers the page that was asked for", async ({
+  page,
+}) => {
+  await page.goto("/shop?tab=outfit");
+  await expect(page).toHaveURL(/\/login\?next=%2Fshop%3Ftab%3Doutfit$/);
+});
+
 test("unknown ?error= values render the normal login page", async ({
   page,
 }) => {
