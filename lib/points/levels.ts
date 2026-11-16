@@ -11,9 +11,11 @@ export function pointsForLevel(level: number) {
   return 50 * (level - 1) ** 2;
 }
 
+/** Progress within the current level. Negative input (for example after an undo) counts as 0. */
 export function levelProgress(lifetimePoints: number) {
-  const level = levelFor(lifetimePoints);
+  const points = Math.max(0, lifetimePoints);
+  const level = levelFor(points);
   const floor = pointsForLevel(level);
   const next = pointsForLevel(level + 1);
-  return { level, current: lifetimePoints - floor, needed: next - floor };
+  return { level, current: points - floor, needed: next - floor };
 }
