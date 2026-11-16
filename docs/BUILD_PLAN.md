@@ -499,6 +499,8 @@ Each template: `{ key, title, category, difficulty, icon, defaultDays, targetPer
 | social | Message a friend or family member (18:30) |
 
 ### 8.2 Suggestion engine (`lib/habits/suggestions.ts`, pure TypeScript, fully unit-tested, no AI/LLM required)
+_Implementation details (active vs archived, slot bucketing, scoring caps, tie-break, fuzzy ratio) are pinned in `docs/DECISIONS.md` § Phase 3._
+
 Shown on the **Add Habit** screen as a "Suggested for you" carousel plus inline tips while the user types. Rules, scored and sorted:
 1. **Complementary pairs** (+40): if the user has X, suggest Y. Examples: Night skincare → Morning skincare + SPF; Study session → Review flashcards; Push commits → Plan tomorrow's top 3; Workout → Stretch; Follow diet → Log meals; Supplements → Drink water.
 2. **Category gaps** (+25): categories with zero active habits, prioritising health, mind, fitness.
