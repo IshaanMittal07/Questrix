@@ -34,4 +34,12 @@ describe("isSameOriginRequest", () => {
   it("rejects a request with neither header", () => {
     expect(isSameOriginRequest(new Headers(), URL_)).toBe(false);
   });
+
+  it.each([
+    [{ "sec-fetch-site": "none" }, true],
+    [{ "sec-fetch-site": "same-site" }, false],
+    [{ origin: "https://evil.com", "sec-fetch-site": "same-origin" }, false],
+  ])("headers %j → %s (Origin wins over Sec-Fetch-Site)", (h, ok) => {
+    expect(isSameOriginRequest(new Headers(h), URL_)).toBe(ok);
+  });
 });
