@@ -606,15 +606,17 @@ Also create **`CLAUDE.md`** at the repo root containing: a short project summary
 1. Create a **tracking issue** for the phase (template `phase.yml`, label `phase-N`, milestone) with the phase's goals and acceptance criteria copied from Section 12.
 2. Run the `planner` subagent; post its task list as a comment on the tracking issue: `gh issue comment <n> --body-file plan.md`.
 3. Create one **issue per task** (label + milestone), each linked to the tracking issue.
-4. `git switch -c phase-N/<short-slug>`.
-5. Implement in small **Conventional Commits** (`feat:`, `fix:`, `test:`, `chore:`, `docs:`), each referencing an issue (`refs #12`).
-6. Run `test-writer`, then run everything locally: lint, typecheck, unit, db tests, build (and E2E when applicable). All green before pushing.
-7. `git push -u origin HEAD` and `gh pr create --draft --fill` with the PR template filled in, `Closes #…` for every task issue + the tracking issue, label `needs-review`, milestone set.
-8. Run `code-reviewer` (and `security-auditor` where Section 10 says so). Post the review on the PR with `gh pr review <n> --comment --body-file review.md` (GitHub doesn't allow approving your own PR, so use `--comment`).
+Steps 4–11 run **once per task issue**, in plan order, each from an up-to-date `main`:
+
+4. `git switch -c phase-N/<task-slug>`.
+5. Implement in small **Conventional Commits** (`feat:`, `fix:`, `test:`, `chore:`, `docs:`), each referencing the task issue (`refs #12`).
+6. Run `test-writer` for the task, then run everything locally: lint, typecheck, unit, db tests, build (and E2E when applicable). All green before pushing.
+7. `git push -u origin HEAD` and `gh pr create --draft --fill` with the PR template filled in, `Closes #<task>` (the phase's **last** PR also closes the tracking issue), label `needs-review`, milestone set.
+8. Run `code-reviewer` (and `security-auditor` where Section 10 says so) on the PR's diff. Post the review on the PR with `gh pr review <n> --comment --body-file review.md` (GitHub doesn't allow approving your own PR, so use `--comment`).
 9. Fix all **Blocking** and **Should fix** items in new commits; re-run the reviewer until there are no Blocking items; post the final review as another comment.
 10. `gh pr ready <n>`, then `gh pr checks <n> --watch` until CI is green.
-11. **Stop and ask the human**: "Phase N PR #<n> is ready and CI is green — merge?" Only after a yes: `gh pr merge <n> --squash --delete-branch`, `git switch main && git pull`.
-12. Tag: `git tag v0.N.0 && git push --tags`, and create a release with notes: `gh release create v0.N.0 --generate-notes`.
+11. **Stop and ask the human** before merging (unless they have given standing approval). Then `gh pr merge <n> --rebase --delete-branch`, `git switch main && git pull`. Rebase-merge keeps every Conventional Commit on `main`, which satisfies the linear-history rule.
+12. When the phase's last PR is merged, tag: `git tag v0.N.0 && git push --tags`, and create a release with notes: `gh release create v0.N.0 --generate-notes`.
 
 ### 11.3 Bugs found along the way
 Open a `type:bug` issue immediately with steps to reproduce; fix it in the current phase if it's in scope, otherwise assign it to the right milestone.
