@@ -52,7 +52,7 @@ function formatterFor(timeZone: string) {
 /**
  * The calendar date and weekday of `instant` in `timeZone`. An unknown
  * timezone falls back to UTC rather than throwing, because this only drives
- * labels.
+ * labels. An invalid Date still throws a RangeError (a caller bug).
  */
 export function localDate(instant: Date, timeZone: string): LocalDate {
   let parts: Intl.DateTimeFormatPart[];

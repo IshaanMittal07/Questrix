@@ -54,6 +54,17 @@ describe("cleanHabitText", () => {
   });
 });
 
+describe("NEL (U+0085), matched by Postgres \\s", () => {
+  const NEL = ch(0x85);
+  it("is trimmed at the ends like the database does", () => {
+    expect(cleanHabitText(`${NEL}Read${NEL}`)).toBe("Read");
+    expect(habitTitleSchema.parse(`${NEL}Read`)).toBe("Read");
+  });
+  it("is still a control character inside a title", () => {
+    expect(habitTitleSchema.safeParse(`Re${NEL}ad`).success).toBe(false);
+  });
+});
+
 describe("habitTitleSchema", () => {
   it("cleans before checking", () => {
     expect(habitTitleSchema.parse(`  Drink water${ZWSP} `)).toBe("Drink water");
@@ -212,6 +223,17 @@ describe("habitUpdateSchema", () => {
   it("rejects an empty update", () => {
     expect(habitUpdateSchema.safeParse({}).success).toBe(false);
   });
+  it("treats keys given as undefined as absent", () => {
+    expect(habitUpdateSchema.safeParse({ title: undefined }).success).toBe(
+      false,
+    );
+    expect(
+      habitUpdateSchema.safeParse({ description: undefined }).success,
+    ).toBe(false);
+    expect(
+      habitUpdateSchema.parse({ title: "Walk", icon: undefined }),
+    ).toStrictEqual({ title: "Walk" });
+  });
   it("cannot change server-owned fields or template_key", () => {
     for (const patch of [
       { sort_order: 3 },
@@ -237,5 +259,293 @@ describe("habitOrderSchema", () => {
       (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
     );
     expect(habitOrderSchema.safeParse(many).success).toBe(false);
+  });
+  it("accepts exactly 20 ids", () => {
+    const twenty = Array.from(
+      { length: 20 },
+      (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    );
+    expect(habitOrderSchema.parse(twenty)).toEqual(twenty);
+  });
+});
+
+const hex = (code: number) =>
+  `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+
+describe("cleanHabitText parity with habits_clean_text", () => {
+  // Both ends of every range the migration strips with chr().
+  it.each(
+    [
+      0xad, 0x061c, 0x180e, 0x200b, 0x200e, 0x200f, 0x202a, 0x202e, 0x2060,
+      0x2066, 0x2069, 0x206f, 0x3164, 0xfeff,
+    ].map((code) => [hex(code), code] as const),
+  )("strips %s inside text", (_, code) => {
+    expect(cleanHabitText(`a${ch(code)}b`)).toBe("ab");
+  });
+
+  // Neighbours just outside the ranges survive inside text (checked against
+  // habits_clean_text on the local database).
+  it.each(
+    [0xac, 0xae, 0x200a, 0x2010, 0x2029, 0x202f, 0x205f, 0x2070].map(
+      (code) => [hex(code), code] as const,
+    ),
+  )("keeps %s inside text", (_, code) => {
+    const s = `a${ch(code)}b`;
+    expect(cleanHabitText(s)).toBe(s);
+  });
+
+  it("trims Unicode spaces at the ends, like Postgres \\s", () => {
+    for (const code of [
+      0x0b, 0x0c, 0x1680, 0x2000, 0x2007, 0x200a, 0x2028, 0x2029, 0x202f,
+      0x205f, 0x3000,
+    ]) {
+      expect(cleanHabitText(`${ch(code)}a${ch(code)}`), hex(code)).toBe("a");
+    }
+  });
+
+  it("keeps ordinary spaces and newlines inside text", () => {
+    expect(cleanHabitText("  Line one\nLine  two ")).toBe(
+      "Line one\nLine  two",
+    );
+  });
+});
+
+describe("habitTitleSchema limits", () => {
+  it("accepts exactly 60 characters and checks length after cleaning", () => {
+    expect(habitTitleSchema.parse("a".repeat(60))).toHaveLength(60);
+    const padded = `  ${ZWSP}${"a".repeat(60)}${BOM}${NBSP} `;
+    expect(habitTitleSchema.parse(padded)).toBe("a".repeat(60));
+    expect(habitTitleSchema.safeParse(ch(0x1f4aa).repeat(61)).success).toBe(
+      false,
+    );
+  });
+
+  it("rejects C0 and C1 control characters like [[:cntrl:]]", () => {
+    for (const code of [0x01, 0x0a, 0x0d, 0x1f, 0x80, 0x85, 0x9f]) {
+      expect(
+        habitTitleSchema.safeParse(`a${ch(code)}b`).success,
+        hex(code),
+      ).toBe(false);
+    }
+  });
+
+  it("allows non-control separators and ZWJ inside the title", () => {
+    for (const code of [0x2028, 0x3000, 0x200d]) {
+      expect(
+        habitTitleSchema.safeParse(`a${ch(code)}b`).success,
+        hex(code),
+      ).toBe(true);
+    }
+  });
+
+  it("rejects non-strings", () => {
+    for (const t of [null, undefined, 42]) {
+      expect(habitTitleSchema.safeParse(t).success).toBe(false);
+    }
+  });
+});
+
+describe("habitDaysSchema shape", () => {
+  it("accepts all seven days and collapses duplicates of one day", () => {
+    expect(habitDaysSchema.parse([6, 5, 4, 3, 2, 1, 0])).toEqual([
+      0, 1, 2, 3, 4, 5, 6,
+    ]);
+    expect(habitDaysSchema.parse([3, 3, 3])).toEqual([3]);
+  });
+
+  it("rejects nested arrays, nulls and non-arrays", () => {
+    for (const d of [[[1, 2]], [null], [1, null], null, "1,2", 3]) {
+      expect(habitDaysSchema.safeParse(d).success).toBe(false);
+    }
+  });
+});
+
+describe("reminderTimesSchema edge input", () => {
+  it("rejects padding, trailing newlines, signs and non-ASCII digits", () => {
+    const fullWidth = (s: string) =>
+      [...s]
+        .map((c) => (c >= "0" && c <= "9" ? ch(0xff10 + Number(c)) : c))
+        .join("");
+    for (const t of [
+      " 07:30",
+      "07:30 ",
+      "07:30\n",
+      "-1:00",
+      "07.30",
+      "0730",
+      fullWidth("07:30"),
+      `${ch(0x0660, 0x0667)}:30`, // Arabic-Indic digits
+    ]) {
+      expect(reminderTimesSchema.safeParse([t]).success, t).toBe(false);
+    }
+  });
+
+  it("accepts an empty list", () => {
+    expect(reminderTimesSchema.parse([])).toEqual([]);
+  });
+});
+
+describe("habitCreateSchema output", () => {
+  it("adds only the columns that have database defaults", () => {
+    expect(
+      habitCreateSchema.parse({ title: "Read", category: "learning" }),
+    ).toStrictEqual({
+      title: "Read",
+      category: "learning",
+      difficulty: "medium",
+      days_of_week: [0, 1, 2, 3, 4, 5, 6],
+      target_per_day: 1,
+      reminder_times: [],
+      reminders_enabled: true,
+    });
+  });
+
+  it("does not share default arrays between parses", () => {
+    const first = habitCreateSchema.parse({ title: "A", category: "mind" });
+    first.days_of_week.pop();
+    first.reminder_times.push("07:00");
+    const second = habitCreateSchema.parse({ title: "B", category: "mind" });
+    expect(second.days_of_week).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(second.reminder_times).toEqual([]);
+  });
+
+  it("keeps explicit falsy values instead of applying defaults", () => {
+    const out = habitCreateSchema.parse({
+      title: "Read",
+      category: "learning",
+      reminders_enabled: false,
+      color: null,
+    });
+    expect(out.reminders_enabled).toBe(false);
+    expect(out.color).toBeNull();
+  });
+
+  it("requires title and category", () => {
+    expect(habitCreateSchema.safeParse({ category: "learning" }).success).toBe(
+      false,
+    );
+    expect(habitCreateSchema.safeParse({ title: "Read" }).success).toBe(false);
+    expect(
+      habitCreateSchema.safeParse({ title: "   ", category: "learning" })
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts every SQL colour token", () => {
+    for (const color of ["cyan", "violet", "magenta", "success", "warning"]) {
+      expect(
+        habitCreateSchema.safeParse({ title: "R", category: "mind", color })
+          .success,
+      ).toBe(true);
+    }
+  });
+
+  it("accepts the upper bound of each limit, counted in code points", () => {
+    const out = habitCreateSchema.parse({
+      title: "R",
+      category: "mind",
+      description: ch(0x1f4aa).repeat(280),
+      icon: ch(0x1f4aa).repeat(32),
+      target_per_day: 5,
+      template_key: "a".repeat(40),
+    });
+    expect([...(out.description ?? "")]).toHaveLength(280);
+    expect([...(out.icon ?? "")]).toHaveLength(32);
+    expect(out.target_per_day).toBe(5);
+  });
+
+  it("measures description length after cleaning", () => {
+    const out = habitCreateSchema.parse({
+      title: "R",
+      category: "mind",
+      description: `  ${"x".repeat(280)}${ZWSP}${ZWSP}  `,
+    });
+    expect(out.description).toBe("x".repeat(280));
+  });
+
+  it("allows newlines inside the description (no control CHECK there)", () => {
+    const out = habitCreateSchema.parse({
+      title: "R",
+      category: "mind",
+      description: "Line one\nLine two\n",
+    });
+    expect(out.description).toBe("Line one\nLine two");
+  });
+
+  it.each([
+    ["color", "Cyan"],
+    ["difficulty", null],
+    ["category", null],
+    ["target_per_day", "2"],
+    ["reminders_enabled", "true"],
+    ["reminder_times", null],
+    ["days_of_week", null],
+    ["template_key", ""],
+    ["template_key", null],
+    ["description", 42],
+  ])("rejects %s = %j", (key, value) => {
+    expect(
+      habitCreateSchema.safeParse({
+        title: "Read",
+        category: "learning",
+        [key]: value,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("habitUpdateSchema output", () => {
+  it("does not add a description or icon key when they are absent", () => {
+    const out = habitUpdateSchema.parse({ title: "Walk" });
+    expect("description" in out).toBe(false);
+    expect("icon" in out).toBe(false);
+    expect(out).toStrictEqual({ title: "Walk" });
+  });
+
+  it("applies no create defaults", () => {
+    expect(habitUpdateSchema.parse({ category: "mind" })).toStrictEqual({
+      category: "mind",
+    });
+  });
+
+  it("normalises blank icon to null and cleans description", () => {
+    expect(habitUpdateSchema.parse({ icon: `  ${ZWSP}` })).toStrictEqual({
+      icon: null,
+    });
+    expect(
+      habitUpdateSchema.parse({ description: ` Hi${ZWSP} ` }),
+    ).toStrictEqual({ description: "Hi" });
+  });
+
+  it("normalises days and reminder times", () => {
+    expect(
+      habitUpdateSchema.parse({
+        days_of_week: [5, 1, 5],
+        reminder_times: ["21:00", "07:00", "21:00"],
+      }),
+    ).toStrictEqual({
+      days_of_week: [1, 5],
+      reminder_times: ["07:00", "21:00"],
+    });
+  });
+
+  it("can clear colour and turn reminders off", () => {
+    expect(
+      habitUpdateSchema.parse({ color: null, reminders_enabled: false }),
+    ).toStrictEqual({ color: null, reminders_enabled: false });
+  });
+
+  it("validates the fields it is given", () => {
+    for (const patch of [
+      { title: "" },
+      { title: null },
+      { days_of_week: [] },
+      { target_per_day: 6 },
+      { reminder_times: ["24:00"] },
+      { description: "x".repeat(281) },
+      { category: null },
+    ]) {
+      expect(habitUpdateSchema.safeParse(patch).success).toBe(false);
+    }
   });
 });
