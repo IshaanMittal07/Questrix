@@ -1,7 +1,7 @@
 -- Phase 3: habits — RLS, column privileges, checks, 20-active cap, RPCs.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(95);
+select plan(99);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -50,6 +50,8 @@ select function_privs_are('public', 'unarchive_habit', array['uuid'], 'anon', ar
   'anon cannot execute unarchive_habit');
 select ok(not has_function_privilege('authenticated', 'public.habits_lock(uuid)', 'execute'),
   'clients cannot take the habits lock directly');
+select ok(not has_function_privilege('service_role', 'public.habits_lock(uuid)', 'execute'),
+  'the habits lock is internal to the owner''s functions');
 select has_index('public', 'habits', 'habits_user_active_idx', array['user_id', 'sort_order'],
   'active habits are indexed by user and position');
 select has_index('public', 'habits', 'habits_user_idx', array['user_id'],
@@ -190,21 +192,28 @@ select throws_ok($$insert into public.habits (title, category, template_key) val
 update public.habits set icon = '  ', description = E' \n' where template_key = 'floss';
 select is((select icon is null and description is null from public.habits where template_key = 'floss'),
   true, 'blank icons and descriptions are stored as null');
-update public.habits set title = E' ​Floss‮ ' where template_key = 'floss';
+update public.habits set title = U&'\00A0\200BFlo\2066ss\2069\202E\00AD\00A0' where template_key = 'floss';
 select is((select title from public.habits where template_key = 'floss'), 'Floss',
-  'zero-width, bidi and no-break characters are stripped from titles');
-select throws_ok($$insert into public.habits (title, category) values (E'​​', 'mind')$$,
-  '23514', null, 'a title of only zero-width characters is rejected');
+  'zero-width, bidi (incl. isolates), soft-hyphen and no-break characters are stripped from titles');
+select throws_ok($$insert into public.habits (title, category) values (U&'\200B\2067\FEFF', 'mind')$$,
+  '23514', null, 'a title of only invisible characters is rejected');
+update public.habits set description = U&'\200B\2066', icon = E'\n' where template_key = 'floss';
+select is((select description is null and icon is null from public.habits where template_key = 'floss'),
+  true, 'descriptions and icons get the same invisible-character cleaning');
 select throws_ok($$insert into public.habits (title, category) values (E'a\nb', 'mind')$$,
   '23514', null, 'control characters inside a title are rejected');
 select throws_ok($$insert into public.habits (title, category, reminder_times) values ('x', 'mind', '{24:00}')$$,
   '23514', null, '24:00 is rejected rather than wrapped to midnight');
 select throws_ok($$insert into public.habits (title, category, reminder_times) values ('x', 'mind', null)$$,
   '23502', null, 'a null reminder_times list is a NOT NULL error, not silently emptied');
+select throws_ok($$update public.habits set sort_order = 10000 where template_key = 'floss'$$,
+  '42501', null, 'clients cannot set sort_order directly (use reorder_habits)');
+select pg_temp.as_postgres();
 select throws_ok($$update public.habits set sort_order = 10001 where template_key = 'floss'$$,
   '23514', null, 'sort_order above 10000 is rejected');
 select throws_ok($$update public.habits set sort_order = -1 where template_key = 'floss'$$,
   '23514', null, 'negative sort_order is rejected');
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
 select throws_ok($$insert into public.habits (title, category, icon) values ('x', 'mind', repeat('i', 33))$$,
   '23514', null, 'an icon over 32 characters is rejected');
 
@@ -225,7 +234,7 @@ select throws_ok(
   $$insert into public.habits (title, category) values ('one too many', 'mind')$$,
   '23514', 'You can have at most 20 active habits', 'the 21st active habit is rejected');
 select lives_ok(
-  $$update public.habits set title = 'Meditate 20 min', sort_order = 7
+  $$update public.habits set title = 'Meditate 20 min'
     where id = 'aaaaaaaa-0000-0000-0000-000000000001'$$,
   'editing an active habit at the cap is not blocked by the cap');
 
@@ -333,19 +342,28 @@ select pg_temp.as_user('33333333-3333-3333-3333-333333333333');
 select lives_ok($$insert into public.habits (title, category) values ('thirtieth', 'mind')$$,
   'the 30th habit created in a day is accepted');
 select throws_ok($$insert into public.habits (title, category) values ('thirty-first', 'mind')$$,
-  '23514', 'You can create at most 30 habits a day', 'the 31st habit created in a day is rejected');
+  'QX001', 'You can create at most 30 habits a day', 'the 31st habit created in a day is rejected');
 
--- Age Carol's habits past the 24-hour window and bring her to 200 in total.
+-- Age Carol's habits past the 24-hour window but inside 30 days, and bring
+-- her to 100 created in 30 days.
 select pg_temp.as_postgres();
 update public.habits set created_at = now() - interval '2 days'
   where user_id = '33333333-3333-3333-3333-333333333333';
 insert into public.habits (user_id, title, category, archived_at, created_at)
   select '33333333-3333-3333-3333-333333333333', 'Older ' || g, 'other', now(), now() - interval '2 days'
-  from generate_series(1, 170) as g;
+  from generate_series(1, 70) as g;
 select pg_temp.as_user('33333333-3333-3333-3333-333333333333');
-select throws_ok($$insert into public.habits (title, category) values ('two hundred and one', 'mind')$$,
-  '23514', 'You can have at most 200 habits, including archived ones',
-  'a user cannot exceed 200 habits in total');
+select throws_ok($$insert into public.habits (title, category) values ('hundred and first', 'mind')$$,
+  'QX001', 'You can create at most 100 habits in 30 days',
+  'a user cannot create more than 100 habits in 30 days');
+
+-- Once they age out of the window, creating works again: no permanent lockout.
+select pg_temp.as_postgres();
+update public.habits set created_at = now() - interval '31 days'
+  where user_id = '33333333-3333-3333-3333-333333333333';
+select pg_temp.as_user('33333333-3333-3333-3333-333333333333');
+select lives_ok($$insert into public.habits (title, category) values ('fresh start', 'mind')$$,
+  'old habits age out of the creation windows');
 
 -- ── Account deletion cascades ───────────────────────────────────────────────
 select pg_temp.as_postgres();
