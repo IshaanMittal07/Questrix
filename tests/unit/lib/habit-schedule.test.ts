@@ -188,7 +188,90 @@ describe("describeDays", () => {
     [[0, 1], "Mon, Sun"],
     [[1, 1, 2], "Mon, Tue"],
     [[2], "Tue"],
-  ])("%j -> %s", (days, label) => {
+    // Near-misses of the named sets fall back to the list.
+    [[1, 2, 3, 4, 5, 6], "Mon, Tue, Wed, Thu, Fri, Sat"],
+    [[0, 1, 2, 3, 4], "Mon, Tue, Wed, Thu, Sun"],
+    [[1, 2, 3, 4, 5, 6, 6], "Mon, Tue, Wed, Thu, Fri, Sat"],
+    [[0, 0, 6, 6], "Weekends"],
+    [[0], "Sun"],
+    // Out-of-range entries are ignored rather than counted toward a set.
+    [[1, 2, 3, 4, 5, 7], "Weekdays"],
+    [[0, 1, 2, 3, 4, 5, 7], "Mon, Tue, Wed, Thu, Fri, Sun"],
+    [[-1, 6], "Sat"],
+    [[], ""],
+  ])("%j -> %j", (days, label) => {
     expect(describeDays(days)).toBe(label);
+  });
+});
+
+describe("localDate edge input", () => {
+  it("falls back to UTC for an empty timezone, every time", () => {
+    const instant = at("2026-11-16T23:30:00Z");
+    for (let i = 0; i < 2; i++) {
+      expect(localDate(instant, "")).toEqual({
+        key: "2026-11-16",
+        weekday: 1,
+      });
+    }
+  });
+
+  it("zero-pads month and day", () => {
+    expect(localDate(at("2026-01-05T12:00:00Z"), "UTC")).toEqual({
+      key: "2026-01-05",
+      weekday: 1,
+    });
+  });
+
+  it("does not reuse one zone's cached formatter for another", () => {
+    const instant = at("2026-11-16T10:30:00Z");
+    expect(localDate(instant, "Pacific/Kiritimati").weekday).toBe(2);
+    expect(localDate(instant, "Pacific/Pago_Pago").weekday).toBe(0);
+    expect(localDate(instant, "Pacific/Kiritimati").weekday).toBe(2);
+  });
+
+  describe("America/Santiago, where DST switches at local midnight", () => {
+    const tz = "America/Santiago";
+    it("the day after the spring-forward starts at 01:00 (Sun 2026-09-06)", () => {
+      expect(localDate(at("2026-09-06T03:59:59Z"), tz)).toEqual({
+        key: "2026-09-05",
+        weekday: 6,
+      });
+      expect(localDate(at("2026-09-06T04:00:00Z"), tz)).toEqual({
+        key: "2026-09-06",
+        weekday: 0,
+      });
+    });
+    it("the repeated 23:00 hour stays Saturday (fall back, 2026-04-05)", () => {
+      // 00:00 -03 becomes 23:00 -04 on Saturday again.
+      expect(localDate(at("2026-04-05T02:59:59Z"), tz).key).toBe("2026-04-04");
+      expect(localDate(at("2026-04-05T03:30:00Z"), tz)).toEqual({
+        key: "2026-04-04",
+        weekday: 6,
+      });
+      expect(localDate(at("2026-04-05T04:00:00Z"), tz)).toEqual({
+        key: "2026-04-05",
+        weekday: 0,
+      });
+    });
+  });
+});
+
+describe("daysUntilNext week wrap", () => {
+  it("wraps all the way round to the day before today", () => {
+    // Today is Sunday; only Saturday is scheduled: six days away.
+    expect(daysUntilNext([6], 0)).toBe(6);
+    // Scheduled only the day before today: the longest gap.
+    expect(daysUntilNext([2], 3)).toBe(6);
+  });
+  it("ignores out-of-range entries next to valid ones", () => {
+    expect(daysUntilNext([7, 8, 1], 6)).toBe(2);
+    expect(daysUntilNext([-1, 3], 4)).toBe(6);
+  });
+  it("is 0 on every weekday for an every-day habit", () => {
+    for (let w = 0; w <= 6; w++) {
+      expect(
+        daysUntilNext([0, 1, 2, 3, 4, 5, 6], w as 0 | 1 | 2 | 3 | 4 | 5 | 6),
+      ).toBe(0);
+    }
   });
 });

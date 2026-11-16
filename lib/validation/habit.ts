@@ -43,8 +43,9 @@ const STRIP_RANGES: ReadonlyArray<readonly [number, number]> = [
   [12644, 12644],
   [65279, 65279],
 ];
-// ZWNJ/ZWJ join emoji and Persian/Indic text, so they are only trimmed at the ends.
-const EDGE_ONLY = [8204, 8205];
+// Only trimmed at the ends: ZWNJ/ZWJ join emoji and Persian/Indic text, and
+// NEL (U+0085) is matched by Postgres \s but not by JS \s.
+const EDGE_ONLY = [133, 8204, 8205];
 
 const cp = (n: number) => `\\u{${n.toString(16)}}`;
 const STRIP_RE = new RegExp(
@@ -127,7 +128,11 @@ const editableFields = {
   reminders_enabled: z.boolean(),
 };
 
-/** Insert payload. Never use it with upsert: that needs UPDATE on every column. */
+/**
+ * Insert payload. Send the parsed output, never the raw input: the trigger
+ * checks array sizes before de-duplicating. Never use it with upsert: that
+ * needs UPDATE on every column.
+ */
 export const habitCreateSchema = z.strictObject({
   ...editableFields,
   difficulty: editableFields.difficulty.default("medium"),
@@ -143,10 +148,19 @@ export const habitCreateSchema = z.strictObject({
     .optional(),
 });
 
-/** Update payload: any subset of the editable fields, at least one. */
+/**
+ * Update payload: any subset of the editable fields, at least one. Keys given
+ * as undefined are dropped (JSON would drop them anyway), so they don't count.
+ */
 export const habitUpdateSchema = z
   .strictObject(editableFields)
   .partial()
+  .transform(
+    (v) =>
+      Object.fromEntries(
+        Object.entries(v).filter(([, x]) => x !== undefined),
+      ) as typeof v,
+  )
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
 export const habitIdSchema = z.uuid();
