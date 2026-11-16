@@ -120,7 +120,7 @@ Requirements:
 | Styling | **Tailwind CSS (latest)** + CSS variables from 2.2 + `clsx` | Fast, consistent design tokens. |
 | UI primitives | **Radix UI** primitives (dialog, dropdown, tabs, toast) | Accessible by default. |
 | Backend / DB | **Supabase**: Postgres, Auth, Row Level Security, Realtime, Storage | Managed Postgres that scales; RLS gives per-user security with no custom auth server. |
-| Data fetching | **TanStack Query** on the client, Supabase server client in Server Components / Route Handlers (`@supabase/ssr`) | Caching, optimistic updates. |
+| Data fetching | **TanStack Query** on the client, Supabase server client in Server Components / Route Handlers (`@supabase/ssr`) — _deferred: Phase 3 uses Server Components + Server Actions + `useOptimistic`; see DECISIONS § Phase 3_ | Caching, optimistic updates. |
 | Validation | **Zod** for every form and API input | One schema for client + server. |
 | Push | **Web Push (VAPID)** via the `web-push` npm package in a Node.js route handler | Works on iOS 16.4+ for Home-Screen-installed PWAs, Android and desktop. |
 | Scheduler | **Supabase `pg_cron` + `pg_net`** calling `POST /api/cron/reminders` every minute with a bearer secret | Minute-level reminders without paying for a higher Vercel cron tier. |
@@ -520,7 +520,7 @@ Shown on the **Add Habit** screen as a "Suggested for you" carousel plus inline 
 
 ## 9. Screens & UX (mobile-first, then responsive up to desktop)
 
-- **Onboarding** (3 steps): pick username + avatar base → pick 3 starter habits from templates (with suggestions) → enable notifications (with the iOS install sheet when needed).
+- **Onboarding** (3 steps): pick username + avatar base → pick up to 3 starter habits from templates (with suggestions; skippable) → enable notifications (with the iOS install sheet when needed).
 - **Today**: greeting + level/XP ring + streak flame with count + points balance; list of today's habits as big tappable cards (tap = complete; progress pips for multi-per-day; long-press/⋯ = undo within 15 min). Completing shows a "+20 ×1.12" floating number, haptic (`navigator.vibrate` where supported; iOS Safari ignores it — fine), and a confetti burst on milestones.
 - **Habits**: manage list, drag-to-reorder, archive, edit; Add Habit (templates, suggestions, form).
 - **Feed**: Following / Everyone tabs, compose post with "attach my weekly summary" toggle, likes, comments, report, block.
@@ -640,7 +640,7 @@ Each phase lists **Deliverables** and **Acceptance criteria** (copy them into th
 - Acceptance: pgTAP tests prove a user can't update another profile or their own `points_balance`; E2E: sign up → pick username → land on Today; `security-auditor` run with no Critical/High findings.
 
 ### Phase 3 — Habits, templates, suggestions · `v0.3.0`
-- Deliverables: `habits` table + RLS + 20-habit cap; CRUD UI (create/edit/archive/reorder); template library (8.1) and suggestion engine + coaching hints (8.2); onboarding step 2 (pick 3 starter habits); `lib/habits/schedule.ts` (is-scheduled-today in user tz).
+- Deliverables: `habits` table + RLS + 20-habit cap; CRUD UI (create/edit/archive/reorder); template library (8.1) and suggestion engine + coaching hints (8.2); onboarding step 2 (pick up to 3 starter habits, skippable); `lib/habits/schedule.ts` (is-scheduled-today in user tz — display only; SQL in Phase 4 `get_today`/`complete_habit` is authoritative). Suggestion-engine details (active vs archived, slot bucketing, tie-break, fuzzy ratio) are pinned in DECISIONS § Phase 3.
 - Acceptance: unit tests for every suggestion rule and coaching hint; schedule tests including DST transitions (e.g., America/Toronto in March and November) and a UTC+13 timezone; E2E creates a habit from a template on an iPhone viewport; Playwright CI job enabled.
 
 ### Phase 4 — Completions, points, streaks (the game engine) · `v0.4.0`
