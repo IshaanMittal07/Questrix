@@ -1,7 +1,7 @@
 -- Phase 3: habits — RLS, column privileges, checks, 20-active cap, RPCs.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(51);
+select plan(75);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -13,6 +13,12 @@ create function pg_temp.as_anon() returns void language plpgsql as $$
 begin
   perform set_config('role', 'anon', true);
   perform set_config('request.jwt.claims', json_build_object('role', 'anon')::text, true);
+end $$;
+-- Authenticated role but no `sub` claim, so auth.uid() is null.
+create function pg_temp.as_no_sub() returns void language plpgsql as $$
+begin
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims', json_build_object('role', 'authenticated')::text, true);
 end $$;
 create function pg_temp.as_postgres() returns void language plpgsql as $$
 begin
@@ -37,13 +43,23 @@ select ok((select relrowsecurity from pg_class where oid = 'public.habits'::regc
   'RLS is enabled on habits');
 select ok(not has_function_privilege('authenticated', 'public.habits_before_write()', 'execute'),
   'clients cannot call the trigger function');
+select function_privs_are('public', 'unarchive_habit', array['uuid'], 'anon', array[]::text[],
+  'anon cannot execute unarchive_habit');
+select function_privs_are('public', 'reorder_habits', array['uuid[]'], 'anon', array[]::text[],
+  'anon cannot execute reorder_habits');
+select function_privs_are('public', 'archive_habit', array['uuid'], 'authenticated', array['EXECUTE'],
+  'authenticated can execute archive_habit');
+select function_privs_are('public', 'unarchive_habit', array['uuid'], 'authenticated', array['EXECUTE'],
+  'authenticated can execute unarchive_habit');
+select function_privs_are('public', 'reorder_habits', array['uuid[]'], 'authenticated', array['EXECUTE'],
+  'authenticated can execute reorder_habits');
 
 -- ── Owner access ────────────────────────────────────────────────────────────
 select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
 
 select lives_ok(
   $$insert into public.habits (title, category, days_of_week, reminder_times, template_key)
-    values ('  Floss  ', 'self_care', '{3,1,1,5}', '{22:00:30,07:15,22:00}', 'floss')$$,
+    values (E'\t Floss \n', 'self_care', '{3,1,1,5}', '{22:00:30,07:15,22:00}', 'floss')$$,
   'a user can create a habit');
 select is((select user_id from public.habits where template_key = 'floss'),
   '11111111-1111-1111-1111-111111111111'::uuid, 'user_id defaults to the signed-in user');
@@ -53,6 +69,10 @@ select is((select days_of_week from public.habits where template_key = 'floss'),
   '{1,3,5}'::smallint[], 'days are sorted and de-duplicated');
 select is((select reminder_times from public.habits where template_key = 'floss'),
   '{07:15,22:00}'::time[], 'reminder times are truncated to the minute, sorted and de-duplicated');
+select is((select difficulty::text from public.habits where template_key = 'floss'),
+  'medium', 'difficulty defaults to medium');
+select is((select reminders_enabled from public.habits where template_key = 'floss'),
+  true, 'reminders_enabled defaults to true');
 select is((select count(*)::int from public.habits), 3,
   'a user sees only their own habits');
 
@@ -92,6 +112,20 @@ select throws_ok(
   $$delete from public.habits where id = 'aaaaaaaa-0000-0000-0000-000000000002'$$,
   '42501', null, 'clients cannot delete habits (archive instead)');
 
+-- The update policy's WITH CHECK is defence in depth behind the column grants:
+-- grant update (user_id) for this test only and check RLS still blocks the move.
+select pg_temp.as_postgres();
+grant update (user_id) on public.habits to authenticated;
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select throws_ok(
+  $$update public.habits set user_id = '22222222-2222-2222-2222-222222222222'
+    where id = 'aaaaaaaa-0000-0000-0000-000000000002'$$,
+  '42501', 'new row violates row-level security policy for table "habits"',
+  'the update policy''s WITH CHECK blocks moving a habit to another user');
+select pg_temp.as_postgres();
+revoke update (user_id) on public.habits from authenticated;
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+
 select pg_temp.as_anon();
 select throws_ok($$select count(*) from public.habits$$, '42501', null,
   'anon cannot read habits');
@@ -102,6 +136,16 @@ select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
 -- ── Check constraints ───────────────────────────────────────────────────────
 select throws_ok($$insert into public.habits (title, category) values ('   ', 'mind')$$,
   '23514', null, 'a blank title is rejected');
+select throws_ok($$insert into public.habits (title, category) values (E'\t\n ', 'mind')$$,
+  '23514', null, 'a title of only tabs and newlines is rejected');
+select throws_ok($$insert into public.habits (title, category, days_of_week)
+    values ('x', 'mind', '{{1,2},{3,4}}')$$,
+  '23514', 'days_of_week and reminder_times must be flat lists',
+  'nested day arrays are rejected, not flattened');
+select throws_ok($$insert into public.habits (title, category, reminder_times)
+    values ('x', 'mind', '{{07:00,08:00}}')$$,
+  '23514', 'days_of_week and reminder_times must be flat lists',
+  'nested reminder-time arrays are rejected, not flattened');
 select throws_ok($$insert into public.habits (title, category) values (repeat('x', 61), 'mind')$$,
   '23514', null, 'a title over 60 characters is rejected');
 select lives_ok($$insert into public.habits (title, category, template_key)
@@ -127,6 +171,10 @@ select throws_ok($$insert into public.habits (title, category, color) values ('x
   '23514', null, 'colours must be a design token name');
 select throws_ok($$insert into public.habits (title, category, template_key) values ('x', 'mind', 'Bad Key!')$$,
   '23514', null, 'template keys must be lowercase slugs');
+select throws_ok($$insert into public.habits (title, category, icon) values ('x', 'mind', '')$$,
+  '23514', null, 'an empty icon is rejected');
+select throws_ok($$insert into public.habits (title, category, icon) values ('x', 'mind', repeat('i', 33))$$,
+  '23514', null, 'an icon over 32 characters is rejected');
 
 -- ── 20-active cap ───────────────────────────────────────────────────────────
 -- Alice has 4 active habits (a1, a2, floss, len60). Fill up to 20.
@@ -139,6 +187,10 @@ select is((select count(*)::int from public.habits where archived_at is null), 2
 select throws_ok(
   $$insert into public.habits (title, category) values ('one too many', 'mind')$$,
   '23514', 'You can have at most 20 active habits', 'the 21st active habit is rejected');
+select lives_ok(
+  $$update public.habits set title = 'Meditate 20 min', sort_order = 7
+    where id = 'aaaaaaaa-0000-0000-0000-000000000001'$$,
+  'editing an active habit at the cap is not blocked by the cap');
 
 -- ── archive / unarchive ─────────────────────────────────────────────────────
 select lives_ok($$select public.archive_habit('aaaaaaaa-0000-0000-0000-000000000002')$$,
@@ -154,6 +206,21 @@ select is((select archived_at from public.habits where id = 'aaaaaaaa-0000-0000-
 
 select lives_ok($$insert into public.habits (title, category, template_key) values ('slot freed', 'mind', 'freed')$$,
   'archiving frees a slot under the cap');
+
+-- Alice is back at 20 active with a2 archived.
+select lives_ok(
+  $$update public.habits set title = 'Workout (old)', target_per_day = 3
+    where id = 'aaaaaaaa-0000-0000-0000-000000000002'$$,
+  'an archived habit can be edited at the cap');
+select isnt((select archived_at from public.habits where id = 'aaaaaaaa-0000-0000-0000-000000000002'),
+  null, 'editing an archived habit leaves it archived');
+
+create temp table a1_sort_before as
+  select sort_order from public.habits where id = 'aaaaaaaa-0000-0000-0000-000000000001';
+select lives_ok($$select public.unarchive_habit('aaaaaaaa-0000-0000-0000-000000000001')$$,
+  'unarchiving an already-active habit at the cap is a no-op, not a cap error');
+select is((select sort_order from public.habits where id = 'aaaaaaaa-0000-0000-0000-000000000001'),
+  (select sort_order from a1_sort_before), 'unarchiving an active habit keeps its position');
 select throws_ok($$select public.unarchive_habit('aaaaaaaa-0000-0000-0000-000000000002')$$,
   '23514', 'You can have at most 20 active habits', 'unarchiving is blocked at the cap');
 
@@ -194,6 +261,24 @@ select throws_ok(
 select throws_ok(
   $$select public.reorder_habits((select ids[2:] || array(select id from public.habits where template_key = 'freed') from alice_order))$$,
   '22023', null, 'a reorder including an archived habit is rejected');
+select throws_ok($$select public.reorder_habits(null)$$,
+  '22023', null, 'a null reorder is rejected');
+select throws_ok($$select public.reorder_habits('{}'::uuid[])$$,
+  '22023', null, 'an empty reorder is rejected when there are active habits');
+
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+select public.archive_habit('bbbbbbbb-0000-0000-0000-000000000001');
+select lives_ok($$select public.reorder_habits('{}'::uuid[])$$,
+  'an empty reorder is accepted when there are no active habits');
+
+-- ── Signed out (no sub claim) ───────────────────────────────────────────────
+select pg_temp.as_no_sub();
+select throws_ok($$select public.archive_habit('aaaaaaaa-0000-0000-0000-000000000001')$$,
+  '28000', 'Not signed in', 'archive_habit requires a signed-in user');
+select throws_ok($$select public.unarchive_habit('aaaaaaaa-0000-0000-0000-000000000002')$$,
+  '28000', 'Not signed in', 'unarchive_habit requires a signed-in user');
+select throws_ok($$select public.reorder_habits('{}'::uuid[])$$,
+  '28000', 'Not signed in', 'reorder_habits requires a signed-in user');
 
 -- ── Account deletion cascades ───────────────────────────────────────────────
 select pg_temp.as_postgres();
