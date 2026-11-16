@@ -56,14 +56,16 @@ export function safeNextPath(
   }
 }
 
-/** The device's IANA timezone in canonical form, or UTC if it's unusable. */
+/**
+ * The device's IANA timezone as the device reports it, or UTC if it's unusable.
+ * Not re-resolved: some ICU builds "canonicalise" Asia/Kolkata to the legacy
+ * Asia/Calcutta, which would surprise users (Postgres accepts both anyway).
+ */
 export function deviceTimezone() {
   try {
     const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
     if (tz && isValidTimezone(tz) && !tz.startsWith("Etc/Unknown")) {
-      return new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-      }).resolvedOptions().timeZone;
+      return tz;
     }
   } catch {
     // fall through
