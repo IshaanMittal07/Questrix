@@ -107,7 +107,7 @@ A running log of choices made where the plan was ambiguous or where current tool
 - **Habits schema (#43):**
   - **Colours** are the five accent tokens: `cyan`, `violet`, `magenta`, `success` and `warning`. They're stored by name, never as hex, so a theme change carries over.
   - **Normalisation happens in the BEFORE trigger,** so two clients can't store the same thing two ways. The trigger:
-    - strips zero-width and bidi-control characters from titles, then trims all leading and trailing whitespace, including no-break spaces;
+    - runs titles, descriptions and icons through `habits_clean_text`. It strips characters that render as nothing or reorder text (soft hyphen, the Arabic letter mark, zero-width characters, bidi embeddings, overrides and isolates U+2066–2069, the Hangul filler and the BOM), then trims all whitespace, including no-break spaces. The function builds its character class with `chr()`, so the migration source stays ASCII and reviewable;
     - stores a blank `description` or `icon` as null;
     - sorts and de-duplicates `days_of_week`;
     - truncates `reminder_times` to the minute, then sorts and de-duplicates them.
@@ -117,13 +117,18 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **`template_key`** must be a lowercase slug (`^[a-z0-9_]{1,40}$`), so the column can't hold free text.
   - **One per-user lock.** `habits_lock(uid)` is a transaction advisory lock on `hashtextextended('qx.habits.<uid>')`. Every write that depends on the user's set of habits takes it first: insert, archive, unarchive and reorder. Counts and positions are therefore computed against a stable set. It relies on READ COMMITTED, which PostgREST uses: a later caller running under REPEATABLE READ would see a stale count.
   - **The 20-active cap** is enforced in the trigger on insert and on unarchive. A multi-row insert that crosses it is rejected as a whole. pgTAP runs in one transaction, so it can't exercise concurrency. It was checked by hand with two sessions: the second blocked until the first committed, then failed, leaving 20 active habits with distinct positions.
-  - **Creation limits.** Without these, archive-and-recreate churn would be unbounded:
-    - at most 30 habits created per rolling 24 hours;
-    - at most 200 habits in total, archived ones included.
+  - **Creation limits.** Rolling windows bound archive-and-recreate churn without locking anyone out for good. A lifetime total was rejected for that reason: habits can't be deleted.
+    - At most 30 habits created per 24 hours.
+    - At most 100 habits created per 30 days.
 
-    Both are checked in the insert branch of the trigger, under the lock. They should move to `economy_config` when Phase 4 adds it.
+    Both are checked in the insert branch of the trigger, under the lock. They raise `QX001` with a hint, so the UI can tell a rate limit apart from invalid input (`23514`). They should move to `economy_config` when Phase 4 adds it.
 
-  - **`sort_order` is owned by the server on insert.** This deviates from plan §5.2, which granted it on insert. New habits go to the end of the active list, and so do unarchived ones. `sort_order` is bounded to 0..10000. Clients may still update it, but the UI should use `reorder_habits(p_habit_ids uuid[])`, which was added beyond plan §6.4. That RPC must list every active habit exactly once (at most 20, flat), and it writes 0-based positions in one statement. List queries order by `sort_order, created_at, id`.
+  - **`sort_order` is owned entirely by the server.** This deviates from plan §5.2, which granted it to clients on both insert and update.
+    - New and unarchived habits go to the end of the active list.
+    - The only way to reorder is `reorder_habits(p_habit_ids uuid[])`, which was added beyond plan §6.4. It must list every active habit exactly once (at most 20, flat), and it writes 0-based positions in one statement.
+    - `sort_order` is bounded 0..10000 as a backstop.
+    - List queries order by `sort_order, created_at, id`.
+    - The generated `Insert` type still lists `sort_order`, because generated types ignore column grants. Phase 3 client code inserts through a Zod schema that omits it, and avoids PostgREST upserts, which need UPDATE on every column in the payload.
   - **`archive_habit` and `unarchive_habit` are idempotent.** They raise `P0002 Habit not found` for a habit that isn't yours, so another user's habit ids can't be probed.
   - **Indexes.** Plan §5.2 had only `(user_id) where archived_at is null`. This uses:
     - `(user_id, sort_order) where archived_at is null`, for the active list and `get_today` ordering;
@@ -134,6 +139,9 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **Snapshot before schedule edits.** Clients can edit `days_of_week` or archive habits directly, so a user who skipped day D could remove D's weekday before D is snapshotted, turning a miss into a rest day. Any INSERT, `days_of_week` change, archive or unarchive must first call `ensure_daily_schedule(user, local_today)`. That call also fills missing past days, up to 7. Edits then only affect days not yet snapshotted.
   - **Archive-and-recreate must not farm points.** The 20-active cap is not a points ceiling: complete a habit, archive it, create a new one, complete that. The creation limits above bound this, but `complete_habit` must also refuse habits created after that day's `daily_schedule` snapshot, or there must be a daily cap on completion points.
   - **Read the habit under lock.** `complete_habit` reads `target_per_day`, `difficulty` and `archived_at` under a row lock (`for share`, after the profile lock), never from client-cached values.
+  - **Mid-day edits.** `difficulty` and `target_per_day` can be edited mid-day. Either snapshot them into that day's `daily_schedule` with `days_of_week`, or cap daily completion points.
+  - **Lock order.** Take the profile lock, then `habits_lock`, then row locks. The trigger will call `ensure_daily_schedule`, which likely takes the profile lock while `habits_lock` is held, so `complete_habit` must not take them in the opposite order.
+  - **`UPDATE OF` triggers.** `habits_before_write` doesn't fire for columns changed by another BEFORE trigger. A future trigger that sets `archived_at` would skip the cap.
   - **Completion ownership.** Completions use a composite FK `(habit_id, user_id) references habits (id, user_id)`.
   - **Weekday type.** Compare weekdays with `extract(dow from d)::smallint = any (days_of_week)`, because `extract` returns numeric.
   - **Phase 5:** `due_reminders` needs a partial index on active habits with reminders, and must handle local times that don't exist or happen twice on DST days.
