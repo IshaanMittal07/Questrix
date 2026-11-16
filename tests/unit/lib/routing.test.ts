@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isPublicPath,
+  loginPathFor,
   routeBeforeProfile,
   routeForOnboarding,
 } from "@/lib/supabase/routing";
@@ -28,6 +29,14 @@ describe("routeBeforeProfile", () => {
     expect(routeBeforeProfile(false, "/today")).toEqual({
       kind: "redirect",
       to: "/login",
+      clearOnboarded: true,
+    });
+  });
+
+  it("remembers the page a signed-out visitor asked for", () => {
+    expect(routeBeforeProfile(false, "/habits", "?tab=week")).toEqual({
+      kind: "redirect",
+      to: "/login?next=%2Fhabits%3Ftab%3Dweek",
       clearOnboarded: true,
     });
   });
@@ -71,5 +80,24 @@ describe("routeForOnboarding", () => {
     expect(routeForOnboarding("unknown", "/onboarding")).toEqual({
       kind: "next",
     });
+  });
+});
+
+describe("loginPathFor", () => {
+  it("adds ?next= for app pages, keeping the query", () => {
+    expect(loginPathFor("/shop")).toBe("/login?next=%2Fshop");
+    expect(loginPathFor("/u/alice", "?tab=feed")).toBe(
+      "/login?next=%2Fu%2Falice%3Ftab%3Dfeed",
+    );
+  });
+
+  it("leaves ?next= off for home, which is the default anyway", () => {
+    expect(loginPathFor("/")).toBe("/login");
+    expect(loginPathFor("/today")).toBe("/login");
+  });
+
+  it("drops paths safeNextPath would reject or rewrite", () => {
+    expect(loginPathFor("//evil.com")).toBe("/login");
+    expect(loginPathFor("/a/../b")).toBe("/login");
   });
 });

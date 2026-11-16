@@ -4,7 +4,10 @@
  * on their own; this only decides where to send the browser.
  */
 
-export const PUBLIC_PATHS = ["/login", "/auth"] as const;
+import { safeNextPath } from "@/lib/validation/profile";
+
+export const LOGIN_PATH = "/login";
+export const PUBLIC_PATHS = [LOGIN_PATH, "/auth"] as const;
 export const ONBOARDING_PATH = "/onboarding";
 export const HOME_PATH = "/today";
 
@@ -18,19 +21,36 @@ export function isPublicPath(pathname: string) {
 }
 
 /**
+ * Where to send a signed-out visitor: /login, carrying the page they asked for
+ * as `?next=` so sign-in can return them there. Home needs no `next` (it's the
+ * default), and anything safeNextPath would reject is dropped, not forwarded.
+ */
+export function loginPathFor(pathname: string, search = "") {
+  const next = `${pathname}${search}`;
+  if (next === "/" || next === HOME_PATH) return LOGIN_PATH;
+  if (safeNextPath(next, "") !== next) return LOGIN_PATH;
+  return `${LOGIN_PATH}?next=${encodeURIComponent(next)}`;
+}
+
+/**
  * First step, before any profile lookup. Returns "check-onboarding" when the
  * answer depends on whether the signed-in user has finished onboarding.
  */
 export function routeBeforeProfile(
   signedIn: boolean,
   pathname: string,
+  search = "",
 ): RouteDecision | "check-onboarding" {
   if (!signedIn) {
     return isPublicPath(pathname)
       ? { kind: "next" }
-      : { kind: "redirect", to: "/login", clearOnboarded: true };
+      : {
+          kind: "redirect",
+          to: loginPathFor(pathname, search),
+          clearOnboarded: true,
+        };
   }
-  if (pathname === "/login") return { kind: "redirect", to: HOME_PATH };
+  if (pathname === LOGIN_PATH) return { kind: "redirect", to: HOME_PATH };
   if (isPublicPath(pathname)) return { kind: "next" };
   return "check-onboarding";
 }
