@@ -48,6 +48,17 @@ describe("routeBeforeProfile", () => {
     });
   });
 
+  it("sends signed-in users on /login to a safe ?next=", () => {
+    expect(routeBeforeProfile(true, "/login", "?next=%2Fshop")).toEqual({
+      kind: "redirect",
+      to: "/shop",
+    });
+    expect(routeBeforeProfile(true, "/login", "?next=%2F%2Fevil.com")).toEqual({
+      kind: "redirect",
+      to: "/today",
+    });
+  });
+
   it("lets signed-in users reach auth routes (sign-out, callbacks)", () => {
     expect(routeBeforeProfile(true, "/auth/signout")).toEqual({ kind: "next" });
   });
@@ -91,9 +102,14 @@ describe("loginPathFor", () => {
     );
   });
 
-  it("leaves ?next= off for home, which is the default anyway", () => {
+  it("leaves ?next= off for bare home, which is the default anyway", () => {
     expect(loginPathFor("/")).toBe("/login");
     expect(loginPathFor("/today")).toBe("/login");
+    expect(loginPathFor("/today", "?x=1")).toBe("/login?next=%2Ftoday%3Fx%3D1");
+  });
+
+  it("drops a very long next", () => {
+    expect(loginPathFor("/shop", `?q=${"a".repeat(600)}`)).toBe("/login");
   });
 
   it("drops paths safeNextPath would reject or rewrite", () => {
