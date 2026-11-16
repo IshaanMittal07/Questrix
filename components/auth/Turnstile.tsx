@@ -62,7 +62,8 @@ export function Turnstile({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widgetId = useRef<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  // "load": the script was blocked; "widget": the challenge itself errored.
+  const [failure, setFailure] = useState<"load" | "widget" | null>(null);
   const onTokenRef = useRef(onToken);
   useEffect(() => {
     onTokenRef.current = onToken;
@@ -78,17 +79,21 @@ export function Turnstile({
         widgetId.current = api.render(el, {
           sitekey: TURNSTILE_SITE_KEY,
           theme: "dark",
-          callback: (t) => onTokenRef.current(t),
+          callback: (t) => {
+            setFailure(null); // Turnstile retries on its own; clear the alert
+            onTokenRef.current(t);
+          },
           "expired-callback": () => onTokenRef.current(null),
           "error-callback": () => {
-            setFailed(true);
+            if (cancelled) return;
+            setFailure("widget");
             onTokenRef.current(null);
           },
         });
       })
       .catch(() => {
         if (cancelled) return;
-        setFailed(true);
+        setFailure("load");
         onTokenRef.current(null);
       });
     return () => {
@@ -109,10 +114,11 @@ export function Turnstile({
   return (
     <div className="flex flex-col items-center gap-2">
       <div ref={ref} className="flex min-h-16 justify-center" />
-      {failed ? (
+      {failure ? (
         <p role="alert" className="text-danger text-center text-sm">
-          The security check couldn&apos;t load. Turn off content blockers for
-          this site, or try another browser, then reload.
+          {failure === "load"
+            ? "The security check couldn't load. Turn off content blockers for this site, or try another browser, then reload."
+            : "The security check failed. Please try again."}
         </p>
       ) : null}
     </div>
