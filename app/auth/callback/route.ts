@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { safeNextPath } from "@/lib/validation/profile";
+import { safeNextPath } from "@/lib/validation/path";
 
 /** OAuth + magic-link (PKCE) landing: exchange the code for a session cookie. */
 export async function GET(request: NextRequest) {

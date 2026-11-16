@@ -1,5 +1,5 @@
 import { HOME_PATH } from "@/lib/supabase/routing";
-import { safeNextPath } from "@/lib/validation/profile";
+import { safeNextPath } from "@/lib/validation/path";
 
 /** The validated `?next=` from a login URL's query string (home if absent or unsafe). */
 export function nextFromSearch(search: string) {
