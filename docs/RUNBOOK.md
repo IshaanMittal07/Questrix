@@ -29,7 +29,7 @@ Tests: `pnpm test` (unit), `pnpm db:test` (pgTAP), `pnpm build && pnpm test:e2e`
 
 ## Production auth settings (Supabase dashboard)
 
-- **Authentication → URL Configuration:** set the Site URL to the app URL. Add `https://<app>/auth/callback` and `https://<app>/auth/confirm` to the redirect URLs.
+- **Authentication → URL Configuration:** set the Site URL to the app URL. Add `https://<app>/auth/callback**` (the `**` lets the `?next=` query through) and `https://<app>/auth/confirm` to the redirect URLs.
 - **Authentication → Emails → Magic Link** (and **Confirm signup**): paste `supabase/templates/magic_link.html` and set the subject to "Your Questrix sign-in code". The template must contain both `{{ .Token }}` and the `/auth/confirm?token_hash=...` link.
 
 ### Auth hardening checklist (before launch)
