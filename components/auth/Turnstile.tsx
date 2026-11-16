@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** Public Turnstile site key. Unset (local dev, CI) → no CAPTCHA is rendered. */
 export const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
@@ -62,6 +62,7 @@ export function Turnstile({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widgetId = useRef<string | null>(null);
+  const [failed, setFailed] = useState(false);
   const onTokenRef = useRef(onToken);
   useEffect(() => {
     onTokenRef.current = onToken;
@@ -79,10 +80,17 @@ export function Turnstile({
           theme: "dark",
           callback: (t) => onTokenRef.current(t),
           "expired-callback": () => onTokenRef.current(null),
-          "error-callback": () => onTokenRef.current(null),
+          "error-callback": () => {
+            setFailed(true);
+            onTokenRef.current(null);
+          },
         });
       })
-      .catch(() => onTokenRef.current(null));
+      .catch(() => {
+        if (cancelled) return;
+        setFailed(true);
+        onTokenRef.current(null);
+      });
     return () => {
       cancelled = true;
       if (widgetId.current) window.turnstile?.remove(widgetId.current);
@@ -98,5 +106,15 @@ export function Turnstile({
   }, [resetKey]);
 
   if (!TURNSTILE_SITE_KEY) return null;
-  return <div ref={ref} className="flex min-h-16 justify-center" />;
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div ref={ref} className="flex min-h-16 justify-center" />
+      {failed ? (
+        <p role="alert" className="text-danger text-center text-sm">
+          The security check couldn&apos;t load. Turn off content blockers for
+          this site, or try another browser, then reload.
+        </p>
+      ) : null}
+    </div>
+  );
 }
