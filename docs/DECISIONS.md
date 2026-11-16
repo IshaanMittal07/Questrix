@@ -16,7 +16,7 @@ A running log of choices made where the plan was ambiguous or where current tool
 - **Plan copies:** `QUESTRIX_BUILD_PLAN.md` (the original) stays at the root and `docs/BUILD_PLAN.md` is the maintained copy, as plan §10 asks. Both are excluded from Prettier so they stay verbatim.
 - **create-next-app extras:** Next 16's scaffold adds `AGENTS.md` (Next.js agent rules, which say to read `node_modules/next/dist/docs/` before coding), enables `cacheComponents` and `partialPrefetching`, and uses `@tailwindcss/turbopack`. All of these are kept as generated.
 - **pgTAP smoke test** (`supabase/tests/000_smoke.sql`) exists so `supabase test db` has something to run before Phase 2 adds real tables.
-- **Branch protection on `main`:** PRs are required, with **0 required approvals**, because GitHub doesn't let you approve your own PR and this is a solo repo. Required checks are `ci` and `db-tests` (strict, so the branch must be up to date), linear history is on, force pushes and deletions are off, and the rules apply to admins too. Add `e2e` to the required checks in Phase 3.
+- **Branch protection on `main`:** PRs are required, with **0 required approvals**, because GitHub doesn't let you approve your own PR and this is a solo repo. Required checks are `ci` and `db-tests` (strict, so the branch must be up to date), linear history is on, force pushes and deletions are off, and the rules apply to admins too. Add `e2e` to the required checks in Phase 3 (done, #42).
 - **CI `db-tests`** starts Supabase without studio, imgproxy, mailpit, edge-runtime, logflare, vector, supavisor and postgres-meta, which DB tests don't need. That brought the job from about 1m47s to 1m04s.
 
 ## Phase 1
@@ -82,22 +82,24 @@ A running log of choices made where the plan was ambiguous or where current tool
 
 ## Phase 3
 
-- **`e2e` is a required check on `main` (#42).** The Playwright job has run on every PR since Phase 2. Phase 3 makes it required alongside `ci` and `db-tests`, as plan §11 step 7 says. Two GitHub quirks:
-  - `gh pr update-branch` sometimes doesn't start a CI run for the new head.
-  - The workflow ignores `ready_for_review`.
+- **`e2e` is a required check on `main` (#42).** The Playwright job has run on every PR since Phase 2. Phase 3 makes it required alongside `ci` and `db-tests`, as plan §11.1 step 7 says.
+- **CI quirks.** The workflow's `pull_request` trigger uses the default event types (`opened`, `synchronize`, `reopened`). So:
+  - marking a PR ready for review doesn't start a run;
+  - `gh pr update-branch` sometimes doesn't start one either.
 
-  In both cases, close and reopen the PR to trigger CI. Don't push an empty commit.
+  Close and reopen the PR to trigger CI. Don't push an empty commit: under rebase-merge it would land on `main`.
 
 - **TanStack Query is deferred.** Plan §3 lists it for client data fetching. Phase 3 uses Server Components, Server Actions and `useOptimistic` instead: every habit write already goes through the server, and nothing yet needs a client cache. Revisit if the feed (Phase 7) needs infinite queries or background refetching.
 - **Suggestion engine (plan §8.2):**
-  - **Duplicates:** a suggestion counts as a duplicate when the normalised Levenshtein ratio of the lowercased, trimmed titles is above 0.8.
-  - **"Already added":** includes archived habits, so a habit the user archived isn't suggested again.
-  - **Category tie-break:** health > mind > fitness.
-  - **Time slots:** half-open intervals in the user's timezone: morning [05:00, 11:00), afternoon [11:00, 17:00), evening [17:00, 23:00). Times outside those slots aren't bucketed.
+  - **Which habits count.** Only the "not already added" hard filter (rule 4) counts archived habits, so a habit the user archived isn't suggested again. Rules 1–3 (pairs, category gaps, time-slot gaps) and the coaching hints count **active** habits only.
+  - **Duplicates (rule 4).** Titles are NFKC-normalised, lowercased, trimmed and have internal whitespace collapsed. They're duplicates when `1 − levenshtein(a, b) / max(len(a), len(b))` is above 0.8.
+  - **Time slots (rule 3).** Slots are half-open intervals in the user's timezone, using the plan's names: morning [05:00, 11:00), midday [11:00, 17:00), evening [17:00, 23:00). Times from 23:00 to 05:00 fall in no slot.
+    - A user habit fills every slot touched by any of its `reminder_times`. A template fills a gap if any of its `defaultTimes` falls in that slot.
+    - A habit or template with no times (e.g. "Take medication") neither fills nor fills in a slot.
+  - **Ordering.** Suggestions are sorted by score, highest first. Ties are broken by category in this order: health, mind, fitness, self_care, nutrition, learning, career, finance, social. That's the plan's priority first, then §8.1 table order. Remaining ties keep `templates.ts` declaration order.
   - **The "first week" coaching hint** is measured from `profiles.onboarded_at`, not from account creation.
-- **Onboarding step 2** lets the user pick up to 3 starter habits, and can be skipped.
-- **Schedules:**
-  - `lib/habits/schedule.ts` is for display only.
-  - SQL stays authoritative for "is it scheduled today", because browser ICU and Postgres tz data can disagree.
-  - `template_key` is stored for analytics only and is never trusted.
+- **Onboarding step 2** lets the user pick **up to** 3 starter habits, and can be skipped. Plan §9 says "pick 3".
+- **Schedules.** `lib/habits/schedule.ts` is for display only (Today ordering, "not today" labels). JS (browser or Node) ICU and Postgres tzdata can disagree, so SQL is authoritative for "is it scheduled today". That is owned by the Phase 4 `get_today` / `complete_habit` functions. Nothing in Phase 3 awards points from `schedule.ts`.
+- **`template_key`** is stored for analytics and the duplicate filter only. It is never trusted as proof of anything.
+- **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.
 - **Open, to decide in #43 or #47:** whether a habit's reminder times must match `target_per_day`.
