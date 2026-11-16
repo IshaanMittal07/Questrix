@@ -40,6 +40,31 @@ describe("Turnstile", () => {
     expect(onToken).toHaveBeenCalledWith(null);
   });
 
+  it("retries the script on the next mount after a load error", async () => {
+    const Turnstile = await loadTurnstile("test-site-key");
+    const scriptTag = () =>
+      document.head.querySelector<HTMLScriptElement>(
+        'script[src*="challenges.cloudflare.com"]',
+      );
+
+    const first = render(<Turnstile onToken={() => {}} resetKey={0} />);
+    await act(async () => {
+      scriptTag()!.dispatchEvent(new Event("error"));
+    });
+    expect(scriptTag()).toBeNull(); // the failed tag is gone
+    first.unmount();
+
+    render(<Turnstile onToken={() => {}} resetKey={0} />);
+    const retry = scriptTag();
+    expect(retry).not.toBeNull(); // a fresh tag was added
+    await act(async () => {
+      retry!.dispatchEvent(new Event("error"));
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "security check couldn't load",
+    );
+  });
+
   it("shows a widget error, then clears it when a token arrives", async () => {
     type Opts = {
       callback: (t: string) => void;

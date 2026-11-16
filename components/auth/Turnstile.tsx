@@ -44,7 +44,12 @@ function loadScript(): Promise<TurnstileApi> {
     script.addEventListener("load", () =>
       window.turnstile ? resolve(window.turnstile) : reject(new Error("load")),
     );
-    script.addEventListener("error", () => reject(new Error("load")));
+    // Drop a failed tag so the next mount retries instead of waiting forever
+    // on a script that will never fire load/error again.
+    script.addEventListener("error", () => {
+      script!.remove();
+      reject(new Error("load"));
+    });
   });
 }
 
