@@ -106,9 +106,34 @@ A running log of choices made where the plan was ambiguous or where current tool
 - **Reminder times are independent of `target_per_day` (decided in #43).** Reminders are notifications, not occurrences. A habit with `target_per_day = 3` can have one reminder or none, and "Drink 2 L of water" can have 4 reminders with a target of 4. Coupling the two would block common setups and buy nothing, because completions (Phase 4) are capped by `target_per_day` alone.
 - **Habits schema (#43):**
   - **Colours** are the five accent tokens: `cyan`, `violet`, `magenta`, `success` and `warning`. They're stored by name, never as hex, so a theme change carries over.
-  - **Normalisation happens in the BEFORE trigger, not with CHECKs.** The trigger trims all leading and trailing whitespace from titles (tabs and newlines too), sorts and de-duplicates `days_of_week`, and truncates `reminder_times` to the minute, then sorts and de-duplicates them. It rejects nested arrays first, which `unnest` would otherwise flatten. CHECKs then reject what can't be normalised: empty or out-of-range days, nulls, more than 5 times, blank titles and lengths. Normalising means two clients can't store the same schedule two ways.
+  - **Normalisation happens in the BEFORE trigger,** so two clients can't store the same thing two ways. The trigger:
+    - strips zero-width and bidi-control characters from titles, then trims all leading and trailing whitespace, including no-break spaces;
+    - stores a blank `description` or `icon` as null;
+    - sorts and de-duplicates `days_of_week`;
+    - truncates `reminder_times` to the minute, then sorts and de-duplicates them.
+
+    Before normalising, it rejects input that can't be normalised safely: nested arrays (`unnest` would flatten them), oversized arrays, and `24:00` (it would wrap to `00:00`). A null list is left null, so NOT NULL still reports it. CHECKs then reject the rest: empty or out-of-range days, nulls, more than 5 times, blank titles or titles with control characters, and lengths.
+
   - **`template_key`** must be a lowercase slug (`^[a-z0-9_]{1,40}$`), so the column can't hold free text.
-  - **The 20-active cap** is enforced in a SECURITY DEFINER trigger on insert and on unarchive. The trigger holds a per-user transaction advisory lock (`hashtextextended('qx.habits.<uid>')`).
-    - pgTAP runs in one transaction, so it can't exercise concurrency. It was checked by hand with two sessions: the second blocked until the first committed, then failed.
-  - **`reorder_habits(p_habit_ids uuid[])`** was added beyond plan §6.4. It must list every active habit exactly once, and it writes 0-based positions in one statement under the same lock. Clients can still write `sort_order` directly (plan §5.2 grants it), but the UI should use the RPC.
-  - **`archive_habit` and `unarchive_habit` are idempotent.** They raise `P0002 Habit not found` for a habit that isn't yours, so another user's habit ids can't be probed. An unarchived habit goes to the end of the list.
+  - **One per-user lock.** `habits_lock(uid)` is a transaction advisory lock on `hashtextextended('qx.habits.<uid>')`. Every write that depends on the user's set of habits takes it first: insert, archive, unarchive and reorder. Counts and positions are therefore computed against a stable set. It relies on READ COMMITTED, which PostgREST uses: a later caller running under REPEATABLE READ would see a stale count.
+  - **The 20-active cap** is enforced in the trigger on insert and on unarchive. A multi-row insert that crosses it is rejected as a whole. pgTAP runs in one transaction, so it can't exercise concurrency. It was checked by hand with two sessions: the second blocked until the first committed, then failed, leaving 20 active habits with distinct positions.
+  - **Creation limits.** Without these, archive-and-recreate churn would be unbounded:
+    - at most 30 habits created per rolling 24 hours;
+    - at most 200 habits in total, archived ones included.
+
+    Both are checked in the insert branch of the trigger, under the lock. They should move to `economy_config` when Phase 4 adds it.
+
+  - **`sort_order` is owned by the server on insert.** This deviates from plan §5.2, which granted it on insert. New habits go to the end of the active list, and so do unarchived ones. `sort_order` is bounded to 0..10000. Clients may still update it, but the UI should use `reorder_habits(p_habit_ids uuid[])`, which was added beyond plan §6.4. That RPC must list every active habit exactly once (at most 20, flat), and it writes 0-based positions in one statement. List queries order by `sort_order, created_at, id`.
+  - **`archive_habit` and `unarchive_habit` are idempotent.** They raise `P0002 Habit not found` for a habit that isn't yours, so another user's habit ids can't be probed.
+  - **Indexes.** Plan §5.2 had only `(user_id) where archived_at is null`. This uses:
+    - `(user_id, sort_order) where archived_at is null`, for the active list and `get_today` ordering;
+    - a full `(user_id)` index, for the archived list and the FK cascade.
+
+    `unique (id, user_id)` exists so Phase 4 completions can reference `(habit_id, user_id)`.
+- **Phase 4 requirements created by the habits table** (from the #43 security audit and code review; Phase 4 must satisfy them):
+  - **Snapshot before schedule edits.** Clients can edit `days_of_week` or archive habits directly, so a user who skipped day D could remove D's weekday before D is snapshotted, turning a miss into a rest day. Any INSERT, `days_of_week` change, archive or unarchive must first call `ensure_daily_schedule(user, local_today)`. That call also fills missing past days, up to 7. Edits then only affect days not yet snapshotted.
+  - **Archive-and-recreate must not farm points.** The 20-active cap is not a points ceiling: complete a habit, archive it, create a new one, complete that. The creation limits above bound this, but `complete_habit` must also refuse habits created after that day's `daily_schedule` snapshot, or there must be a daily cap on completion points.
+  - **Read the habit under lock.** `complete_habit` reads `target_per_day`, `difficulty` and `archived_at` under a row lock (`for share`, after the profile lock), never from client-cached values.
+  - **Completion ownership.** Completions use a composite FK `(habit_id, user_id) references habits (id, user_id)`.
+  - **Weekday type.** Compare weekdays with `extract(dow from d)::smallint = any (days_of_week)`, because `extract` returns numeric.
+  - **Phase 5:** `due_reminders` needs a partial index on active habits with reminders, and must handle local times that don't exist or happen twice on DST days.
