@@ -79,3 +79,25 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **New users lose `next`.** Onboarding still ends on `/today`. Revisit this in Phase 7 if share links (`/u/<name>`) bring in sign-ups.
   - **The redirect allowlist entry is now `…/auth/callback**`.** GoTrue matches globs, so the `?next=` query needs it. Every match is still same-origin, and PKCE makes a code useless anywhere else. Production needs the same change in the dashboard (RUNBOOK).
   - **`safeNextPath` lives in `lib/validation/path.ts`,** which has no zod import, to keep zod out of the proxy bundle. `profile.ts` re-exports it.
+
+## Phase 3
+
+- **`e2e` is a required check on `main` (#42).** The Playwright job has run on every PR since Phase 2. Phase 3 makes it required alongside `ci` and `db-tests`, as plan §11 step 7 says. Two GitHub quirks:
+  - `gh pr update-branch` sometimes doesn't start a CI run for the new head.
+  - The workflow ignores `ready_for_review`.
+
+  In both cases, close and reopen the PR to trigger CI. Don't push an empty commit.
+
+- **TanStack Query is deferred.** Plan §3 lists it for client data fetching. Phase 3 uses Server Components, Server Actions and `useOptimistic` instead: every habit write already goes through the server, and nothing yet needs a client cache. Revisit if the feed (Phase 7) needs infinite queries or background refetching.
+- **Suggestion engine (plan §8.2):**
+  - **Duplicates:** a suggestion counts as a duplicate when the normalised Levenshtein ratio of the lowercased, trimmed titles is above 0.8.
+  - **"Already added":** includes archived habits, so a habit the user archived isn't suggested again.
+  - **Category tie-break:** health > mind > fitness.
+  - **Time slots:** half-open intervals in the user's timezone: morning [05:00, 11:00), afternoon [11:00, 17:00), evening [17:00, 23:00). Times outside those slots aren't bucketed.
+  - **The "first week" coaching hint** is measured from `profiles.onboarded_at`, not from account creation.
+- **Onboarding step 2** lets the user pick up to 3 starter habits, and can be skipped.
+- **Schedules:**
+  - `lib/habits/schedule.ts` is for display only.
+  - SQL stays authoritative for "is it scheduled today", because browser ICU and Postgres tz data can disagree.
+  - `template_key` is stored for analytics only and is never trusted.
+- **Open, to decide in #43 or #47:** whether a habit's reminder times must match `target_per_day`.
