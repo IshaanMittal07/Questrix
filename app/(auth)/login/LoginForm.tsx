@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { TURNSTILE_SITE_KEY, Turnstile } from "@/components/auth/Turnstile";
 import { Button } from "@/components/ui/Button";
+import { authCallbackUrl, nextFromSearch } from "@/lib/auth/next";
 import { createClient } from "@/lib/supabase/client";
 import { emailSchema } from "@/lib/validation/profile";
 
@@ -13,8 +14,14 @@ type Status =
   | { kind: "sent"; email: string }
   | { kind: "error"; message: string };
 
+// Read at sign-in time rather than via useSearchParams, so the form stays in
+// the static shell (cacheComponents) instead of waiting behind Suspense.
+function nextPath() {
+  return nextFromSearch(window.location.search);
+}
+
 function callbackUrl() {
-  return `${window.location.origin}/auth/callback`;
+  return authCallbackUrl(window.location.origin, nextPath());
 }
 
 export function LoginForm() {
@@ -165,7 +172,7 @@ function CodeStep({ email, onBack }: { email: string; onBack: () => void }) {
       return;
     }
     // proxy.ts routes new users on to /onboarding.
-    router.replace("/today");
+    router.replace(nextPath());
     router.refresh();
   }
 
