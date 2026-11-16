@@ -39,4 +39,40 @@ describe("Turnstile", () => {
     );
     expect(onToken).toHaveBeenCalledWith(null);
   });
+
+  it("shows a widget error, then clears it when a token arrives", async () => {
+    type Opts = {
+      callback: (t: string) => void;
+      "error-callback": () => void;
+    };
+    let opts: Opts | undefined;
+    window.turnstile = {
+      render: vi.fn((_el: HTMLElement, o: Opts) => {
+        opts = o;
+        return "widget-1";
+      }),
+      reset: vi.fn(),
+      remove: vi.fn(),
+    } as unknown as NonNullable<typeof window.turnstile>;
+
+    try {
+      const Turnstile = await loadTurnstile("test-site-key");
+      const onToken = vi.fn();
+      render(<Turnstile onToken={onToken} resetKey={0} />);
+      await act(async () => {}); // let loadScript() resolve
+      expect(opts).toBeDefined();
+
+      await act(async () => opts!["error-callback"]());
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "security check failed",
+      );
+      expect(onToken).toHaveBeenLastCalledWith(null);
+
+      await act(async () => opts!.callback("tok-123"));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(onToken).toHaveBeenLastCalledWith("tok-123");
+    } finally {
+      delete window.turnstile;
+    }
+  });
 });
