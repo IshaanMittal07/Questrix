@@ -80,6 +80,35 @@ as $$
     pg_catalog.hashtextextended('qx.habits.' || p_user_id::text, 0));
 $$;
 
+-- ── Text cleaning ───────────────────────────────────────────────────────────
+-- Strips characters that render as nothing or reorder text, then trims all
+-- whitespace (including no-break space) from both ends; blank becomes null.
+-- Stripped: U+00AD soft hyphen, U+061C Arabic letter mark, U+180E Mongolian
+-- vowel separator, U+200B-200F zero-width and LRM/RLM, U+202A-202E bidi
+-- embeddings/overrides, U+2060-206F word joiner, invisible operators and the
+-- bidi isolates U+2066-2069, U+3164 Hangul filler, U+FEFF BOM. Built with
+-- chr() so this source stays ASCII and reviewable.
+create function public.habits_clean_text(p_text text)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select nullif(
+    pg_catalog.regexp_replace(
+      pg_catalog.regexp_replace(
+        p_text,
+        '[' || pg_catalog.chr(173) || pg_catalog.chr(1564) || pg_catalog.chr(6158)
+            || pg_catalog.chr(8203) || '-' || pg_catalog.chr(8207)
+            || pg_catalog.chr(8234) || '-' || pg_catalog.chr(8238)
+            || pg_catalog.chr(8288) || '-' || pg_catalog.chr(8303)
+            || pg_catalog.chr(12644) || pg_catalog.chr(65279) || ']',
+        '', 'g'),
+      '^[\s' || pg_catalog.chr(160) || ']+|[\s' || pg_catalog.chr(160) || ']+$',
+      '', 'g'),
+    '');
+$$;
+
 -- ── Normalise + caps ────────────────────────────────────────────────────────
 -- SECURITY DEFINER so the counts see every row of the user regardless of RLS.
 create function public.habits_before_write()
@@ -106,13 +135,13 @@ begin
     raise exception 'Use 00:00 instead of 24:00' using errcode = '23514';
   end if;
 
-  -- Strip zero-width and bidi-control characters, then trim all whitespace
-  -- (including no-break spaces) from both ends.
-  new.title := regexp_replace(
-    regexp_replace(new.title, '[​-‏‪-‮⁠-⁤﻿]', '', 'g'),
-    '^[\s ]+|[\s ]+$', '', 'g');
-  new.description := nullif(regexp_replace(new.description, '^\s+|\s+$', '', 'g'), '');
-  new.icon := nullif(btrim(new.icon), '');
+  -- Blank titles become '' (not null) so the CHECK reports them as 23514;
+  -- a missing title stays null for NOT NULL (23502).
+  if new.title is not null then
+    new.title := coalesce(public.habits_clean_text(new.title), '');
+  end if;
+  new.description := public.habits_clean_text(new.description);
+  new.icon := public.habits_clean_text(new.icon);
 
   -- Nulls are left alone so NOT NULL still reports them (23502).
   if new.days_of_week is not null then
@@ -128,15 +157,19 @@ begin
   if tg_op = 'INSERT' then
     perform public.habits_lock(new.user_id);
     -- Creation limits: archive-and-recreate must not be unbounded.
+    -- Rolling windows, so nobody is locked out for good. QX001 lets the UI
+    -- tell a rate limit apart from invalid input (23514).
     if (select count(*) from public.habits h
         where h.user_id = new.user_id
           and h.created_at > now() - interval '24 hours') >= 30 then
       raise exception 'You can create at most 30 habits a day'
-        using errcode = '23514';
+        using errcode = 'QX001', hint = 'Try again tomorrow.';
     end if;
-    if (select count(*) from public.habits h where h.user_id = new.user_id) >= 200 then
-      raise exception 'You can have at most 200 habits, including archived ones'
-        using errcode = '23514';
+    if (select count(*) from public.habits h
+        where h.user_id = new.user_id
+          and h.created_at > now() - interval '30 days') >= 100 then
+      raise exception 'You can create at most 100 habits in 30 days'
+        using errcode = 'QX001', hint = 'Unarchive an existing habit instead.';
     end if;
     -- New habits go to the end of the active list.
     select coalesce(max(h.sort_order) + 1, 0) into new.sort_order
@@ -146,7 +179,9 @@ begin
 
   if new.archived_at is null
      and (tg_op = 'INSERT' or old.archived_at is not null) then
-    perform public.habits_lock(new.user_id);
+    if tg_op = 'UPDATE' then
+      perform public.habits_lock(new.user_id); -- INSERT took it above
+    end if;
     select count(*) into v_active
     from public.habits h
     where h.user_id = new.user_id
@@ -162,7 +197,8 @@ begin
 end;
 $$;
 
--- Not fired by sort_order-only updates (reorder_habits): nothing to normalise.
+-- Only columns that need normalising or capping. Add any new such column
+-- here: UPDATE OF also won't fire for columns changed by another trigger.
 create trigger habits_before_write
   before insert or update of title, description, icon, days_of_week,
     reminder_times, archived_at
@@ -185,15 +221,14 @@ create policy "habits: owner can update"
 
 revoke all on public.habits from anon, authenticated;
 grant select on public.habits to authenticated;
--- No sort_order on insert: the server appends. Updates may set it, but the UI
--- should use reorder_habits.
+-- sort_order is server-owned: appended on insert, set by reorder_habits.
 grant insert (title, description, category, difficulty, icon, color,
               days_of_week, target_per_day, reminder_times, reminders_enabled,
               template_key)
   on public.habits to authenticated;
 grant update (title, description, category, difficulty, icon, color,
               days_of_week, target_per_day, reminder_times, reminders_enabled,
-              template_key, sort_order)
+              template_key)
   on public.habits to authenticated;
 
 -- ── RPCs ────────────────────────────────────────────────────────────────────
@@ -297,10 +332,11 @@ end;
 $$;
 
 -- ── Function privileges ─────────────────────────────────────────────────────
-revoke execute on function public.habits_before_write() from public, anon, authenticated;
-revoke execute on function public.habits_lock(uuid) from public, anon, authenticated;
-grant execute on function public.habits_before_write() to service_role;
-grant execute on function public.habits_lock(uuid) to service_role;
+-- Internal only: the trigger and RPCs run as the owner, so nobody else needs
+-- EXECUTE (triggers fire regardless of the caller's privileges).
+revoke execute on function public.habits_before_write() from public, anon, authenticated, service_role;
+revoke execute on function public.habits_lock(uuid) from public, anon, authenticated, service_role;
+revoke execute on function public.habits_clean_text(text) from public, anon, authenticated, service_role;
 
 revoke execute on function public.archive_habit(uuid) from public, anon;
 revoke execute on function public.unarchive_habit(uuid) from public, anon;
