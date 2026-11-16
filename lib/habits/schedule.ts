@@ -29,6 +29,8 @@ export type LocalDate = {
   weekday: Weekday;
 };
 
+// Unbounded on purpose: only valid IANA names get cached (an invalid zone
+// throws before set), and that set is finite.
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
 function formatterFor(timeZone: string) {
@@ -106,6 +108,7 @@ export function describeDays(daysOfWeek: readonly number[]) {
     return "Weekdays";
   }
   if (set.size === 2 && set.has(0) && set.has(6)) return "Weekends";
+  if (set.size === 0) return "No days";
   return [1, 2, 3, 4, 5, 6, 0]
     .filter((d) => set.has(d))
     .map((d) => SHORT_NAMES[d])

@@ -198,7 +198,7 @@ describe("describeDays", () => {
     [[1, 2, 3, 4, 5, 7], "Weekdays"],
     [[0, 1, 2, 3, 4, 5, 7], "Mon, Tue, Wed, Thu, Fri, Sun"],
     [[-1, 6], "Sat"],
-    [[], ""],
+    [[], "No days"],
   ])("%j -> %j", (days, label) => {
     expect(describeDays(days)).toBe(label);
   });
@@ -229,6 +229,9 @@ describe("localDate edge input", () => {
     expect(localDate(instant, "Pacific/Kiritimati").weekday).toBe(2);
   });
 
+  // Depends on the tzdata bundled with Node's ICU (Chile's rules change
+  // occasionally). If these break on a Node upgrade with no code change,
+  // update the dates to the new rules; Toronto above is the stable case.
   describe("America/Santiago, where DST switches at local midnight", () => {
     const tz = "America/Santiago";
     it("the day after the spring-forward starts at 01:00 (Sun 2026-09-06)", () => {
