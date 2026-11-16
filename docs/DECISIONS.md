@@ -107,7 +107,7 @@ A running log of choices made where the plan was ambiguous or where current tool
 - **Habits schema (#43):**
   - **Colours** are the five accent tokens: `cyan`, `violet`, `magenta`, `success` and `warning`. They're stored by name, never as hex, so a theme change carries over.
   - **Normalisation happens in the BEFORE trigger,** so two clients can't store the same thing two ways. The trigger:
-    - runs titles, descriptions and icons through `habits_clean_text`. It strips characters that render as nothing or reorder text (soft hyphen, the Arabic letter mark, zero-width characters, bidi embeddings, overrides and isolates U+2066–2069, the Hangul filler and the BOM), then trims all whitespace, including no-break spaces. The function builds its character class with `chr()`, so the migration source stays ASCII and reviewable;
+    - runs titles, descriptions and icons through `habits_clean_text`. It strips characters that render as nothing or reorder text (soft hyphen, the Arabic letter mark, the zero-width space, LRM/RLM, bidi embeddings, overrides and isolates U+2066–2069, the Hangul filler and the BOM), then trims all whitespace, including no-break spaces. ZWNJ and ZWJ (U+200C/200D) are only trimmed at the ends, because they join emoji (e.g. the woman-meditating emoji) and Persian and Indic text. Out of scope on purpose: astral tag characters, musical-notation format characters and other rare fillers. The function builds its character class with `chr()`, so the migration source stays ASCII and reviewable;
     - stores a blank `description` or `icon` as null;
     - sorts and de-duplicates `days_of_week`;
     - truncates `reminder_times` to the minute, then sorts and de-duplicates them.
