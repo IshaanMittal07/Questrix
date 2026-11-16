@@ -400,6 +400,7 @@ export type Database = {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
+      habits_clean_text: { Args: { p_text: string }; Returns: string };
       habits_lock: { Args: { p_user_id: string }; Returns: undefined };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
