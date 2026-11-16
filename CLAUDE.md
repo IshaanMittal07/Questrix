@@ -38,14 +38,20 @@ For each phase:
 1. Create a tracking issue (label `phase-N`, with its milestone).
 2. Run the `planner` subagent and post its plan as an issue comment.
 3. Create one issue per task.
-4. Branch `phase-N/<slug>`.
-5. Make Conventional Commits that reference issues (`refs #12`).
+
+Then for **each task issue**, one at a time, starting from an up-to-date `main`:
+
+4. Branch `phase-N/<task-slug>`.
+5. Make Conventional Commits that reference the task issue (`refs #12`).
 6. Run the `test-writer` subagent. Lint, typecheck, unit, db and build must all be green locally.
-7. Open a draft PR from the template with `Closes #…` for every issue.
+7. Open a draft PR from the template with `Closes #<task>`. The phase's last PR also closes the tracking issue.
 8. Run the `code-reviewer` subagent (plus `security-auditor` in Phases 2, 4, 6, 7 and 8) and post the review with `gh pr review --comment`.
 9. Fix every Blocking and Should-fix item, then re-review.
 10. Run `gh pr ready`, then wait for CI to go green.
-11. **Ask the human before merging.** Then squash-merge.
-12. Tag `v0.N.0` and create a release.
+11. **Ask the human before merging.** Then **rebase-merge** (`gh pr merge --rebase --delete-branch`), so each commit lands on `main`.
+
+12. After the phase's last PR is merged, tag `v0.N.0` and create a release.
+
+Small fixes outside a phase (follow-ups, bugs) follow steps 4–11 with a `type:*` label and a `chore/`, `fix/` or `test/` branch.
 
 `main` is protected: it requires a PR, the `ci` and `db-tests` checks (plus `e2e` from Phase 3) and linear history.
