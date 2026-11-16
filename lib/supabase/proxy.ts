@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { Database } from "./types";
 import { supabaseEnv } from "./env";
 import {
+  loginPathFor,
   routeBeforeProfile,
   routeForOnboarding,
   type RouteDecision,
@@ -39,12 +40,11 @@ export async function updateSession(request: NextRequest) {
   // Validates the JWT (do not trust getSession() on the server).
   const { data } = await supabase.auth.getClaims();
   const userId = data?.claims?.sub;
-  const { pathname } = request.nextUrl;
+  const { pathname, search } = request.nextUrl;
 
   const redirect = (to: string) => {
-    const target = request.nextUrl.clone();
-    target.pathname = to;
-    target.search = "";
+    // `to` is an app path that may carry a query (/login?next=...).
+    const target = new URL(to, request.nextUrl.origin);
     const res = NextResponse.redirect(target);
     // Keep any refreshed auth cookies on the redirect.
     for (const cookie of response.cookies.getAll()) res.cookies.set(cookie);
@@ -58,11 +58,15 @@ export async function updateSession(request: NextRequest) {
     return res;
   };
 
-  const first = routeBeforeProfile(Boolean(userId), pathname);
+  const first = routeBeforeProfile(Boolean(userId), pathname, search);
   if (first !== "check-onboarding") return apply(first);
   // Unreachable today; if routing.ts changes, fail closed rather than open.
   if (!userId) {
-    return apply({ kind: "redirect", to: "/login", clearOnboarded: true });
+    return apply({
+      kind: "redirect",
+      to: loginPathFor(pathname, search),
+      clearOnboarded: true,
+    });
   }
 
   // Onboarding gate. The cookie is a per-user cache, so it stores the user id.
