@@ -92,14 +92,15 @@ A running log of choices made where the plan was ambiguous or where current tool
 - **TanStack Query is deferred.** Plan §3 lists it for client data fetching. Phase 3 uses Server Components, Server Actions and `useOptimistic` instead: every habit write already goes through the server, and nothing yet needs a client cache. Revisit if the feed (Phase 7) needs infinite queries or background refetching.
 - **Suggestion engine (plan §8.2):**
   - **Which habits count.** Only the "not already added" hard filter (rule 4) counts archived habits, so a habit the user archived isn't suggested again. Rules 1–3 (pairs, category gaps, time-slot gaps) and the coaching hints count **active** habits only.
-  - **Duplicates (rule 4).** Titles are NFKC-normalised, lowercased, trimmed and have internal whitespace collapsed. They're duplicates when `1 − levenshtein(a, b) / max(len(a), len(b))` is above 0.8.
+  - **Duplicates (rule 4).** Titles are NFKC-normalised, lowercased, trimmed and have internal whitespace collapsed. They're duplicates when `1 − levenshtein(a, b) / max(len(a), len(b))` is above 0.8, with lengths and distance counted in code points after NFKC.
   - **Time slots (rule 3).** Slots are half-open intervals in the user's timezone, using the plan's names: morning [05:00, 11:00), midday [11:00, 17:00), evening [17:00, 23:00). Times from 23:00 to 05:00 fall in no slot.
-    - A user habit fills every slot touched by any of its `reminder_times`. A template fills a gap if any of its `defaultTimes` falls in that slot.
-    - A habit or template with no times (e.g. "Take medication") neither fills nor fills in a slot.
-  - **Ordering.** Suggestions are sorted by score, highest first. Ties are broken by category in this order: health, mind, fitness, self_care, nutrition, learning, career, finance, social. That's the plan's priority first, then §8.1 table order. Remaining ties keep `templates.ts` declaration order.
+    - A user habit fills every slot touched by any of its `reminder_times`, whether or not reminders are enabled. A template fills a gap if any of its `defaultTimes` falls in that slot.
+    - A habit with no times (e.g. "Take medication") never fills a user's slot, and a template with no times is never suggested for a slot gap.
+  - **Scoring.** Each rule contributes **at most once per template**. A template that fills two empty slots still gets +15, and one paired by two of the user's habits still gets +40. Scores from different rules add up.
+  - **Ordering.** Suggestions are sorted by score, highest first. Ties are broken by category in this order: health, mind, fitness, self_care, nutrition, learning, career, finance, social. That's the plan's rule-2 priority, extended here to a global tie-break, then §8.1 table order (`other` has no templates). Remaining ties keep `templates.ts` declaration order.
   - **The "first week" coaching hint** is measured from `profiles.onboarded_at`, not from account creation.
-- **Onboarding step 2** lets the user pick **up to** 3 starter habits, and can be skipped. Plan §9 says "pick 3".
+- **Onboarding step 2** lets the user pick **up to** 3 starter habits, and can be skipped. The original plan (`QUESTRIX_BUILD_PLAN.md`) §9 said "pick 3".
 - **Schedules.** `lib/habits/schedule.ts` is for display only (Today ordering, "not today" labels). JS (browser or Node) ICU and Postgres tzdata can disagree, so SQL is authoritative for "is it scheduled today". That is owned by the Phase 4 `get_today` / `complete_habit` functions. Nothing in Phase 3 awards points from `schedule.ts`.
-- **`template_key`** is stored for analytics and the duplicate filter only. It is never trusted as proof of anything.
+- **`template_key`** is used for analytics and suggestion matching only: rule 1 identifies the user's habit X by it, and rule 4 filters on it. It is never trusted as proof of anything (no points, no verification).
 - **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.
 - **Open, to decide in #43 or #47:** whether a habit's reminder times must match `target_per_day`.
