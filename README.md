@@ -8,7 +8,7 @@ A gamified, mobile-first habit tracker (installable PWA): daily habits, reminder
 
 ## Setup
 
-Prerequisites: Node 22.19+ (see `.nvmrc`; jsdom needs 22.19), [pnpm](https://pnpm.io), and Docker Desktop (for the local Supabase stack).
+Prerequisites: Node 22.22.2+ on the 22 line (`engines` in `package.json`), [pnpm](https://pnpm.io), and Docker Desktop (for the local Supabase stack).
 
 ```bash
 pnpm install
