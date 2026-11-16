@@ -113,4 +113,15 @@ test("sign up with an email code → pick a username → land on Today", async (
   await page.getByRole("link", { name: "Settings" }).click();
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login$/);
+
+  // Signing back in from a deep link returns to that page (#35).
+  await page.goto("/shop?tab=outfit");
+  await expect(page).toHaveURL(/\/login\?next=%2Fshop%3Ftab%3Doutfit$/);
+  await page.getByLabel("Email").fill(email);
+  await page.getByRole("button", { name: "Email me a sign-in code" }).click();
+  await expect(page.getByText("Check your inbox")).toBeVisible();
+  const secondCode = await waitForSignInCode(email, { notCode: code });
+  await page.getByLabel("6-digit code").fill(secondCode);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page).toHaveURL(/\/shop\?tab=outfit$/);
 });
