@@ -41,6 +41,7 @@ Tests: `pnpm test` (unit), `pnpm db:test` (pgTAP), `pnpm build && pnpm test:e2e`
 - **CAPTCHA (Cloudflare Turnstile):** create a Turnstile widget for the app's domain. Paste its **secret** under **Authentication → Attack Protection → Enable CAPTCHA protection** (provider: Turnstile), and set its **site key** as `NEXT_PUBLIC_TURNSTILE_SITE_KEY` in Vercel. Do both in the same deploy: with CAPTCHA on and no site key, sign-in requests are rejected. **This is a launch gate, not optional:** `/auth/v1/signup` can be used to send email to any address until CAPTCHA is on. When a site-wide CSP is added (Phase 8), allow `https://challenges.cloudflare.com` in `script-src` and `frame-src`.
 - **Passwordless trigger:** `strip_auth_password` on `auth.users` means any password (signup, `updateUser`, admin or dashboard "create user with password") is silently not stored. After the first `supabase db push` to a staging project, check that code sign-in, Google sign-in and admin invites still work.
 - **Text-cleaning parity:** after the first `supabase db push`, run the four `habits_clean_text` parity selects at the end of `supabase/tests/020_habits_rls.sql` in the hosted SQL editor and check they return the expected values (the habit forms assume them).
+- **Node on Vercel:** `engines` is `>=22.22.2 <23` with `engineStrict`. On the first deploy, check the build log's Node.js line is 22.22.2 or newer; if Vercel's image ships an older 22.x, the install fails.
 
 ## Production setup
 
