@@ -7,8 +7,11 @@ create table public.habits (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid()
     references public.profiles (id) on delete cascade,
+  -- The trigger trims all leading/trailing whitespace; \S rejects blank titles
+  -- made only of tabs or newlines too.
   title text not null
-    constraint habits_title_length check (char_length(btrim(title)) between 1 and 60),
+    constraint habits_title_length check (
+      char_length(title) between 1 and 60 and title ~ '\S'),
   description text
     constraint habits_description_length check (char_length(description) <= 280),
   category public.habit_category not null,
@@ -65,7 +68,14 @@ as $$
 declare
   v_active integer;
 begin
-  new.title := btrim(new.title);
+  -- unnest() below would silently flatten {{1,2},{3,4}}: reject it first.
+  if coalesce(array_ndims(new.days_of_week), 1) <> 1
+     or coalesce(array_ndims(new.reminder_times), 1) <> 1 then
+    raise exception 'days_of_week and reminder_times must be flat lists'
+      using errcode = '23514';
+  end if;
+
+  new.title := regexp_replace(new.title, '^\s+|\s+$', '', 'g');
   new.days_of_week := array(
     select distinct d from unnest(new.days_of_week) as d order by d);
   new.reminder_times := array(
