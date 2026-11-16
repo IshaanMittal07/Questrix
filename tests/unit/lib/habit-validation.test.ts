@@ -4,6 +4,7 @@ import {
   cleanHabitText,
   habitCreateSchema,
   habitDaysSchema,
+  habitFieldsSchema,
   habitOrderSchema,
   habitTitleSchema,
   habitUpdateSchema,
@@ -118,9 +119,71 @@ describe("reminderTimesSchema", () => {
       "00:00",
       "23:59",
     ]);
-    for (const t of ["24:00", "7:30", "07:60", "07:30:00", "noon"]) {
+    for (const t of [
+      "24:00",
+      "24:00:00",
+      "7:30",
+      "07:60",
+      "07:30:60",
+      "noon",
+    ]) {
       expect(reminderTimesSchema.safeParse([t]).success).toBe(false);
     }
+  });
+  it("accepts seconds (PostgREST, time inputs) and truncates to the minute", () => {
+    expect(
+      reminderTimesSchema.parse(["07:30:00", "07:30:59.5", "21:05:00"]),
+    ).toEqual(["07:30", "21:05"]);
+  });
+  it("caps the raw list size", () => {
+    expect(reminderTimesSchema.safeParse(Array(51).fill("07:30")).success).toBe(
+      false,
+    );
+    expect(reminderTimesSchema.parse(Array(50).fill("07:30"))).toEqual([
+      "07:30",
+    ]);
+  });
+});
+
+describe("habitDaysSchema raw size", () => {
+  it("caps the raw list size", () => {
+    expect(habitDaysSchema.safeParse(Array(51).fill(1)).success).toBe(false);
+    expect(habitDaysSchema.parse(Array(50).fill(1))).toEqual([1]);
+  });
+});
+
+describe("habitFieldsSchema", () => {
+  it("is the strict, required base for per-field checks", () => {
+    expect(
+      habitFieldsSchema.pick({ days_of_week: true }).parse({
+        days_of_week: [3, 1],
+      }),
+    ).toEqual({ days_of_week: [1, 3] });
+    expect(habitFieldsSchema.safeParse({ title: "Read" }).success).toBe(false);
+  });
+});
+
+describe("friendly error messages", () => {
+  const message = (r: {
+    success: boolean;
+    error?: { issues: { message: string }[] };
+  }) => r.error?.issues[0]?.message;
+  it("uses app wording, not Zod defaults", () => {
+    expect(message(habitDaysSchema.safeParse([9]))).toBe(
+      "Pick a day of the week",
+    );
+    expect(
+      message(
+        habitCreateSchema.safeParse({
+          title: "Read",
+          category: "learning",
+          target_per_day: 9,
+        }),
+      ),
+    ).toBe("At most 5 times a day");
+    expect(message(habitOrderSchema.safeParse([]))).toBe(
+      "No habits to reorder",
+    );
   });
 });
 
@@ -249,6 +312,12 @@ describe("habitUpdateSchema", () => {
 describe("habitOrderSchema", () => {
   it("accepts unique uuids", () => {
     expect(habitOrderSchema.parse([ID_A, ID_B])).toEqual([ID_A, ID_B]);
+  });
+  it("lowercases ids, so case variants count as duplicates", () => {
+    expect(habitOrderSchema.parse([ID_A.toUpperCase()])).toEqual([ID_A]);
+    expect(habitOrderSchema.safeParse([ID_A, ID_A.toUpperCase()]).success).toBe(
+      false,
+    );
   });
   it("rejects duplicates, non-uuids, empty and more than 20", () => {
     expect(habitOrderSchema.safeParse([ID_A, ID_A]).success).toBe(false);

@@ -1,7 +1,7 @@
 -- Phase 3: habits — RLS, column privileges, checks, 20-active cap, RPCs.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(109);
+select plan(113);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -402,6 +402,19 @@ delete from auth.users where id = '22222222-2222-2222-2222-222222222222';
 select is((select count(*)::int from public.habits
            where user_id = '22222222-2222-2222-2222-222222222222'), 0,
   'deleting an account deletes its habits');
+
+-- ── Parity with the JS mirror (lib/validation/habit.ts cleanHabitText) ─────
+-- \s depends on the database's ctype; these pin what the Zod schema assumes,
+-- so a hosted database that differs fails here instead of in the forms.
+select pg_temp.as_postgres();
+select is(public.habits_clean_text(U&'\0085\1680\2007\2028\202F\3000Read\0085\3000'), 'Read',
+  'Unicode spaces and NEL are trimmed at the ends, as in JS');
+select is(public.habits_clean_text(U&'a\00ADb\061Cc\180Ed\200Be\200Ef\200Fg\202Ah\202Ei\2060j\206Fk\3164l\FEFFm'),
+  'abcdefghijklm', 'every stripped range edge is removed inside text');
+select is(public.habits_clean_text(U&'a\00ACb\200Ac\2010d\202Fe\205Ff\2070g'),
+  U&'a\00ACb\200Ac\2010d\202Fe\205Ff\2070g', 'neighbours of the stripped ranges are kept');
+select is(public.habits_clean_text(U&'\200C\200Da\200Db\200C\200D'), U&'a\200Db',
+  'joiners are trimmed at the ends and kept inside');
 
 select * from finish();
 rollback;
