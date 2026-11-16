@@ -29,10 +29,23 @@ async function waitForEmail<T>(
   throw new Error(`No sign-in email for ${email} within ${timeoutMs} ms`);
 }
 
-export function waitForSignInCode(email: string, timeoutMs = 15_000) {
+/**
+ * The newest sign-in code for `email`. Pass `notCode` (the previous code) when
+ * signing in again, so the older email isn't read before the new one arrives.
+ */
+export function waitForSignInCode(
+  email: string,
+  {
+    notCode,
+    timeoutMs = 15_000,
+  }: { notCode?: string; timeoutMs?: number } = {},
+) {
   return waitForEmail(
     email,
-    (msg) => (msg.Text || msg.HTML).match(/\b(\d{6})\b/)?.[1] ?? null,
+    (msg) => {
+      const code = (msg.Text || msg.HTML).match(/\b(\d{6})\b/)?.[1] ?? null;
+      return code === notCode ? null : code;
+    },
     timeoutMs,
   );
 }
