@@ -1,7 +1,7 @@
 -- Phase 3: habits — RLS, column privileges, checks, 20-active cap, RPCs.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(99);
+select plan(109);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -52,6 +52,14 @@ select ok(not has_function_privilege('authenticated', 'public.habits_lock(uuid)'
   'clients cannot take the habits lock directly');
 select ok(not has_function_privilege('service_role', 'public.habits_lock(uuid)', 'execute'),
   'the habits lock is internal to the owner''s functions');
+select function_privs_are('public', 'habits_before_write', array[]::text[], 'service_role', array[]::text[],
+  'service_role has no EXECUTE on the trigger function (triggers fire anyway)');
+select function_privs_are('public', 'habits_clean_text', array['text'], 'anon', array[]::text[],
+  'anon cannot call habits_clean_text');
+select function_privs_are('public', 'habits_clean_text', array['text'], 'authenticated', array[]::text[],
+  'authenticated cannot call habits_clean_text');
+select function_privs_are('public', 'habits_clean_text', array['text'], 'service_role', array[]::text[],
+  'service_role cannot call habits_clean_text directly');
 select has_index('public', 'habits', 'habits_user_active_idx', array['user_id', 'sort_order'],
   'active habits are indexed by user and position');
 select has_index('public', 'habits', 'habits_user_idx', array['user_id'],
@@ -200,6 +208,15 @@ select throws_ok($$insert into public.habits (title, category) values (U&'\200B\
 update public.habits set description = U&'\200B\2066', icon = E'\n' where template_key = 'floss';
 select is((select description is null and icon is null from public.habits where template_key = 'floss'),
   true, 'descriptions and icons get the same invisible-character cleaning');
+update public.habits set icon = U&'\+01F9D8\200D\2640\FE0F' where template_key = 'floss';
+select is((select icon from public.habits where template_key = 'floss'), U&'\+01F9D8\200D\2640\FE0F',
+  'a ZWJ emoji icon is kept intact');
+update public.habits set title = U&'\200D\0645\06CC\200C\062E\0648\0627\0647\0645\200C' where template_key = 'floss';
+select is((select title from public.habits where template_key = 'floss'), U&'\0645\06CC\200C\062E\0648\0627\0647\0645',
+  'ZWNJ inside a Persian title is kept; joiners at the ends are trimmed');
+update public.habits set title = 'Floss' where template_key = 'floss';
+select throws_ok($$insert into public.habits (title, category) values (U&'\200D\200C', 'mind')$$,
+  '23514', null, 'a title of only joiners is rejected');
 select throws_ok($$insert into public.habits (title, category) values (E'a\nb', 'mind')$$,
   '23514', null, 'control characters inside a title are rejected');
 select throws_ok($$insert into public.habits (title, category, reminder_times) values ('x', 'mind', '{24:00}')$$,
@@ -364,6 +381,20 @@ update public.habits set created_at = now() - interval '31 days'
 select pg_temp.as_user('33333333-3333-3333-3333-333333333333');
 select lives_ok($$insert into public.habits (title, category) values ('fresh start', 'mind')$$,
   'old habits age out of the creation windows');
+
+-- ── service_role writes still go through the trigger ────────────────────────
+select pg_temp.as_postgres();
+set local role service_role;
+select lives_ok(
+  $$insert into public.habits (user_id, title, category, template_key)
+    values ('33333333-3333-3333-3333-333333333333', U&' svc\2066 ', 'mind', 'svc')$$,
+  'service_role can insert habits after the internal revokes');
+select is((select title from public.habits where template_key = 'svc'), 'svc',
+  'service_role inserts are still cleaned by the trigger');
+select lives_ok(
+  $$update public.habits set archived_at = now() where template_key = 'svc'$$,
+  'service_role can archive habits after the internal revokes');
+reset role;
 
 -- ── Account deletion cascades ───────────────────────────────────────────────
 select pg_temp.as_postgres();
