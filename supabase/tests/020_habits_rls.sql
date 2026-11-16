@@ -405,7 +405,7 @@ select is((select count(*)::int from public.habits
 
 -- ── Parity with the JS mirror (lib/validation/habit.ts cleanHabitText) ─────
 -- \s depends on the database's ctype; these pin what the Zod schema assumes,
--- so a hosted database that differs fails here instead of in the forms.
+-- so a database image whose ctype differs fails here instead of in the forms.
 select pg_temp.as_postgres();
 select is(public.habits_clean_text(U&'\0085\1680\2007\2028\202F\3000Read\0085\3000'), 'Read',
   'Unicode spaces and NEL are trimmed at the ends, as in JS');

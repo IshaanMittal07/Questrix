@@ -106,7 +106,7 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **Callers send the parsed output.** The schemas sort and de-duplicate days and reminder times. The trigger rejects oversized arrays before de-duplicating, so raw input could fail there.
   - **Reminder times** accept `HH:MM`, optionally with seconds (PostgREST returns `07:30:00`), and output `HH:MM`, as the trigger truncates to the minute.
   - **Updates can't change `template_key`,** although the column grant allows it: it records where a habit came from.
-  - **Parity** between `cleanHabitText` and `habits_clean_text` is pinned on both sides: unit tests in JS and pgTAP vectors in SQL, because `\s` depends on the database's ctype.
+  - **Parity** between `cleanHabitText` and `habits_clean_text` is pinned on both sides: unit tests in JS and pgTAP vectors in SQL, because `\s` depends on the database's ctype. pgTAP runs on the local and CI image only, so the RUNBOOK has a one-off check on the hosted project after the first `db push`.
 - **`template_key`** is used for analytics and suggestion matching only: rule 1 identifies the user's habit X by it, and rule 4 filters on it. It is never trusted as proof of anything (no points, no verification).
 - **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.
 - **Reminder times are independent of `target_per_day` (decided in #43).** Reminders are notifications, not occurrences. A habit with `target_per_day = 3` can have one reminder or none, and "Drink 2 L of water" can have 4 reminders with a target of 4. Coupling the two would block common setups and buy nothing, because completions (Phase 4) are capped by `target_per_day` alone.
