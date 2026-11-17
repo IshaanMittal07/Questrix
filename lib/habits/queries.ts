@@ -20,9 +20,8 @@ const HABIT_COLUMNS =
  */
 export const ARCHIVED_LIST_MAX = 200;
 
-// Signed out returns empty rather than throwing: the (app) layout and the
-// proxy already gate these routes on a session.
-const session = getVerifiedUser;
+// Signed out returns empty rather than throwing: the proxy already sends
+// signed-out visitors on /habits and /onboarding to /login.
 
 /**
  * The signed-in user's active habits in list order (sort_order, created_at,
@@ -30,7 +29,7 @@ const session = getVerifiedUser;
  * index. Throws on a database error so the route's error boundary shows it.
  */
 export const listActiveHabits = cache(async (): Promise<Habit[]> => {
-  const s = await session();
+  const s = await getVerifiedUser();
   if (!s) return [];
   const { data, error } = await s.supabase
     .from("habits")
@@ -46,7 +45,7 @@ export const listActiveHabits = cache(async (): Promise<Habit[]> => {
 
 /** The most recently archived habits, newest first. */
 export const listArchivedHabits = cache(async (): Promise<Habit[]> => {
-  const s = await session();
+  const s = await getVerifiedUser();
   if (!s) return [];
   const { data, error } = await s.supabase
     .from("habits")
@@ -65,7 +64,7 @@ export const getMyHabit = cache(async (id: string): Promise<Habit | null> => {
   // A malformed id (e.g. from a URL) is "not found", not a uuid cast error.
   const parsed = habitIdSchema.safeParse(id);
   if (!parsed.success) return null;
-  const s = await session();
+  const s = await getVerifiedUser();
   if (!s) return null;
   const { data, error } = await s.supabase
     .from("habits")
