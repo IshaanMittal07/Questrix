@@ -678,10 +678,9 @@ describe("coaching hints", () => {
 
   it("ignores emoji-only titles and invisible characters", () => {
     expect(isVagueTitle(String.fromCodePoint(0x1f4aa))).toBe(false);
-    // A zero-width space glued to a word doesn't make it a separate word.
-    expect(isVagueTitle(`${String.fromCodePoint(0x200b)}Go for a run`)).toBe(
-      false,
-    );
+    // Cleaned before the template lookup: "Floss" + ZWSP is still "Floss".
+    expect(isVagueTitle(`Floss${String.fromCodePoint(0x200b)}`)).toBe(false);
+    expect(isVagueTitle(String.fromCodePoint(0x200b))).toBe(false);
   });
 
   describe("reminder collisions", () => {
