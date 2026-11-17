@@ -102,6 +102,13 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **Scoring.** Each rule contributes **at most once per template**. A template that fills two empty slots still gets +15, and one paired by two of the user's habits still gets +40. Scores from different rules add up.
   - **Ordering.** Suggestions are sorted by score, highest first. Ties are broken by category in this order: health, mind, fitness, self_care, nutrition, learning, career, finance, social. That's the plan's rule-2 priority, extended here to a global tie-break, then §8.1 table order (`other` has no templates). Remaining ties keep `templates.ts` declaration order.
   - **The "first week" coaching hint** is measured from `profiles.onboarded_at`, not from account creation.
+  - **Implementation (#45).** `lib/habits/templates.ts` and `lib/habits/suggestions.ts`.
+    - Suggestions are only templates with a **positive score**; the template library lists the rest.
+    - Rule 1 pairs are **one-directional** (Workout → Stretch, not back). Rule 5 (social proof) takes an optional `popularKeys` set, empty until Phase 7.
+    - Habit-count hints count **the new habit too**: "more than 5" fires when the user already has 5 active habits. The first week ends exactly 7 days after `onboarded_at`; a user who hasn't onboarded counts as in it. Above 8 the stronger warning replaces the first-week one, and at 20 an `at_cap` hint replaces both. Count hints are skipped when editing.
+    - Vague title: 1–2 words and no numeric character (`\p{N}`), which also covers times.
+    - Reminder collisions use the nearest existing reminder within ±10 min, wrapping at midnight. The `stack` hint carries the plan's "After I …, I will …" copy.
+    - Template icons are single-code-point emoji with no variation selector or ZWJ, so the source has no invisible characters. Medication has no default time, so its reminders start off.
 - **Onboarding step 2** lets the user pick **up to** 3 starter habits, and can be skipped. The original plan (`QUESTRIX_BUILD_PLAN.md`) §9 said "pick 3".
 - **Schedules.** `lib/habits/schedule.ts` is for display only (Today ordering, "not today" labels). JS (browser or Node) ICU and Postgres tzdata can disagree, so SQL is authoritative for "is it scheduled today". That is owned by the Phase 4 `get_today` / `complete_habit` functions. Nothing in Phase 3 awards points from `schedule.ts`.
 - **Habit input schemas (#44)** live in `lib/validation/habit.ts`. They mirror the habits CHECKs and trigger for early form errors; the database stays authoritative.
