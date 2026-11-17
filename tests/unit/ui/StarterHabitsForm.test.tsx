@@ -99,6 +99,85 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(push).not.toHaveBeenCalled();
   });
 
+  it("counts picks in the status and Add label as you go", async () => {
+    const user = userEvent.setup();
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Pick up to 3.");
+    const boxes = suggested().getAllByRole("checkbox");
+
+    await user.click(boxes[0]);
+    expect(status).toHaveTextContent(/^1 of 3 picked\.$/);
+    expect(screen.getByRole("button", { name: "Add 1 habit" })).toBeEnabled();
+
+    await user.click(boxes[1]);
+    expect(status).toHaveTextContent(/^2 of 3 picked\.$/);
+    expect(screen.getByRole("button", { name: "Add 2 habits" })).toBeEnabled();
+
+    await user.click(boxes[0]);
+    await user.click(boxes[1]);
+    expect(status).toHaveTextContent("Pick up to 3.");
+    expect(
+      screen.getByRole("button", { name: "Pick a habit to add" }),
+    ).toBeDisabled();
+  });
+
+  it("toggles with Space from the keyboard, and respects the cap", async () => {
+    const user = userEvent.setup();
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    const boxes = suggested().getAllByRole("checkbox");
+
+    await user.tab();
+    expect(boxes[0]).toHaveFocus();
+    await user.keyboard(" ");
+    expect(boxes[0]).toBeChecked();
+    await user.keyboard(" ");
+    expect(boxes[0]).not.toBeChecked();
+
+    for (const b of boxes.slice(0, 3)) {
+      b.focus();
+      await user.keyboard(" ");
+    }
+    boxes[3].focus();
+    await user.keyboard(" ");
+    expect(boxes[3]).not.toBeChecked();
+    expect(screen.getByRole("status")).toHaveTextContent("3 of 3 picked.");
+  });
+
+  it("shows Adding… and blocks resubmits while the server works", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: unknown) => void;
+    addStarterHabits.mockReturnValue(new Promise((r) => (resolve = r)));
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    await user.click(suggested().getAllByRole("checkbox")[0]);
+    await user.click(screen.getByRole("button", { name: "Add 1 habit" }));
+
+    const busy = await screen.findByRole("button", { name: "Adding…" });
+    expect(busy).toBeDisabled();
+    await user.click(busy);
+    expect(addStarterHabits).toHaveBeenCalledTimes(1);
+    expect(push).not.toHaveBeenCalled();
+
+    resolve({ ok: true, data: { count: 1 } });
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/today"));
+  });
+
+  it("clears a server error when the picks change", async () => {
+    const user = userEvent.setup();
+    addStarterHabits.mockResolvedValue({
+      ok: false,
+      code: "unknown",
+      error: "Something went wrong.",
+    });
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    const boxes = suggested().getAllByRole("checkbox");
+    await user.click(boxes[0]);
+    await user.click(screen.getByRole("button", { name: "Add 1 habit" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    await user.click(boxes[1]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("skips unknown suggestion keys", () => {
     render(
       <StarterHabitsForm
