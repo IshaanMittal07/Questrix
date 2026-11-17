@@ -1,8 +1,27 @@
 import type { Metadata } from "next";
-import { PagePlaceholder } from "@/components/ui/PagePlaceholder";
+import { Suspense } from "react";
+
+import { HabitList } from "@/components/habits/HabitList";
+import { Card } from "@/components/ui/Card";
+import { listActiveHabits, listArchivedHabits } from "@/lib/habits/queries";
 
 export const metadata: Metadata = { title: "Habits" };
 
+async function HabitsContent() {
+  const [active, archived] = await Promise.all([
+    listActiveHabits(),
+    listArchivedHabits(),
+  ]);
+  return <HabitList active={active} archived={archived} />;
+}
+
 export default function HabitsPage() {
-  return <PagePlaceholder title="Habits" phase={3} />;
+  return (
+    <div className="flex flex-col gap-4">
+      <h1 className="text-2xl font-bold tracking-wider uppercase">Habits</h1>
+      <Suspense fallback={<Card className="h-40 animate-pulse" />}>
+        <HabitsContent />
+      </Suspense>
+    </div>
+  );
 }
