@@ -208,7 +208,7 @@ A running log of choices made where the plan was ambiguous or where current tool
 Pinned before coding, from the planner (#65). Each task records refinements below its own heading.
 
 - **D1. Per-habit schedule snapshot.** Plan §5.2 had `daily_schedule(user_id, local_date, scheduled_count)`. Phase 4 adds a child table, `daily_schedule_habits(user_id, local_date, habit_id, difficulty, target_per_day)`.
-  - **When a habit enters a day's snapshot:** when the day is first snapshotted, and again when the habit is inserted or unarchived, or has that day added to `days_of_week`.
+  - **When a habit enters a day's snapshot:** when the day is first snapshotted, and again when the habit is inserted or unarchived, or has that day added to `days_of_week`. For an insert this happens in an AFTER INSERT trigger, because the foreign key needs the habit row to exist.
   - **Never removed.** Archiving or editing a habit doesn't remove it, so `scheduled_count` never falls. A day holds at most 20 habits, which bounds archive-and-recreate farming.
   - **What reads the snapshot.** Points, targets and "scheduled today" all come from the snapshot, never the live habit. Changes to `difficulty` and `target_per_day` therefore apply from the next day.
   - **Enforced by the database.** `habit_completions` has a foreign key to the snapshot, so a completion of an unscheduled habit can't exist.
@@ -221,13 +221,16 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - After onboarding, the timezone can change once per `timezone_change_cooldown_days` (7), tracked in `profiles.timezone_changed_at`. A change inside the cooldown raises `QX001` with a hint. Onboarding is exempt while `onboarded_at` is null.
   - The old timezone's day is snapshotted before the change.
   - **Moving east.** If the change moves the local date past an already-counted `last_streak_date`, `last_streak_date` moves to the new local date. A cooldown alone wouldn't be enough: with a single change, a user could complete at UTC-12, switch to UTC+14 and complete "tomorrow" minutes later. With this rule no streak is gained, and extra points are bounded to one day per cooldown.
-  - **Moving west** is covered by plan §6.2 rule 0.
+  - **Moving west** is covered by plan §6.2 rule 0. The user can still collect points for the previous day's unused occurrences, but that is bounded to one day per cooldown too.
 - **D4. `economy_config`** is `key text PK, value jsonb`. It's read through the internal `economy_value(key)`, which raises if the key is missing. Signed-in users can read the table, but nobody can write it from a client. ECONOMY.md documents every key.
 - **D5. Lock order.**
-  - `complete_habit` and `undo_completion` take the profile row `for update`, then the habit row `for share`, then call `ensure_daily_schedule`.
-  - `ensure_daily_schedule` takes no profile lock. It inserts with `on conflict do nothing`, keyed by the primary key.
-  - The habits trigger and RPCs take the habit row or `habits_lock` before calling it, and never take the profile lock.
-  - This replaces the Phase 3 note, which would have deadlocked: a client UPDATE locks the habit row before its BEFORE trigger runs.
+  - `complete_habit`, `undo_completion` and, later, `purchase_item` lock the profile row `for no key update`, then the habit row `for share`, then call `ensure_daily_schedule`.
+    - Plan §6 says `for update`. That would deadlock: inserting a `daily_schedule` row checks its foreign key by taking `FOR KEY SHARE` on `profiles`, which conflicts with `FOR UPDATE`.
+    - `FOR NO KEY UPDATE` still serialises engine calls against each other and against client profile updates, but it doesn't block foreign-key checks.
+  - `ensure_daily_schedule` takes no explicit profile lock. It inserts with `on conflict do nothing`, keyed by the primary key.
+  - The habits trigger and RPCs take the habit row or `habits_lock` before calling it.
+  - The #67 and #68 PRs record a two-session check of exactly this interleaving: a habit edit against `complete_habit`.
+  - This replaces the Phase 3 note, which would also have deadlocked: a client UPDATE locks the habit row before its BEFORE trigger runs.
 - **D6. Time seam for tests.** Internal `complete_habit_at(uid, habit, now)` and `undo_completion_at(...)` take the time as a parameter, and EXECUTE is revoked from every client role. The public RPCs are thin wrappers that use `auth.uid()` and `now()`. pgTAP runs in one transaction, so it needs the seam to simulate days.
 - **D7. `get_today`** returns JSON with only today's scheduled habits.
   - `at_risk` is computed on the server: today is scheduled, nothing is done yet, and the local time is 18:00 or later.
@@ -238,7 +241,23 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
 - **D10. Concurrency.** pgTAP runs in one transaction, so it can't open two sessions. The unique occurrence constraint and the lock are tested structurally, and a real two-session check is recorded in the `complete_habit` PR, as in #43.
 - **Spending before Phase 6.** pgTAP spends points through a postgres-only helper that writes an `admin_adjust` ledger entry. Phase 6 re-runs the invariant test with `purchase_item`.
 - **Engine schema (#66).**
-  - `habit_streaks` has a `user_id` (plan §5.2 had none), so the owner-only policy can filter on it.
-  - `streak_milestones_awarded` also stores `points` and `awarded_on`, so an undo knows what to revoke.
-  - The composite foreign keys tie every completion, snapshot and streak to the habit's owner.
-  - Clients can only read their own rows, and the policies are written out per table. All writes happen in SECURITY DEFINER functions owned by `postgres`.
+  - **Columns beyond plan §5.2:**
+    - `habit_streaks.user_id`, so the owner-only policy can filter on it.
+    - `streak_milestones_awarded` gains `id`, `points` and `awarded_on`, so its ledger entries can point at it and an undo knows what to revoke.
+    - Undo needs `longest` as well, so it can restore exactly: `daily_progress.longest_streak_before` and `habit_completions.habit_longest_before`.
+  - **Foreign keys.**
+    - The composite keys tie every completion, snapshot entry and streak to the habit's owner. Those tables have no direct foreign key to `profiles`; they cascade through `habits`.
+    - The completion → snapshot and snapshot → day keys are **no action**, so a stray delete of a day or snapshot entry fails loudly instead of erasing completions. Account deletion still works, because every row goes in one statement.
+  - **Deleting a habit.** Clients can't delete habits. If `service_role` or account deletion does, the habit's completions, snapshot entries and streak go with it, and the day row and ledger stay. The balance therefore still equals the ledger sum. Accepted, and tested.
+  - **Ledger.**
+    - It's append-only even for `service_role`: no UPDATE, DELETE or TRUNCATE. The cascade from `profiles` still deletes, because foreign-key actions run as the table owner.
+    - The sign follows the reason (CHECK).
+    - `(reason, ref_id)` is unique for completion, milestone and undo entries, so a retry can't book anything twice.
+    - `ref_id` points at the completion, milestone or `user_items` row.
+  - **Points formula.** A CHECK pins `points_awarded = floor(base_points × multiplier)`.
+  - **Sequences.** Supabase's default privileges give `anon` and `authenticated` USAGE and UPDATE on new sequences. A client could then `setval` the ledger's id and break every later insert. The migration revokes that for the ledger sequence and for future sequences.
+  - **Config and CHECKs.**
+    - `economy_value` is SECURITY INVOKER, and no role can call it except the definer functions' owner.
+    - `scheduled_count` has no hard upper bound; the config owns the cap.
+    - Two CHECKs still limit config values: `profiles.streak_freezes` (0..2) caps `streak_freezes_max`, and `multiplier` (at most 9.99) caps the multiplier. ECONOMY.md says so.
+  - **Access.** Clients can only read their own rows, and the policies are written out per table. All writes happen in SECURITY DEFINER functions owned by `postgres`.

@@ -40,6 +40,7 @@ export type Database = {
           counted_for_streak: boolean;
           last_streak_date_before: string | null;
           local_date: string;
+          longest_streak_before: number | null;
           streak_before: number | null;
           streak_freezes_before: number | null;
           streak_run_started_before: string | null;
@@ -51,6 +52,7 @@ export type Database = {
           counted_for_streak?: boolean;
           last_streak_date_before?: string | null;
           local_date: string;
+          longest_streak_before?: number | null;
           streak_before?: number | null;
           streak_freezes_before?: number | null;
           streak_run_started_before?: string | null;
@@ -61,6 +63,7 @@ export type Database = {
           counted_for_streak?: boolean;
           last_streak_date_before?: string | null;
           local_date?: string;
+          longest_streak_before?: number | null;
           streak_before?: number | null;
           streak_freezes_before?: number | null;
           streak_run_started_before?: string | null;
@@ -297,6 +300,7 @@ export type Database = {
           habit_current_before: number | null;
           habit_id: string;
           habit_last_date_before: string | null;
+          habit_longest_before: number | null;
           id: string;
           local_date: string;
           multiplier: number;
@@ -311,6 +315,7 @@ export type Database = {
           habit_current_before?: number | null;
           habit_id: string;
           habit_last_date_before?: string | null;
+          habit_longest_before?: number | null;
           id?: string;
           local_date: string;
           multiplier: number;
@@ -324,6 +329,7 @@ export type Database = {
           habit_current_before?: number | null;
           habit_id?: string;
           habit_last_date_before?: string | null;
+          habit_longest_before?: number | null;
           id?: string;
           local_date?: string;
           multiplier?: number;
@@ -599,6 +605,7 @@ export type Database = {
         Row: {
           awarded_on: string;
           created_at: string;
+          id: string;
           milestone: number;
           points: number;
           streak_run_started: string;
@@ -608,6 +615,7 @@ export type Database = {
         Insert: {
           awarded_on: string;
           created_at?: string;
+          id?: string;
           milestone: number;
           points: number;
           streak_run_started: string;
@@ -616,6 +624,7 @@ export type Database = {
         Update: {
           awarded_on?: string;
           created_at?: string;
+          id?: string;
           milestone?: number;
           points?: number;
           streak_run_started?: string;

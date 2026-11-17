@@ -258,7 +258,7 @@ Index: `(user_id) where archived_at is null`. Limit: max 20 active habits per us
 Column privileges: clients may insert/update only `title, description, category, difficulty, icon, color, days_of_week, target_per_day, reminder_times, reminders_enabled, template_key, sort_order` — never `user_id` (set by a default of `auth.uid()`), `archived_at` or `created_at`.
 
 **daily_schedule** (server-maintained snapshot, the anti-cheat source for rest days)
-`(user_id, local_date)` PK, `scheduled_count int not null`. Written once per user per local day — by the first `get_today()`/`complete_habit()` call of that day, or by a nightly `pg_cron` job that fills in any missing days — from the habits active at that moment. **Never** recomputed for past days, so editing a habit's `days_of_week` or archiving it can't turn a missed day into a rest day retroactively. No client write access.
+`(user_id, local_date)` PK, `scheduled_count int not null`, plus a per-habit child table `daily_schedule_habits(user_id, local_date, habit_id, difficulty, target_per_day)` (DECISIONS § Phase 4, D1). Written once per user per local day — by the first `get_today()`/`complete_habit()` call of that day or before any habit/timezone edit, filling up to 7 missing past days lazily (no nightly job; D2) — from the habits active at that moment. **Never** recomputed for past days, so editing a habit's `days_of_week` or archiving it can't turn a missed day into a rest day retroactively. No client write access.
 
 **habit_completions**
 | column | type | notes |
@@ -365,7 +365,7 @@ Column privileges: `revoke update on posts, comments from anon, authenticated; g
 
 ## 6. Game economy & server functions
 
-All of this logic lives in **Postgres functions** (SECURITY DEFINER, single transaction, `select … for update` on the user's `profiles` row first to serialize concurrent calls). Document the formulas in `docs/ECONOMY.md` and keep the numbers in one `economy_config` table (key/value) so they can be tuned without code changes.
+All of this logic lives in **Postgres functions** (SECURITY DEFINER, single transaction, `select … for no key update` on the user's `profiles` row first to serialize concurrent calls — not `for update`, which would deadlock with foreign-key checks; DECISIONS § Phase 4, D5). Document the formulas in `docs/ECONOMY.md` and keep the numbers in one `economy_config` table (key/value) so they can be tuned without code changes.
 
 ### 6.1 Points per completion
 ```
@@ -376,7 +376,7 @@ points      = floor(base_points × multiplier)
 
 ### 6.2 Streak rules (global daily streak)
 - A local day **counts** when the user completes **at least one** scheduled habit that day.
-- A **rest day** is a local day whose `daily_schedule.scheduled_count = 0`. Rest days never break a streak. A day with **no** `daily_schedule` row is filled in by the nightly job, so a gap day that is still missing a row is treated as **not** a rest day (fail closed).
+- A **rest day** is a local day whose `daily_schedule.scheduled_count = 0`. Rest days never break a streak. A day with **no** `daily_schedule` row is filled in lazily (up to 7 days back; DECISIONS § Phase 4, D2), so a gap day that is still missing a row is treated as **not** a rest day (fail closed).
 - On the first completion of a local day `D` (inside `complete_habit`):
   0. If `D < last_streak_date` (the user moved to a timezone further west) → treat `D` as `last_streak_date`: no streak change.
   1. If `last_streak_date = D` → nothing changes.
