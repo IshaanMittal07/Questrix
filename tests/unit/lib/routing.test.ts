@@ -70,6 +70,16 @@ describe("routeBeforeProfile", () => {
 });
 
 describe("routeForOnboarding", () => {
+  it("only lets onboarded users reach step 2 (starter habits)", () => {
+    expect(routeForOnboarding(true, "/onboarding/habits")).toEqual({
+      kind: "next",
+    });
+    expect(routeForOnboarding(false, "/onboarding/habits")).toEqual({
+      kind: "redirect",
+      to: "/onboarding",
+    });
+  });
+
   it("sends users who haven't onboarded to /onboarding", () => {
     expect(routeForOnboarding(false, "/today")).toEqual({
       kind: "redirect",

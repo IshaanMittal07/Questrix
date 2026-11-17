@@ -21,7 +21,7 @@ export function uniqueId(testInfo: TestInfo) {
 
 /**
  * Signs up a fresh user with an email code and finishes onboarding step 1,
- * ending wherever onboarding sends a new user next.
+ * ending on step 2 (starter habits). Call skipStarterHabits to reach Today.
  */
 export async function signUpAndOnboard(page: Page, testInfo: TestInfo) {
   const id = uniqueId(testInfo);
@@ -41,5 +41,12 @@ export async function signUpAndOnboard(page: Page, testInfo: TestInfo) {
   await page.getByLabel("Username").fill(username);
   await expect(page.getByText("Available!")).toBeVisible();
   await page.getByRole("button", { name: "Start my quest" }).click();
+  await expect(page).toHaveURL(/\/onboarding\/habits$/);
   return { email, username };
+}
+
+/** Onboarding step 2: skip picking habits and land on Today. */
+export async function skipStarterHabits(page: Page) {
+  await page.getByRole("link", { name: "Skip for now" }).click();
+  await expect(page).toHaveURL(/\/today$/);
 }

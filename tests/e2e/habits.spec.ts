@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
-import { signUpAndOnboard, skipSplash } from "./helpers/session";
+import {
+  signUpAndOnboard,
+  skipSplash,
+  skipStarterHabits,
+} from "./helpers/session";
 
 test.beforeEach(async ({ page }) => skipSplash(page));
 
@@ -8,7 +12,7 @@ test("create, edit, reorder, archive and restore habits", async ({
   page,
 }, testInfo) => {
   await signUpAndOnboard(page, testInfo);
-  await expect(page).toHaveURL(/\/today$/);
+  await skipStarterHabits(page);
 
   await page.goto("/habits");
   // .first(): during streaming React briefly holds a hidden copy of the
