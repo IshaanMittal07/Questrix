@@ -2,7 +2,7 @@ import "server-only";
 
 import { cache } from "react";
 
-import { createClient } from "@/lib/supabase/server";
+import { getVerifiedUser } from "@/lib/supabase/session";
 import type { Database } from "@/lib/supabase/types";
 import { habitIdSchema } from "@/lib/validation/habit";
 
@@ -20,13 +20,9 @@ const HABIT_COLUMNS =
  */
 export const ARCHIVED_LIST_MAX = 200;
 
-/** Verified session (getClaims, not getSession), or null when signed out. */
-async function session() {
-  const supabase = await createClient();
-  const { data } = await supabase.auth.getClaims();
-  const userId = data?.claims?.sub;
-  return userId ? { supabase, userId } : null;
-}
+// Signed out returns empty rather than throwing: the (app) layout and the
+// proxy already gate these routes on a session.
+const session = getVerifiedUser;
 
 /**
  * The signed-in user's active habits in list order (sort_order, created_at,

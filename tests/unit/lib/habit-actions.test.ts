@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("server-only", () => ({}));
+
 /**
  * A fake supabase-js client: every builder call is recorded, and awaiting the
  * chain (or .single()/.maybeSingle()) resolves to the next queued result.
@@ -333,7 +335,9 @@ describe("addStarterHabits", () => {
     const rows = op("insert")?.[1] as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(2);
     const water = getTemplate("drink_water")!;
-    expect(rows[1]).toEqual({
+    // Strict: every row must have the same keys, or postgrest-js's ?columns=
+    // union would send NULL instead of a column default for missing ones.
+    expect(rows[1]).toStrictEqual({
       title: water.title,
       category: water.category,
       difficulty: water.difficulty,
@@ -387,10 +391,38 @@ describe("addStarterHabits", () => {
 });
 
 describe("edge cases", () => {
-  it("createHabit passes a well-formed template_key through as untrusted data", async () => {
+  it("createHabit keeps a library template_key and rejects unknown ones", async () => {
     results = [{ data: { id: ID } }];
-    await actions.createHabit({ ...valid, template_key: "not_in_library" });
-    expect(op("insert")?.[1]).toMatchObject({ template_key: "not_in_library" });
+    await actions.createHabit({ ...valid, template_key: "workout" });
+    expect(op("insert")?.[1]).toMatchObject({ template_key: "workout" });
+    calls.length = 0;
+    expect(
+      await actions.createHabit({ ...valid, template_key: "not_in_library" }),
+    ).toEqual({
+      ok: false,
+      code: "invalid",
+      error: "Unknown habit template",
+      field: "template_key",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("never names an array index as the invalid field", async () => {
+    const res = await actions.reorderHabits([ID, "nope"]);
+    expect(res).toMatchObject({ ok: false, code: "invalid" });
+    expect(res).not.toHaveProperty("field");
+    expect(await actions.addStarterHabits(["workout", 1])).not.toHaveProperty(
+      "field",
+    );
+  });
+
+  it("doesn't double a period in the rate-limit message", async () => {
+    results = [
+      { error: { code: "QX001", message: "Slow down.", hint: "Later." } },
+    ];
+    expect(await actions.createHabit(valid)).toMatchObject({
+      error: "Slow down. Later.",
+    });
   });
 
   it.each(["Workout", "../x", "", "a".repeat(41), 7])(

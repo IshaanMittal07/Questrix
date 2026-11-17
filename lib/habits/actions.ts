@@ -1,10 +1,12 @@
 "use server";
 
+import "server-only";
+
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { getTemplate, templateToHabit } from "@/lib/habits/templates";
-import { createClient } from "@/lib/supabase/server";
+import { getVerifiedUser } from "@/lib/supabase/session";
 import {
   habitCreateSchema,
   habitIdSchema,
@@ -48,7 +50,9 @@ const fail = (
 
 function invalid(e: z.ZodError) {
   const issue = e.issues[0];
-  const field = issue?.path.length ? String(issue.path[0]) : undefined;
+  // Only name a habit field: list inputs have numeric paths.
+  const key = issue?.path[0];
+  const field = typeof key === "string" ? key : undefined;
   return fail("invalid", issue?.message ?? "Check the habit's details.", field);
 }
 
@@ -59,9 +63,11 @@ function fromDb(error: PgError) {
       // Rate limit from the habits trigger; its message and hint are ours.
       return fail(
         "rate_limited",
-        `${error.message ?? "Too many new habits"}.${error.hint ? ` ${error.hint}` : ""}`,
+        `${(error.message ?? "Too many new habits").replace(/\.?$/, ".")}${error.hint ? ` ${error.hint}` : ""}`,
       );
     case "23514":
+      // Must match the cap message in the habits trigger (migration
+      // 20261116000100_habits.sql); pgTAP 020_habits_rls.sql pins that text.
       return /active habits/.test(error.message ?? "")
         ? fail(
             "at_cap",
@@ -79,13 +85,6 @@ function fromDb(error: PgError) {
   }
 }
 
-async function signedIn() {
-  const supabase = await createClient();
-  const { data } = await supabase.auth.getClaims();
-  const userId = data?.claims?.sub;
-  return userId ? { supabase, userId } : null;
-}
-
 function revalidateHabits() {
   revalidatePath("/habits");
   revalidatePath("/today");
@@ -96,8 +95,12 @@ export async function createHabit(
 ): Promise<ActionResult<{ id: string }>> {
   const parsed = habitCreateSchema.safeParse(input);
   if (!parsed.success) return invalid(parsed.error);
+  // Untrusted, but kept clean: only library keys, so Phase 7 counts are real.
+  const key = parsed.data.template_key;
+  if (key !== undefined && !getTemplate(key))
+    return fail("invalid", "Unknown habit template", "template_key");
 
-  const s = await signedIn();
+  const s = await getVerifiedUser();
   if (!s) return fail("signed_out", "You're signed out.");
 
   const { data, error } = await s.supabase
@@ -120,7 +123,7 @@ export async function updateHabit(
   const parsed = habitUpdateSchema.safeParse(patch);
   if (!parsed.success) return invalid(parsed.error);
 
-  const s = await signedIn();
+  const s = await getVerifiedUser();
   if (!s) return fail("signed_out", "You're signed out.");
 
   const { data, error } = await s.supabase
@@ -145,7 +148,7 @@ async function callHabitRpc(
   const habitId = habitIdSchema.safeParse(id);
   if (!habitId.success) return fail("not_found", "That habit doesn't exist.");
 
-  const s = await signedIn();
+  const s = await getVerifiedUser();
   if (!s) return fail("signed_out", "You're signed out.");
 
   const { error } = await s.supabase.rpc(fn, { p_habit_id: habitId.data });
@@ -168,7 +171,7 @@ export async function reorderHabits(ids: unknown): Promise<ActionResult> {
   const parsed = habitOrderSchema.safeParse(ids);
   if (!parsed.success) return invalid(parsed.error);
 
-  const s = await signedIn();
+  const s = await getVerifiedUser();
   if (!s) return fail("signed_out", "You're signed out.");
 
   const { error } = await s.supabase.rpc("reorder_habits", {
@@ -206,7 +209,7 @@ export async function addStarterHabits(
     habitCreateSchema.parse(templateToHabit(getTemplate(k)!)),
   );
 
-  const s = await signedIn();
+  const s = await getVerifiedUser();
   if (!s) return fail("signed_out", "You're signed out.");
 
   const { error } = await s.supabase.from("habits").insert(rows);
