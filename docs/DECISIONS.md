@@ -251,6 +251,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Foreign keys.**
     - The composite keys tie every completion, snapshot entry and streak to the habit's owner. Those tables have no direct foreign key to `profiles`; they cascade through `habits`.
     - The completion → snapshot and snapshot → day keys are **not** cascades, so a stray delete of a day or snapshot entry fails instead of erasing completions.
+    - They're a backstop: `complete_habit` checks snapshot membership itself and raises its own D9 code. A deferred FK only fails at commit, with a generic 23503 that can't be caught.
     - They're `deferrable initially deferred`, so the check runs at commit. Account deletion removes those rows through two cascades (profiles → days, and profiles → habits → snapshot), and Postgres fires cascades in trigger-name order, which isn't guaranteed. An immediate check could run before the snapshot rows are gone, depending on OIDs: a review reproduced the failure. pgTAP forces the check with `SET CONSTRAINTS ALL IMMEDIATE` after a deletion.
   - **Deleting a habit.** Clients can't delete habits. If `service_role` or account deletion does, the habit's completions, snapshot entries and streak go with it, and the day row and ledger stay. The balance therefore still equals the ledger sum. Accepted, and tested.
   - **Ledger.**
@@ -262,11 +263,13 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Points formula.** A CHECK pins `points_awarded = floor(base_points × multiplier)`.
   - **Sequences.** Supabase's default privileges give `anon` and `authenticated` USAGE and UPDATE on new sequences. A client could then `setval` the ledger's id and break every later insert. The migration revokes that for the ledger sequence and for future sequences.
   - **Config and CHECKs.**
-    - `economy_value` is SECURITY INVOKER, and no role can call it except the definer functions' owner.
-    - `scheduled_count` has no hard upper bound; the config owns the cap.
     - Two CHECKs still limit config values: `profiles.streak_freezes` (0..2) caps `streak_freezes_max`, and `multiplier` (at most 9.99) caps the multiplier. ECONOMY.md says so.
-    - **Config values are validated** by `economy_config_value_valid` (a CHECK can't hold subqueries): shape and a sane range per key. `scheduled_count` keeps a hard ceiling of 50 in case the config is mis-set.
+    - **Config values are validated** by `economy_config_value_valid` (a CHECK can't hold subqueries).
+      - It checks shape, whole numbers where needed and a sane range per key, never returns null, and rejects unknown keys.
+      - The ranges keep `1 + multiplier_step × multiplier_cap` at 9.9 or below, which fits `numeric(4,2)`.
+      - `scheduled_count` keeps a hard ceiling of 50 in case the config is mis-set.
+      - The config cap itself is owned by `ensure_daily_schedule`.
     - **Multiplier rounding.** The formula CHECK uses the stored `numeric(4,2)` multiplier, so the engine rounds the multiplier to 2 dp before computing points.
-    - **`economy_value` is SECURITY INVOKER.** So its callers must be SECURITY DEFINER functions owned by `postgres`. The habits trigger functions that read config in #67 must run as definer, or a direct `service_role` write would fail.
+    - **`economy_value` is SECURITY INVOKER**, and no role can call it except the owner. So its callers must be SECURITY DEFINER functions owned by `postgres`. The habits trigger functions that read config in #67 must run as definer, or a direct `service_role` write would fail.
     - **Identity, not serial.** The default sequence privileges no longer reach clients, so a client-insertable table must use identity columns. Nothing is created as `supabase_admin`, whose default ACL still grants clients sequence access.
   - **Access.** Clients can only read their own rows, and the policies are written out per table. All writes happen in SECURITY DEFINER functions owned by `postgres`.

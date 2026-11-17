@@ -742,6 +742,10 @@ export type Database = {
       habits_clean_text: { Args: { p_text: string }; Returns: string };
       habits_lock: { Args: { p_user_id: string }; Returns: undefined };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
+      jsonb_num_between: {
+        Args: { hi: number; lo: number; v: Json; whole: boolean };
+        Returns: boolean;
+      };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
       unarchive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       username_available: { Args: { p_username: string }; Returns: boolean };
