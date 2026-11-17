@@ -273,3 +273,19 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - **`economy_value` is SECURITY INVOKER**, and no role can call it except the owner. So its callers must be SECURITY DEFINER functions owned by `postgres`. The habits trigger functions that read config in #67 must run as definer, or a direct `service_role` write would fail.
     - **Identity, not serial.** The default sequence privileges no longer reach clients, so a client-insertable table must use identity columns. Nothing is created as `supabase_admin`, whose default ACL still grants clients sequence access.
   - **Access.** Clients can only read their own rows, and the policies are written out per table. All writes happen in SECURITY DEFINER functions owned by `postgres`.
+- **Daily schedule (#67).**
+  - **`scheduled_count` is fixed at the first snapshot of a day.** D1 had it able to rise. A habit created, unarchived or given today's weekday later that day joins the snapshot, so it can be completed, but it doesn't raise the count. Creating a habit at 23:00 therefore can't turn a rest day into a missed day. The 20-entry cap still bounds farming.
+  - **`ensure_daily_schedule(uid, now)`** claims each missing day with `insert … on conflict do nothing` before filling it. A concurrent snapshot of the same day waits on the primary key, then does nothing.
+    - A past day's habits are those created by then, not archived before it, and scheduled on its weekday.
+    - It records their current difficulty and target. That's accurate, because every edit to those snapshots first.
+  - **The habits trigger** snapshots before an insert or a change to days, difficulty, target or archive. The `UPDATE OF` list gains `difficulty` and `target_per_day`.
+    - On insert it takes `habits_lock` first, as `archive_habit` and `unarchive_habit` do; taking them in the other order could deadlock.
+    - A new AFTER trigger adds the habit to today's snapshot.
+    - The creation limits are read from `economy_config`.
+  - **Timezone (#28).** `profiles_validate` enforces the cooldown (`QX001`, with a hint naming the date), snapshots the old timezone's days, applies the eastward rule, and stamps `timezone_changed_at`.
+    - The onboarding exemption checks the _old_ `onboarded_at`, because step 1 sets the username, which stamps `onboarded_at`, and the timezone in one update.
+    - Clients can read `timezone_changed_at` but not write it.
+  - **Two-session check (D10), run against the local stack.** All three cases passed: the second session waited for the first, then committed. There was no deadlock, and each day was snapshotted once, with the pre-edit schedule.
+    1. Two habit edits racing to take a day's first snapshot.
+    2. `archive_habit` against a habit insert.
+    3. A timezone change against a habit edit.

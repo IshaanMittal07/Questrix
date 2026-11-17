@@ -562,6 +562,7 @@ export type Database = {
           streak_freezes: number;
           streak_run_started: string | null;
           timezone: string;
+          timezone_changed_at: string | null;
           username: string;
         };
         ComputedFields: never;
@@ -580,6 +581,7 @@ export type Database = {
           streak_freezes?: number;
           streak_run_started?: string | null;
           timezone?: string;
+          timezone_changed_at?: string | null;
           username: string;
         };
         Update: {
@@ -597,6 +599,7 @@ export type Database = {
           streak_freezes?: number;
           streak_run_started?: string | null;
           timezone?: string;
+          timezone_changed_at?: string | null;
           username?: string;
         };
         Relationships: [];
@@ -735,6 +738,10 @@ export type Database = {
         Returns: boolean;
       };
       economy_value: { Args: { p_key: string }; Returns: Json };
+      ensure_daily_schedule: {
+        Args: { p_now: string; p_uid: string };
+        Returns: string;
+      };
       equip_item: {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
@@ -746,7 +753,12 @@ export type Database = {
         Args: { hi: number; lo: number; v: Json; whole: boolean };
         Returns: boolean;
       };
+      local_date_in: { Args: { p_at: string; p_tz: string }; Returns: string };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
+      snapshot_add_habit: {
+        Args: { p_habit_id: string; p_now: string; p_uid: string };
+        Returns: undefined;
+      };
       unarchive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       username_available: { Args: { p_username: string }; Returns: boolean };
     };
