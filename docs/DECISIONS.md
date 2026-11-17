@@ -146,6 +146,14 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **Gating.** Step 1 sets `onboarded_at`, so the proxy lets the user through, and a user who hasn't finished step 1 is sent back to `/onboarding`. Step 2 is optional, so it isn't enforced: a user who leaves can always add habits from `/habits`. Revisiting it later is harmless, because it uses the normal create path with its cap and rate limits.
   - **What it shows.** The engine's top 6 suggestions, which for a new user means the plan's priority order (health, mind, fitness), then every other template by category under "More habits". It is a checklist of up to 3. Once 3 are picked, the rest are `aria-disabled` and point at the live "3 of 3 picked" count. "Skip for now" goes to Today.
   - **Server-side.** Only template keys go to `addStarterHabits` (#46), which builds every field itself.
+  - **Review fixes (round 1).**
+    - The page checks `onboarded_at` itself, in case the proxy's lookup failed.
+    - Templates the user already has aren't offered again.
+    - Add is `aria-disabled` while nothing is picked.
+    - A thrown action shows an error and keeps Skip available.
+    - Each checkbox is named by its title, with the category as its description.
+    - Picks and Skip are inert while the request is in flight.
+    - After adding, the client still navigates with `router.push`, because `addStarterHabits` is shared with `/habits`. Phase 5's step 3 will change where it goes.
   - **Step numbering.** The page says "Step 2" without a total, because Phase 5 adds the notifications step.
 - **`template_key`** is used for analytics and suggestion matching only: rule 1 identifies the user's habit X by it, and rule 4 filters on it. It is never trusted as proof of anything (no points, no verification).
 - **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.

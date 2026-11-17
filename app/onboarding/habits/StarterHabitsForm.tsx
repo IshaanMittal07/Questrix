@@ -7,40 +7,50 @@ import { useId, useState, useTransition } from "react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { addStarterHabits } from "@/lib/habits/actions";
-import {
-  CATEGORY_LABELS,
-  REASON_LABELS,
-  type SuggestionView,
-} from "@/lib/habits/display";
+import { CATEGORY_LABELS, type SuggestionView } from "@/lib/habits/display";
 import {
   getTemplate,
   HABIT_TEMPLATES,
   type HabitCategory,
   type HabitTemplate,
 } from "@/lib/habits/templates";
+import { HOME_PATH } from "@/lib/supabase/routing";
 
 const STARTER_MAX = 3;
 
 /**
  * Onboarding step 2: pick up to 3 starter habits from the library, or skip.
  * Only template keys go to the server, which builds every field itself.
+ * Templates the user already has (a revisit) aren't offered again.
  */
 export function StarterHabitsForm({
   suggestions,
+  ownedKeys = [],
 }: {
   suggestions: SuggestionView[];
+  ownedKeys?: string[];
 }) {
   const router = useRouter();
   const id = useId();
+  const countId = `${id}-count`;
   const [picked, setPicked] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [pending, startTransition] = useTransition();
   const full = picked.length >= STARTER_MAX;
+  const none = picked.length === 0;
 
-  const suggestedKeys = new Set(suggestions.map((s) => s.key));
-  const others = HABIT_TEMPLATES.filter((t) => !suggestedKeys.has(t.key));
+  const owned = new Set(ownedKeys);
+  const suggestedTemplates = suggestions.flatMap((s) => {
+    const t = getTemplate(s.key);
+    return t && !owned.has(t.key) ? [t] : [];
+  });
+  const suggestedKeys = new Set(suggestedTemplates.map((t) => t.key));
+  const others = HABIT_TEMPLATES.filter(
+    (t) => !suggestedKeys.has(t.key) && !owned.has(t.key),
+  );
 
   function toggle(key: string) {
+    if (pending) return;
     setError("");
     setPicked((p) =>
       p.includes(key)
@@ -53,18 +63,24 @@ export function StarterHabitsForm({
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (pending || picked.length === 0) return;
+    if (pending || none) return;
     startTransition(async () => {
-      const res = await addStarterHabits(picked);
-      if (res.ok) router.push("/today");
-      else setError(res.error);
+      try {
+        const res = await addStarterHabits(picked);
+        if (res.ok) router.push(HOME_PATH);
+        else setError(res.error);
+      } catch {
+        // A network drop or server crash: stay here, with Skip available.
+        setError("Couldn't add your habits. Try again, or skip for now.");
+      }
     });
   }
 
-  const option = (t: HabitTemplate, detail?: string) => {
+  const option = (t: HabitTemplate) => {
     const checked = picked.includes(t.key);
     // At 3, the rest can't be picked: say why instead of silently ignoring.
     const blocked = full && !checked;
+    const detailId = `${id}-${t.key}`;
     return (
       <li key={t.key}>
         <label
@@ -78,7 +94,7 @@ export function StarterHabitsForm({
             type="checkbox"
             checked={checked}
             aria-disabled={blocked || undefined}
-            aria-describedby={blocked ? `${id}-count` : undefined}
+            aria-describedby={blocked ? `${detailId} ${countId}` : detailId}
             onChange={() => {
               if (!blocked) toggle(t.key);
             }}
@@ -89,61 +105,58 @@ export function StarterHabitsForm({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block font-semibold">{t.title}</span>
-            {detail ? (
-              <span className="text-muted block text-sm">{detail}</span>
-            ) : null}
           </span>
         </label>
+        {/* Outside the label, so the checkbox's name is just the title. */}
+        <span id={detailId} className="sr-only">
+          {CATEGORY_LABELS[t.category]}
+        </span>
       </li>
     );
   };
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-5">
-      <p
-        id={`${id}-count`}
-        role="status"
-        aria-live="polite"
-        className="text-muted text-sm"
-      >
-        {picked.length === 0
+      <p id={countId} role="status" className="text-muted text-sm">
+        {none
           ? `Pick up to ${STARTER_MAX}. Starting small makes streaks easier to keep.`
           : full
             ? `${STARTER_MAX} of ${STARTER_MAX} picked. Unpick one to choose another.`
             : `${picked.length} of ${STARTER_MAX} picked.`}
       </p>
 
-      <fieldset className="flex flex-col gap-2">
-        <legend className="mb-2 text-base font-bold">Suggested for you</legend>
-        <ul className="flex flex-col gap-2">
-          {suggestions.map((s) => {
-            const t = getTemplate(s.key);
-            return t ? option(t, REASON_LABELS[s.reasons[0]]) : null;
-          })}
-        </ul>
-      </fieldset>
+      {suggestedTemplates.length > 0 ? (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-2 text-base font-bold">
+            Suggested for you
+          </legend>
+          <ul className="flex flex-col gap-2">
+            {suggestedTemplates.map(option)}
+          </ul>
+        </fieldset>
+      ) : null}
 
-      <details>
-        <summary className="text-cyan min-h-11 cursor-pointer py-2 text-sm font-semibold">
-          More habits
-        </summary>
-        <div className="mt-2 flex flex-col gap-4">
-          {(Object.keys(CATEGORY_LABELS) as HabitCategory[]).map((c) => {
-            const list = others.filter((t) => t.category === c);
-            if (list.length === 0) return null;
-            return (
-              <fieldset key={c} className="flex flex-col gap-2">
-                <legend className="text-muted mb-1 text-xs font-semibold tracking-widest uppercase">
-                  {CATEGORY_LABELS[c]}
-                </legend>
-                <ul className="flex flex-col gap-2">
-                  {list.map((t) => option(t))}
-                </ul>
-              </fieldset>
-            );
-          })}
-        </div>
-      </details>
+      {others.length > 0 ? (
+        <details>
+          <summary className="text-cyan min-h-11 cursor-pointer py-2 text-sm font-semibold">
+            More habits
+          </summary>
+          <div className="mt-2 flex flex-col gap-4">
+            {(Object.keys(CATEGORY_LABELS) as HabitCategory[]).map((c) => {
+              const list = others.filter((t) => t.category === c);
+              if (list.length === 0) return null;
+              return (
+                <fieldset key={c} className="flex flex-col gap-2">
+                  <legend className="text-muted mb-1 text-xs font-semibold tracking-widest uppercase">
+                    {CATEGORY_LABELS[c]}
+                  </legend>
+                  <ul className="flex flex-col gap-2">{list.map(option)}</ul>
+                </fieldset>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
 
       {error ? (
         <p role="alert" className="text-danger text-sm">
@@ -152,19 +165,31 @@ export function StarterHabitsForm({
       ) : null}
 
       <div className="flex flex-col gap-2">
+        {/* aria-disabled while nothing is picked: focusable, with a reason. */}
         <Button
           type="submit"
           size="lg"
-          disabled={pending || picked.length === 0}
+          disabled={pending}
+          aria-disabled={none || undefined}
+          aria-describedby={none ? countId : undefined}
+          className={cn(none && "opacity-50")}
         >
           {pending
             ? "Adding…"
-            : picked.length === 0
+            : none
               ? "Pick a habit to add"
               : `Add ${picked.length} habit${picked.length === 1 ? "" : "s"}`}
         </Button>
         <Button asChild variant="ghost">
-          <Link href="/today">Skip for now</Link>
+          <Link
+            href={HOME_PATH}
+            aria-disabled={pending || undefined}
+            onClick={(e) => {
+              if (pending) e.preventDefault();
+            }}
+          >
+            Skip for now
+          </Link>
         </Button>
       </div>
     </form>

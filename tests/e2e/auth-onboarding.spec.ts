@@ -108,6 +108,19 @@ test("sign up with an email code → pick a username → land on Today", async (
   ).toBeVisible();
   await boxes.nth(2).click();
   await expect(boxes.nth(2)).not.toBeChecked();
+  // Remember which habits were picked, to find them on /habits later.
+  const titles = await Promise.all(
+    [0, 1].map((i) =>
+      boxes
+        .nth(i)
+        .evaluate(
+          (el) =>
+            el.closest("label")?.querySelector(".font-semibold")?.textContent ??
+            "",
+        ),
+    ),
+  );
+  expect(titles.every(Boolean)).toBe(true);
   await page.getByRole("button", { name: "Add 2 habits" }).click();
 
   await expect(page).toHaveURL(/\/today$/);
@@ -127,6 +140,13 @@ test("sign up with an email code → pick a username → land on Today", async (
   await expect(
     page.getByRole("list", { name: "Your habits" }).getByRole("listitem"),
   ).toHaveCount(2);
+  for (const title of titles) {
+    await expect(
+      page
+        .getByRole("list", { name: "Your habits" })
+        .getByRole("link", { name: title }),
+    ).toBeVisible();
+  }
 
   // Username shows on the profile, and sign-out returns to /login.
   await page.getByRole("link", { name: "Profile" }).click();
