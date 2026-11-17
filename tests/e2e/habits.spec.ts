@@ -24,7 +24,7 @@ test("create, edit, reorder, archive and restore habits", async ({
   ).toHaveCount(1);
   await page.getByLabel("Name").fill("Practise guitar 20 min");
   await expect(
-    page.locator("form div").getByText(/Specific habits stick/),
+    page.getByTestId("coaching-hints").getByText(/Specific habits stick/),
   ).toHaveCount(0);
   await page.getByLabel("Category").selectOption("learning");
   await page.getByRole("button", { name: "Add habit" }).click();

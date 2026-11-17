@@ -185,6 +185,31 @@ describe("HabitList", () => {
     expect(unarchiveHabit).toHaveBeenCalledTimes(1);
   });
 
+  it("focuses the restored habit once the server list includes it", async () => {
+    const user = userEvent.setup();
+    const zulu = habit("z", "Zulu");
+    const { rerender } = render(<HabitList active={three} archived={[zulu]} />);
+    await user.click(screen.getByText("Archived (1)"));
+    await user.click(screen.getByRole("button", { name: "Restore Zulu" }));
+    // Not there yet: focus waits for the refreshed list.
+    rerender(<HabitList active={[...three, zulu]} archived={[]} />);
+    expect(screen.getByRole("link", { name: "Zulu, edit" })).toHaveFocus();
+    // A later, unrelated update doesn't move focus again.
+    screen.getByRole("link", { name: "Alpha, edit" }).focus();
+    rerender(<HabitList active={[zulu, ...three]} archived={[]} />);
+    expect(screen.getByRole("link", { name: "Alpha, edit" })).toHaveFocus();
+  });
+
+  it("does nothing when Add is clicked at the cap", async () => {
+    const user = userEvent.setup();
+    const full = Array.from({ length: 20 }, (_, i) => habit(`h${i}`, `H${i}`));
+    render(<HabitList active={full} archived={[]} />);
+    const add = screen.getByRole("button", { name: "Add habit" });
+    await user.click(add);
+    expect(add.closest("a")).toBeNull();
+    expect(add).toHaveAttribute("aria-disabled", "true");
+  });
+
   it("refreshes the list when the server says the order is stale", async () => {
     const user = userEvent.setup();
     reorderHabits.mockResolvedValue({

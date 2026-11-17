@@ -1,5 +1,8 @@
+import type { HABIT_COLORS } from "@/lib/habits/limits";
 import type { SuggestionReason } from "@/lib/habits/suggestions";
 import type { HabitCategory, HabitDifficulty } from "@/lib/habits/templates";
+
+type HabitColor = (typeof HABIT_COLORS)[number];
 
 /**
  * Shared habit UI types and labels. A plain module (not "use client"), so
@@ -20,7 +23,7 @@ export const CATEGORY_LABELS: Record<HabitCategory, string> = {
 };
 
 /** Human names for the colour tokens (screen readers read these). */
-export const COLOR_LABELS: Record<string, string> = {
+export const COLOR_LABELS: Record<HabitColor, string> = {
   cyan: "Cyan",
   violet: "Violet",
   magenta: "Magenta",
@@ -28,7 +31,7 @@ export const COLOR_LABELS: Record<string, string> = {
   warning: "Amber",
 };
 
-export const COLOR_SWATCH: Record<string, string> = {
+export const COLOR_SWATCH: Record<HabitColor, string> = {
   cyan: "bg-cyan",
   violet: "bg-violet",
   magenta: "bg-magenta",
@@ -36,7 +39,7 @@ export const COLOR_SWATCH: Record<string, string> = {
   warning: "bg-warning",
 };
 
-export const ACCENT_BORDER: Record<string, string> = {
+export const ACCENT_BORDER: Record<HabitColor, string> = {
   cyan: "border-l-cyan",
   violet: "border-l-violet",
   magenta: "border-l-magenta",
