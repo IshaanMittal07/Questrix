@@ -88,6 +88,7 @@ export function StarterHabitsForm({
             "bg-surface has-[:focus-visible]:outline-cyan flex min-h-12 cursor-pointer items-center gap-3 rounded-2xl border px-3 py-2 has-[:focus-visible]:outline-2",
             checked ? "border-cyan" : "border-white/8",
             blocked && "cursor-not-allowed opacity-50",
+            pending && "cursor-wait",
           )}
         >
           <input
@@ -176,7 +177,7 @@ export function StarterHabitsForm({
           disabled={pending}
           aria-disabled={none || undefined}
           aria-describedby={none ? countId : undefined}
-          className={cn(none && "opacity-50 active:scale-100")}
+          className={cn(none && "opacity-50")}
         >
           {pending
             ? "Adding…"
