@@ -1,7 +1,7 @@
 -- Phase 4 (#67): daily schedule snapshots and the timezone-change limit.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(54);
+select plan(97);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -321,6 +321,261 @@ select pg_temp.as_postgres();
 select is((select count(*)::int from public.daily_schedule
            where user_id = '11111111-1111-1111-1111-111111111111'), 8,
   'reorder created no schedule rows');
+
+-- ── More privileges ─────────────────────────────────────────────────────────
+select function_privs_are('public', 'ensure_daily_schedule', array['uuid', 'timestamp with time zone'],
+  'anon', array[]::text[], 'anon cannot call ensure_daily_schedule');
+select function_privs_are('public', 'snapshot_add_habit', array['uuid', 'uuid', 'timestamp with time zone'],
+  'service_role', array[]::text[], 'service_role cannot call snapshot_add_habit');
+select function_privs_are('public', 'local_date_in', array['text', 'timestamp with time zone'],
+  'service_role', array[]::text[], 'service_role cannot call local_date_in');
+select ok((select bool_and(proconfig @> array['search_path=""']) from pg_proc
+           where oid in ('public.snapshot_add_habit(uuid, uuid, timestamptz)'::regprocedure,
+                         'public.local_date_in(text, timestamptz)'::regprocedure,
+                         'public.habits_after_write()'::regprocedure,
+                         'public.habits_before_write()'::regprocedure,
+                         'public.profiles_validate()'::regprocedure)),
+  'every new or replaced function pins an empty search_path');
+
+select throws_ok($$select public.ensure_daily_schedule('deadbeef-0000-0000-0000-000000000000', now())$$,
+  'P0002', 'Profile not found', 'ensure_daily_schedule rejects an unknown user');
+
+-- ── DST in a non-UTC timezone (America/Toronto) ─────────────────────────────
+-- 2026-03-08: 02:00 EST -> 03:00 EDT. 2026-11-01: 02:00 EDT -> 01:00 EST.
+select is(array[public.local_date_in('America/Toronto', '2026-03-08 06:59:59+00'),
+                public.local_date_in('America/Toronto', '2026-03-09 03:59:59+00'),
+                public.local_date_in('America/Toronto', '2026-03-09 04:00:00+00')],
+  array['2026-03-08', '2026-03-08', '2026-03-09']::date[],
+  'local_date_in: spring-forward day ends at 04:00Z (EDT), not 05:00Z');
+select is(array[public.local_date_in('America/Toronto', '2026-11-01 03:59:59+00'),
+                public.local_date_in('America/Toronto', '2026-11-01 05:30:00+00'),
+                public.local_date_in('America/Toronto', '2026-11-01 06:30:00+00'),
+                public.local_date_in('America/Toronto', '2026-11-02 04:59:59+00'),
+                public.local_date_in('America/Toronto', '2026-11-02 05:00:00+00')],
+  array['2026-10-31', '2026-11-01', '2026-11-01', '2026-11-01', '2026-11-02']::date[],
+  'local_date_in: fall-back day has a repeated hour and ends at 05:00Z (EST)');
+
+-- Gus lives in Toronto and onboarded on 2026-03-05. Habits are inserted
+-- before onboarding (no snapshot), with timestamps on the local-midnight edges.
+insert into auth.users (id, email) values ('77777777-7777-7777-7777-777777777777', 'gus@example.com');
+insert into public.habits (id, user_id, title, category, days_of_week, created_at, archived_at) values
+  -- g1 daily; g5 Mon-Sat (2026-03-08 is a Sunday).
+  ('0a000000-0000-0000-0000-000000000001', '77777777-7777-7777-7777-777777777777', 'G1', 'mind',
+   '{0,1,2,3,4,5,6}', '2026-03-01 12:00+00', null),
+  ('0a000000-0000-0000-0000-000000000005', '77777777-7777-7777-7777-777777777777', 'G5', 'mind',
+   '{1,2,3,4,5,6}', '2026-03-01 12:00+00', null),
+  -- g2 created exactly at local midnight 2026-03-09 (EDT); g3 one second earlier.
+  ('0a000000-0000-0000-0000-000000000002', '77777777-7777-7777-7777-777777777777', 'G2', 'mind',
+   '{0,1,2,3,4,5,6}', '2026-03-09 04:00:00+00', null),
+  ('0a000000-0000-0000-0000-000000000003', '77777777-7777-7777-7777-777777777777', 'G3', 'mind',
+   '{0,1,2,3,4,5,6}', '2026-03-09 03:59:59+00', null),
+  -- g4 archived exactly at local midnight 2026-03-09; g6 one second earlier.
+  ('0a000000-0000-0000-0000-000000000004', '77777777-7777-7777-7777-777777777777', 'G4', 'mind',
+   '{0,1,2,3,4,5,6}', '2026-03-01 12:00+00', '2026-03-09 04:00:00+00'),
+  ('0a000000-0000-0000-0000-000000000006', '77777777-7777-7777-7777-777777777777', 'G6', 'mind',
+   '{0,1,2,3,4,5,6}', '2026-03-01 12:00+00', '2026-03-09 03:59:59+00');
+update public.profiles set onboarded_at = '2026-03-05 12:00+00', timezone = 'America/Toronto'
+  where id = '77777777-7777-7777-7777-777777777777';
+
+-- 03:30Z on 03-10 is still 23:30 on 03-09 in Toronto. The session timezone
+-- also observes the DST change, so generate_series crosses it.
+set local timezone = 'America/Toronto';
+select is(public.ensure_daily_schedule('77777777-7777-7777-7777-777777777777', '2026-03-10 03:30+00'),
+  '2026-03-09'::date, 'Toronto: ensure returns the local date, not the UTC one');
+reset timezone;
+select is((select array_agg(local_date order by local_date) from public.daily_schedule
+           where user_id = '77777777-7777-7777-7777-777777777777'),
+  array['2026-03-05', '2026-03-06', '2026-03-07', '2026-03-08', '2026-03-09']::date[],
+  'Toronto: backfill across spring-forward has no gap or duplicate day');
+select ok(pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-08',
+                      '0a000000-0000-0000-0000-000000000003'),
+  'a habit created at 23:59:59 local on the DST day is scheduled that day');
+select ok(not pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-08',
+                          '0a000000-0000-0000-0000-000000000002'),
+  'a habit created at local midnight is not scheduled the day before');
+select ok(pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-09',
+                      '0a000000-0000-0000-0000-000000000002'),
+  'a habit created at local midnight is scheduled that day');
+select ok(pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-09',
+                      '0a000000-0000-0000-0000-000000000004'),
+  'a habit archived at local midnight is still scheduled that day');
+select ok(pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-08',
+                      '0a000000-0000-0000-0000-000000000006'),
+  'a habit archived at 23:59:59 local is scheduled that day');
+select ok(not pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-09',
+                          '0a000000-0000-0000-0000-000000000006'),
+  'but not the next day');
+select ok(not pg_temp.has('77777777-7777-7777-7777-777777777777', '2026-03-08',
+                          '0a000000-0000-0000-0000-000000000005'),
+  'a past day outside a habit''s days_of_week is not snapshotted for it');
+select is(array[pg_temp.sched('77777777-7777-7777-7777-777777777777', '2026-03-08'),
+                pg_temp.sched('77777777-7777-7777-7777-777777777777', '2026-03-09')],
+  array[4, 5], 'Toronto: scheduled_count on the DST day and the day after');
+
+-- Fall back: 04:30Z on 11-02 is 23:30 EST on 11-01 (a Sunday).
+set local timezone = 'America/Toronto';
+select is(public.ensure_daily_schedule('77777777-7777-7777-7777-777777777777', '2026-11-02 04:30+00'),
+  '2026-11-01'::date, 'Toronto: ensure returns the local date on the fall-back day');
+reset timezone;
+select is((select count(*)::int from public.daily_schedule
+           where user_id = '77777777-7777-7777-7777-777777777777'
+             and local_date between '2026-10-25' and '2026-11-01'), 8,
+  'Toronto: backfill across fall-back fills exactly lookback + 1 days');
+select is(pg_temp.sched('77777777-7777-7777-7777-777777777777', '2026-11-01'), 3,
+  'Toronto: the fall-back Sunday has the daily habits only');
+
+-- ── Onboarding step 1 still works through the replaced profiles_validate ────
+insert into auth.users (id, email) values ('88888888-8888-8888-8888-888888888888', 'hal@example.com');
+insert into public.habits (user_id, title, category, created_at) values
+  ('88888888-8888-8888-8888-888888888888', 'Hal habit', 'mind', now() - interval '1 day');
+select pg_temp.as_user('88888888-8888-8888-8888-888888888888');
+update public.profiles set username = 'hal_new', timezone = 'Asia/Tokyo'
+  where id = '88888888-8888-8888-8888-888888888888';
+select pg_temp.as_postgres();
+select is((select (onboarded_at, timezone, timezone_changed_at)::text from public.profiles
+           where id = '88888888-8888-8888-8888-888888888888'),
+  (now(), 'Asia/Tokyo', null::timestamptz)::text,
+  'username + timezone in one update onboards, without starting the cooldown');
+select is((select count(*)::int from public.daily_schedule
+           where user_id = '88888888-8888-8888-8888-888888888888'), 0,
+  'the onboarding update itself takes no snapshot (D5)');
+select pg_temp.as_user('88888888-8888-8888-8888-888888888888');
+select throws_ok($$update public.profiles set username = 'admin'
+                   where id = '88888888-8888-8888-8888-888888888888'$$,
+  '23514', 'That username is reserved', 'reserved usernames are still rejected');
+select pg_temp.as_postgres();
+
+-- ── A blocked second timezone change leaves the first one's stamp ───────────
+insert into auth.users (id, email) values ('a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0', 'jon@example.com');
+update public.profiles set onboarded_at = now() - interval '10 days', timezone = 'Europe/London'
+  where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0';
+update public.profiles set timezone_changed_at = now() - interval '2 days'
+  where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0';
+select pg_temp.as_user('a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0');
+select throws_ok($$update public.profiles set timezone = 'Asia/Tokyo'
+                   where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0'$$,
+  'QX001', 'You can change your timezone once every 7 days', 'a change 2 days after the last is refused');
+select pg_temp.as_postgres();
+select is((select (timezone, timezone_changed_at)::text from public.profiles
+           where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0'),
+  ('Europe/London', now() - interval '2 days')::text,
+  'the refused change leaves the timezone and the first stamp unchanged');
+select is((select count(*)::int from public.daily_schedule
+           where user_id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0'), 0,
+  'the refused change takes no snapshot');
+update public.profiles set timezone_changed_at = now() - interval '7 days'
+  where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0';
+select pg_temp.as_user('a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0');
+select lives_ok($$update public.profiles set timezone = 'Asia/Tokyo'
+                  where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0'$$,
+  'exactly 7 days after the last change is allowed');
+select pg_temp.as_postgres();
+select is((select timezone_changed_at from public.profiles
+           where id = 'a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0'), now(), 'and restamps');
+
+-- ── Archive and unarchive on the same day; starter habits ───────────────────
+insert into auth.users (id, email) values ('99999999-9999-9999-9999-999999999999', 'ivy@example.com');
+insert into public.habits (id, user_id, title, category, created_at) values
+  ('0b000000-0000-0000-0000-000000000001', '99999999-9999-9999-9999-999999999999', 'I1', 'mind',
+   now() - interval '10 days'),
+  ('0b000000-0000-0000-0000-000000000002', '99999999-9999-9999-9999-999999999999', 'I2', 'mind',
+   now() - interval '10 days');
+update public.profiles set onboarded_at = now() - interval '10 days'
+  where id = '99999999-9999-9999-9999-999999999999';
+select pg_temp.as_user('99999999-9999-9999-9999-999999999999');
+select public.archive_habit('0b000000-0000-0000-0000-000000000001');
+select public.unarchive_habit('0b000000-0000-0000-0000-000000000001');
+select public.archive_habit('0b000000-0000-0000-0000-000000000002');
+select pg_temp.as_postgres();
+select is((select count(*)::int from public.daily_schedule_habits
+           where user_id = '99999999-9999-9999-9999-999999999999' and local_date = pg_temp.today()
+             and habit_id = '0b000000-0000-0000-0000-000000000001'), 1,
+  'archive then unarchive the same day keeps exactly one snapshot row');
+select is(pg_temp.sched('99999999-9999-9999-9999-999999999999', pg_temp.today()), 2,
+  'archive/unarchive doesn''t change today''s scheduled_count');
+
+-- Starter habits arrive in one multi-row insert.
+select pg_temp.as_user('99999999-9999-9999-9999-999999999999');
+insert into public.habits (title, category, template_key) values
+  ('Starter A', 'mind', 'starter_a'), ('Starter B', 'fitness', 'starter_b'),
+  ('Starter C', 'health', 'starter_c');
+select pg_temp.as_postgres();
+select is((select count(*)::int from public.daily_schedule_habits sh
+           join public.habits h on h.id = sh.habit_id
+           where sh.user_id = '99999999-9999-9999-9999-999999999999'
+             and sh.local_date = pg_temp.today() and h.template_key like 'starter\_%'), 3,
+  'every row of a multi-row insert joins today''s snapshot');
+select is(pg_temp.sched('99999999-9999-9999-9999-999999999999', pg_temp.today()), 2,
+  'and scheduled_count stays fixed');
+
+-- The cap holds within one multi-row statement.
+update public.economy_config set value = (
+  select count(*) + 2 from public.daily_schedule_habits
+  where user_id = '99999999-9999-9999-9999-999999999999' and local_date = pg_temp.today())::text::jsonb
+  where key = 'schedule_max_habits';
+select pg_temp.as_user('99999999-9999-9999-9999-999999999999');
+insert into public.habits (title, category, template_key) values
+  ('Cap A', 'mind', 'cap_a'), ('Cap B', 'mind', 'cap_b'), ('Cap C', 'mind', 'cap_c');
+select pg_temp.as_postgres();
+select is((select count(*)::int from public.daily_schedule_habits sh
+           join public.habits h on h.id = sh.habit_id
+           where sh.user_id = '99999999-9999-9999-9999-999999999999'
+             and sh.local_date = pg_temp.today() and h.template_key like 'cap\_%'), 2,
+  'a multi-row insert can''t push today''s snapshot past the cap');
+update public.economy_config set value = '20' where key = 'schedule_max_habits';
+
+-- The daily creation limit holds within one multi-row statement.
+update public.economy_config set value = jsonb_build_object('per_day', (
+  select count(*) + 2 from public.habits
+  where user_id = '99999999-9999-9999-9999-999999999999' and created_at > now() - interval '24 hours'),
+  'per_30_days', 100)
+  where key = 'habit_create_limits';
+select pg_temp.as_user('99999999-9999-9999-9999-999999999999');
+select throws_ok($$insert into public.habits (title, category, template_key) values
+                   ('Over A', 'mind', 'over_a'), ('Over B', 'mind', 'over_b'), ('Over C', 'mind', 'over_c')$$,
+  'QX001', null, 'a multi-row insert can''t exceed the daily creation limit');
+select pg_temp.as_postgres();
+select is((select count(*)::int from public.habits where template_key like 'over\_%'), 0,
+  'and none of its rows are kept');
+update public.economy_config set value = '{"per_day": 30, "per_30_days": 100}'
+  where key = 'habit_create_limits';
+
+-- Tomorrow: the unarchived habit and today's additions count; the archived one doesn't.
+select public.ensure_daily_schedule('99999999-9999-9999-9999-999999999999', now() + interval '1 day');
+select ok(pg_temp.has('99999999-9999-9999-9999-999999999999', pg_temp.today() + 1,
+                      '0b000000-0000-0000-0000-000000000001'),
+  'a habit unarchived the same day is scheduled tomorrow');
+select ok(not pg_temp.has('99999999-9999-9999-9999-999999999999', pg_temp.today() + 1,
+                          '0b000000-0000-0000-0000-000000000002'),
+  'a habit archived today is not scheduled tomorrow');
+select is(pg_temp.sched('99999999-9999-9999-9999-999999999999', pg_temp.today() + 1), 7,
+  'habits added today count from tomorrow');
+
+-- ── service_role writes habits directly ─────────────────────────────────────
+insert into auth.users (id, email) values ('b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0', 'kim@example.com');
+insert into public.habits (id, user_id, title, category, created_at) values
+  ('0c000000-0000-0000-0000-000000000001', 'b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0', 'K1', 'mind',
+   now() - interval '10 days');
+update public.profiles set onboarded_at = now() - interval '10 days'
+  where id = 'b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0';
+set local role service_role;
+select lives_ok($$insert into public.habits (id, user_id, title, category) values
+  ('0c000000-0000-0000-0000-000000000002', 'b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0', 'K2', 'mind')$$,
+  'service_role can insert a habit for an onboarded user (economy_value runs as the definer)');
+select lives_ok($$update public.habits set difficulty = 'hard'
+                  where id = '0c000000-0000-0000-0000-000000000001'$$,
+  'service_role can edit a habit''s difficulty');
+reset role;
+select is((select count(*)::int from public.daily_schedule
+           where user_id = 'b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0'), 8,
+  'a service_role insert backfills the schedule');
+select ok(pg_temp.has('b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0', pg_temp.today(),
+                      '0c000000-0000-0000-0000-000000000002'),
+  'and the new habit joins today''s snapshot');
+select is((select difficulty::text from public.daily_schedule_habits
+           where user_id = 'b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0' and local_date = pg_temp.today()
+             and habit_id = '0c000000-0000-0000-0000-000000000001'), 'medium',
+  'a service_role difficulty edit applies from tomorrow too');
 
 -- Deferred FKs hold at the end.
 select lives_ok($$set constraints all immediate$$, 'every snapshot row has its day');
