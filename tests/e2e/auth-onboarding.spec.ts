@@ -95,6 +95,21 @@ test("sign up with an email code → pick a username → land on Today", async (
   await expect(page.getByText("Available!")).toBeVisible();
   await page.getByRole("button", { name: "Start my quest" }).click();
 
+  // Step 2: pick starter habits. At most 3; a 4th can't be picked.
+  await expect(page).toHaveURL(/\/onboarding\/habits$/);
+  const suggested = page.getByRole("group", { name: "Suggested for you" });
+  const boxes = suggested.getByRole("checkbox");
+  for (const i of [0, 1, 2]) await boxes.nth(i).click();
+  // A 4th is unavailable (aria-disabled, so it stays focusable).
+  await expect(boxes.nth(3)).toBeDisabled();
+  await expect(boxes.nth(3)).not.toBeChecked();
+  await expect(
+    page.getByText("3 of 3 picked.", { exact: false }),
+  ).toBeVisible();
+  await boxes.nth(2).click();
+  await expect(boxes.nth(2)).not.toBeChecked();
+  await page.getByRole("button", { name: "Add 2 habits" }).click();
+
   await expect(page).toHaveURL(/\/today$/);
   await expect(page.getByText(username).first()).toBeVisible();
   await expect(
@@ -106,6 +121,12 @@ test("sign up with an email code → pick a username → land on Today", async (
   // Onboarding is done: visiting it again bounces to Today.
   await page.goto("/onboarding");
   await expect(page).toHaveURL(/\/today$/);
+
+  // The two starter habits are on the habits list.
+  await page.getByRole("link", { name: "Habits" }).click();
+  await expect(
+    page.getByRole("list", { name: "Your habits" }).getByRole("listitem"),
+  ).toHaveCount(2);
 
   // Username shows on the profile, and sign-out returns to /login.
   await page.getByRole("link", { name: "Profile" }).click();

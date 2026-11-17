@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { STARTER_HABITS_PATH } from "@/lib/supabase/routing";
 import { timezoneSchema, usernameSchema } from "@/lib/validation/profile";
 
 const onboardingSchema = z.object({
@@ -85,5 +86,6 @@ export async function completeOnboarding(
       : { error: "Couldn't save your profile. Try again.", field: "form" };
   }
 
-  redirect("/today");
+  // Step 2: pick up to 3 starter habits (skippable).
+  redirect(STARTER_HABITS_PATH);
 }
