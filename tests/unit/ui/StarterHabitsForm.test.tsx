@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -247,8 +247,9 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
 
     const skip = screen.getByRole("link", { name: "Skip for now" });
     expect(skip).toHaveAttribute("aria-disabled", "true");
-    await user.click(skip);
-    expect(push).not.toHaveBeenCalled();
+    // fireEvent returns false when the click's default (navigation) was
+    // prevented.
+    expect(fireEvent.click(skip)).toBe(false);
 
     resolve({ ok: true, data: { count: 1 } });
     await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/today"));

@@ -13,8 +13,8 @@ export const metadata: Metadata = { title: "Pick your habits" };
 async function StarterHabitsData() {
   // The proxy already gates this page, but it lets requests through when
   // its profile lookup fails: check step 1 here too.
-  // Like the proxy, only bounce on a known answer: a failed lookup (null)
-  // isn't "not onboarded".
+  // Only bounce on a known answer: null means the lookup failed (or, never in
+  // practice, the signup trigger didn't create the row).
   const me = await getMyProfile();
   if (me && !me.profile.onboarded_at) redirect(ONBOARDING_PATH);
 

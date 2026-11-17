@@ -61,7 +61,9 @@ test("create, edit, reorder, archive and restore habits", async ({
   // The move is optimistic: wait for the Server Action (a POST) to finish
   // before reloading, or the reload can race it.
   const saved = page.waitForResponse(
-    (r) => r.request().method() === "POST" && r.url().includes("/habits"),
+    (r) =>
+      r.request().method() === "POST" &&
+      Boolean(r.request().headers()["next-action"]),
   );
   await page.keyboard.press("Enter");
   await expect(list.getByRole("link").last()).toContainText(
