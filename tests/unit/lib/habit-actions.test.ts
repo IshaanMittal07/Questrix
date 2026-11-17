@@ -385,3 +385,186 @@ describe("addStarterHabits", () => {
     });
   });
 });
+
+describe("edge cases", () => {
+  it("createHabit passes a well-formed template_key through as untrusted data", async () => {
+    results = [{ data: { id: ID } }];
+    await actions.createHabit({ ...valid, template_key: "not_in_library" });
+    expect(op("insert")?.[1]).toMatchObject({ template_key: "not_in_library" });
+  });
+
+  it.each(["Workout", "../x", "", "a".repeat(41), 7])(
+    "createHabit rejects a malformed template_key %j",
+    async (template_key) => {
+      expect(
+        await actions.createHabit({ ...valid, template_key }),
+      ).toMatchObject({ ok: false, code: "invalid", field: "template_key" });
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it("omits field for a root-level validation error", async () => {
+    for (const input of [null, "x", [valid]]) {
+      const res = await actions.createHabit(input);
+      expect(res).toMatchObject({ ok: false, code: "invalid" });
+      expect(res).not.toHaveProperty("field");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("maps 28000 to signed out", async () => {
+    results = [{ error: { code: "28000", message: "Not signed in" } }];
+    expect(await actions.createHabit(valid)).toEqual({
+      ok: false,
+      code: "signed_out",
+      error: "You're signed out.",
+    });
+  });
+
+  it("falls back to a default rate-limit message with no hint", async () => {
+    results = [{ error: { code: "QX001" } }];
+    expect(await actions.createHabit(valid)).toEqual({
+      ok: false,
+      code: "rate_limited",
+      error: "Too many new habits.",
+    });
+  });
+
+  it("treats a 23514 without a message as invalid, not at_cap", async () => {
+    results = [{ error: { code: "23514" } }];
+    expect(await actions.createHabit(valid)).toMatchObject({
+      code: "invalid",
+    });
+  });
+
+  it("updateHabit refuses when signed out without writing", async () => {
+    userId = null;
+    expect(await actions.updateHabit(ID, { title: "x" })).toMatchObject({
+      code: "signed_out",
+    });
+    expect(op("update")).toBeUndefined();
+  });
+
+  it("updateHabit maps a database error and doesn't revalidate", async () => {
+    results = [{ error: { code: "XX000", message: "relation habits..." } }];
+    expect(await actions.updateHabit(ID, { title: "x" })).toEqual({
+      ok: false,
+      code: "failed",
+      error: "Couldn't save. Try again.",
+    });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("updateHabit names the invalid field after a valid id", async () => {
+    expect(await actions.updateHabit(ID, { target_per_day: 6 })).toMatchObject({
+      code: "invalid",
+      field: "target_per_day",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("archive failures don't revalidate", async () => {
+    results = [{ error: { code: "P0002" } }];
+    await actions.archiveHabit(ID);
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("reorderHabits refuses when signed out", async () => {
+    userId = null;
+    expect(await actions.reorderHabits([ID])).toMatchObject({
+      code: "signed_out",
+    });
+    expect(op("rpc")).toBeUndefined();
+  });
+
+  it("reorderHabits rejects more than 20 ids and malformed ids", async () => {
+    const many = Array.from(
+      { length: 21 },
+      (_, i) => `3f1c2a4e-8b7d-4c6e-9a1f-${i.toString(16).padStart(12, "0")}`,
+    );
+    expect(await actions.reorderHabits(many)).toMatchObject({
+      code: "invalid",
+      error: "At most 20 habits",
+    });
+    expect(await actions.reorderHabits([ID, "nope"])).toMatchObject({
+      code: "invalid",
+    });
+    expect(op("rpc")).toBeUndefined();
+  });
+
+  it("reorderHabits treats case variants of one id as duplicates", async () => {
+    expect(await actions.reorderHabits([ID, ID.toUpperCase()])).toMatchObject({
+      code: "invalid",
+      error: "Duplicate habit",
+    });
+    expect(op("rpc")).toBeUndefined();
+  });
+
+  it("reorderHabits sends lowercased ids", async () => {
+    await actions.reorderHabits([ID2.toUpperCase()]);
+    expect(op("rpc")).toEqual([
+      "rpc",
+      "reorder_habits",
+      { p_habit_ids: [ID2] },
+    ]);
+  });
+
+  it.each(["__proto__", "constructor", "toString", "hasOwnProperty"])(
+    "addStarterHabits rejects the prototype key %j",
+    async (key) => {
+      expect(await actions.addStarterHabits([key])).toMatchObject({
+        code: "invalid",
+        error: "Unknown habit template",
+      });
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it.each([null, undefined, { 0: "workout", length: 1 }, [1]])(
+    "addStarterHabits rejects non-string-array input %j",
+    async (keys) => {
+      expect(await actions.addStarterHabits(keys)).toMatchObject({
+        ok: false,
+        code: "invalid",
+      });
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it("addStarterHabits inserts exactly 3 rows in one call, with no server-owned fields", async () => {
+    const res = await actions.addStarterHabits([
+      "workout",
+      "drink_water",
+      "night_skincare",
+    ]);
+    expect(res).toEqual({ ok: true, data: { count: 3 } });
+    const inserts = calls.filter((c) => c[0] === "insert");
+    expect(inserts).toHaveLength(1);
+    const rows = inserts[0]![1] as Array<Record<string, unknown>>;
+    expect(rows.map((r) => r.template_key)).toEqual([
+      "workout",
+      "drink_water",
+      "night_skincare",
+    ]);
+    for (const r of rows) {
+      expect(r).not.toHaveProperty("user_id");
+      expect(r).not.toHaveProperty("sort_order");
+      expect(r).not.toHaveProperty("archived_at");
+    }
+  });
+
+  it("addStarterHabits maps the cap, all or none, without revalidating", async () => {
+    results = [
+      {
+        error: {
+          code: "23514",
+          message: "You can have at most 20 active habits",
+        },
+      },
+    ];
+    expect(await actions.addStarterHabits(["workout"])).toMatchObject({
+      code: "at_cap",
+    });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+});
