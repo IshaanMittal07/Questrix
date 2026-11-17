@@ -43,7 +43,7 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     render(<StarterHabitsForm suggestions={suggestions} />);
     expect(
       screen.getByRole("button", { name: "Pick a habit to add" }),
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("link", { name: "Skip for now" })).toHaveAttribute(
       "href",
       "/today",
@@ -119,7 +119,7 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(status).toHaveTextContent("Pick up to 3.");
     expect(
       screen.getByRole("button", { name: "Pick a habit to add" }),
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-disabled", "true");
   });
 
   it("toggles with Space from the keyboard, and respects the cap", async () => {
@@ -176,6 +176,55 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     await user.click(boxes[1]);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("explains why Add is unavailable and ignores it when nothing is picked", async () => {
+    const user = userEvent.setup();
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    const add = screen.getByRole("button", { name: "Pick a habit to add" });
+    expect(add).toHaveAccessibleDescription(/Pick up to 3/);
+    await user.click(add);
+    expect(addStarterHabits).not.toHaveBeenCalled();
+  });
+
+  it("names each checkbox by its title, with the category as description", () => {
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    const box = suggested().getByRole("checkbox", { name: "Sleep by 23:00" });
+    expect(box).toHaveAccessibleDescription("Health");
+  });
+
+  it("stays on the page with a message when the action throws", async () => {
+    const user = userEvent.setup();
+    addStarterHabits.mockRejectedValue(new Error("network"));
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    await user.click(suggested().getAllByRole("checkbox")[0]);
+    await user.click(screen.getByRole("button", { name: "Add 1 habit" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Couldn't add your habits. Try again, or skip for now.",
+    );
+    expect(push).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Skip for now" })).toBeVisible();
+  });
+
+  it("doesn't offer templates the user already has", () => {
+    render(
+      <StarterHabitsForm
+        suggestions={suggestions}
+        ownedKeys={["meditate", "floss"]}
+      />,
+    );
+    expect(suggested().getAllByRole("checkbox")).toHaveLength(3);
+    expect(
+      screen.queryByRole("checkbox", { name: "Floss", hidden: true }),
+    ).toBeNull();
+    expect(screen.getAllByRole("checkbox", { hidden: true })).toHaveLength(28);
+  });
+
+  it("hides an empty suggestions group", () => {
+    render(<StarterHabitsForm suggestions={[]} />);
+    expect(
+      screen.queryByRole("group", { name: "Suggested for you" }),
+    ).toBeNull();
   });
 
   it("skips unknown suggestion keys", () => {

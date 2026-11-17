@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { STARTER_HABITS_PATH } from "@/lib/supabase/routing";
+import { HOME_PATH, STARTER_HABITS_PATH } from "@/lib/supabase/routing";
 import { timezoneSchema, usernameSchema } from "@/lib/validation/profile";
 
 const onboardingSchema = z.object({
@@ -47,7 +47,7 @@ export async function completeOnboarding(
   if (profileError || !profile) {
     return { error: "Couldn't load your profile. Try again.", field: "form" };
   }
-  if (profile.onboarded_at) redirect("/today");
+  if (profile.onboarded_at) redirect(HOME_PATH);
 
   const { data: available } = await supabase.rpc("username_available", {
     p_username: username,

@@ -1,16 +1,32 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { suggestionsForMe } from "@/lib/habits/form-data";
+import { listActiveHabits, listArchivedHabits } from "@/lib/habits/queries";
+import { getMyProfile } from "@/lib/profile/queries";
+import { ONBOARDING_PATH } from "@/lib/supabase/routing";
 import { StarterHabitsForm } from "./StarterHabitsForm";
 
 export const metadata: Metadata = { title: "Pick your habits" };
 
 async function StarterHabitsData() {
+  // The proxy already gates this page, but it lets requests through when
+  // its profile lookup fails: check step 1 here too.
+  const me = await getMyProfile();
+  if (!me?.profile.onboarded_at) redirect(ONBOARDING_PATH);
+
   // For a new user every category and slot is empty, so this ranks the
   // library by the plan's priority (health, mind, fitness first).
-  const suggestions = await suggestionsForMe();
-  return <StarterHabitsForm suggestions={suggestions} />;
+  const [suggestions, active, archived] = await Promise.all([
+    suggestionsForMe(),
+    listActiveHabits(),
+    listArchivedHabits(),
+  ]);
+  const ownedKeys = [...active, ...archived].flatMap((h) =>
+    h.template_key ? [h.template_key] : [],
+  );
+  return <StarterHabitsForm suggestions={suggestions} ownedKeys={ownedKeys} />;
 }
 
 export default function StarterHabitsPage() {
