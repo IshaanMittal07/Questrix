@@ -44,12 +44,19 @@ describe("updateTimezone", () => {
       error: {
         code: "QX001",
         message: "You can change your timezone once every 7 days",
-        hint: "Try again after 2026-11-24.",
+        hint: "Try again on or after 2026-11-24 08:30.",
       },
     };
     expect(await updateTimezone({}, form("Asia/Tokyo"))).toEqual({
       error:
-        "You can change your timezone once every 7 days. Try again after 2026-11-24.",
+        "You can change your timezone once every 7 days. Try again on or after 2026-11-24 08:30.",
+    });
+  });
+
+  it("asks to retry after a deadlock", async () => {
+    result = { error: { code: "40P01", message: "deadlock detected" } };
+    expect(await updateTimezone({}, form("Asia/Tokyo"))).toEqual({
+      error: "Something else was saving at the same time. Try again.",
     });
   });
 

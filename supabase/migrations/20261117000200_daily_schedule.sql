@@ -51,8 +51,8 @@ declare
   v_today date;
   v_first date;
   v_day date;
-  v_max int := (public.economy_value('schedule_max_habits'))::int;
-  v_lookback int := (public.economy_value('streak_lookback_days'))::int;
+  v_max int;
+  v_lookback int;
   v_count int;
 begin
   select p.timezone, p.onboarded_at into v_tz, v_onboarded
@@ -64,11 +64,20 @@ begin
   if v_onboarded is null then
     return v_today;
   end if;
+  -- Fast path: today is only ever claimed after the days before it in the
+  -- window, so if today exists, the window is filled.
+  if exists (select 1 from public.daily_schedule s
+             where s.user_id = p_uid and s.local_date = v_today) then
+    return v_today;
+  end if;
 
+  v_max := (public.economy_value('schedule_max_habits'))::int;
+  v_lookback := (public.economy_value('streak_lookback_days'))::int;
   v_first := greatest(v_today - v_lookback, public.local_date_in(v_tz, v_onboarded));
-  for v_day in
-    select d::date from generate_series(v_first, v_today, interval '1 day') as d
-  loop
+  -- Integer steps over dates: generate_series(date, date, interval) works in
+  -- the session timezone and can skip a day where DST changes at midnight.
+  for i in 0 .. (v_today - v_first) loop
+    v_day := v_first + i;
     continue when exists (
       select 1 from public.daily_schedule s
       where s.user_id = p_uid and s.local_date = v_day);
@@ -118,9 +127,13 @@ declare
 begin
   select p.timezone into v_tz from public.profiles p where p.id = p_uid;
   v_today := public.local_date_in(v_tz, p_now);
-  if not exists (
-    select 1 from public.daily_schedule s
-    where s.user_id = p_uid and s.local_date = v_today) then
+  -- Lock the day row so concurrent additions count one at a time and can't
+  -- pass the cap together. NO KEY UPDATE: it doesn't block the snapshot
+  -- FK checks (KEY SHARE).
+  perform 1 from public.daily_schedule s
+   where s.user_id = p_uid and s.local_date = v_today
+   for no key update;
+  if not found then
     return;
   end if;
   if (select count(*) from public.daily_schedule_habits sh
@@ -185,8 +198,28 @@ begin
 
   -- habits_lock before the snapshot, as archive_habit and unarchive_habit
   -- do: taking them in the other order could deadlock with those RPCs.
-  if tg_op = 'INSERT' then
+  if tg_op = 'INSERT' or new.archived_at is distinct from old.archived_at then
     perform public.habits_lock(new.user_id);
+  end if;
+
+  if tg_op = 'INSERT' then
+    -- Creation limits (economy_config), before the snapshot so a refused
+    -- insert costs little: archive-and-recreate must not be unbounded.
+    -- Rolling windows, so nobody is locked out for good. QX001 lets the UI
+    -- tell a rate limit apart from invalid input (23514).
+    v_limits := public.economy_value('habit_create_limits');
+    if (select count(*) from public.habits h
+        where h.user_id = new.user_id
+          and h.created_at > now() - interval '24 hours') >= (v_limits ->> 'per_day')::int then
+      raise exception 'You can create at most % habits a day', v_limits ->> 'per_day'
+        using errcode = 'QX001', hint = 'Try again later.';
+    end if;
+    if (select count(*) from public.habits h
+        where h.user_id = new.user_id
+          and h.created_at > now() - interval '30 days') >= (v_limits ->> 'per_30_days')::int then
+      raise exception 'You can create at most % habits in 30 days', v_limits ->> 'per_30_days'
+        using errcode = 'QX001', hint = 'Unarchive an existing habit instead.';
+    end if;
   end if;
 
   -- Snapshot today (and missing past days) before anything that changes a
@@ -201,22 +234,6 @@ begin
   end if;
 
   if tg_op = 'INSERT' then
-    -- Creation limits (economy_config): archive-and-recreate must not be
-    -- unbounded. Rolling windows, so nobody is locked out for good. QX001
-    -- lets the UI tell a rate limit apart from invalid input (23514).
-    v_limits := public.economy_value('habit_create_limits');
-    if (select count(*) from public.habits h
-        where h.user_id = new.user_id
-          and h.created_at > now() - interval '24 hours') >= (v_limits ->> 'per_day')::int then
-      raise exception 'You can create at most % habits a day', v_limits ->> 'per_day'
-        using errcode = 'QX001', hint = 'Try again later.';
-    end if;
-    if (select count(*) from public.habits h
-        where h.user_id = new.user_id
-          and h.created_at > now() - interval '30 days') >= (v_limits ->> 'per_30_days')::int then
-      raise exception 'You can create at most % habits in 30 days', v_limits ->> 'per_30_days'
-        using errcode = 'QX001', hint = 'Unarchive an existing habit instead.';
-    end if;
     -- New habits go to the end of the active list.
     select coalesce(max(h.sort_order) + 1, 0) into new.sort_order
     from public.habits h
@@ -225,9 +242,8 @@ begin
 
   if new.archived_at is null
      and (tg_op = 'INSERT' or old.archived_at is not null) then
-    if tg_op = 'UPDATE' then
-      perform public.habits_lock(new.user_id); -- INSERT took it above
-    end if;
+    -- habits_lock is already held (taken above for INSERT and for any
+    -- archived_at change).
     select count(*) into v_active
     from public.habits h
     where h.user_id = new.user_id
@@ -287,6 +303,7 @@ declare
   v_old_today date;
   v_new_today date;
   v_cooldown int;
+  v_lookback int;
 begin
   -- Only validate when it changes: profiles are updated on every completion.
   if (tg_op = 'INSERT' or new.timezone is distinct from old.timezone)
@@ -300,25 +317,50 @@ begin
   -- profile, so it mustn't snapshot either (D5).
   if tg_op = 'UPDATE' and new.timezone is distinct from old.timezone
      and old.onboarded_at is not null then
+    -- A username change takes FOR UPDATE on this row, which blocks the FK
+    -- checks a concurrent snapshot makes; doing both here could deadlock (D5).
+    if new.username is distinct from old.username then
+      raise exception 'Change your username and timezone separately'
+        using errcode = '22023';
+    end if;
     v_cooldown := (public.economy_value('timezone_change_cooldown_days'))::int;
     if old.timezone_changed_at is not null
        and old.timezone_changed_at > now() - make_interval(days => v_cooldown) then
       raise exception 'You can change your timezone once every % days', v_cooldown
         using errcode = 'QX001',
-              hint = 'Try again after '
-                || to_char(old.timezone_changed_at + make_interval(days => v_cooldown), 'YYYY-MM-DD')
+              -- In the user's (old) timezone, not the session's.
+              hint = 'Try again on or after '
+                || to_char((old.timezone_changed_at + make_interval(days => v_cooldown))
+                           at time zone old.timezone, 'YYYY-MM-DD HH24:MI')
                 || '.';
     end if;
     -- Snapshot the old timezone's days first; the profile row still holds
-    -- the old timezone until this statement finishes.
+    -- the old timezone until this statement finishes. Also a couple of days
+    -- further back: after a move west, the window reaches older days, which
+    -- must be filled with the schedule they had, not an edited one.
+    v_lookback := (public.economy_value('streak_lookback_days'))::int;
+    perform public.ensure_daily_schedule(old.id, now() - interval '2 days');
     v_old_today := public.ensure_daily_schedule(old.id, now());
     v_new_today := public.local_date_in(new.timezone, now());
-    -- Moving east past an already-counted day: today in the new timezone
-    -- inherits it, so the jump can't count a second streak day (D3).
-    if old.last_streak_date is not null
-       and old.last_streak_date >= v_old_today
-       and v_new_today > old.last_streak_date then
+    -- Moving east: the new timezone's days up to its today are the same real
+    -- day as the old today. If nothing was required there (today already
+    -- counted, or every day since the last counted one was a rest day), the
+    -- new today inherits the counted day, so the jump can't count an extra
+    -- streak day. If a scheduled day is pending, it stays pending and
+    -- becomes a missed day (fail closed).
+    if v_new_today > v_old_today
+       and old.last_streak_date is not null
+       and old.last_streak_date >= v_old_today - v_lookback
+       and not exists (
+         select 1 from generate_series(1, v_old_today - old.last_streak_date) as g(i)
+         left join public.daily_schedule s
+           on s.user_id = old.id and s.local_date = old.last_streak_date + g.i
+         where s.scheduled_count is distinct from 0) then
       new.last_streak_date := v_new_today;
+      -- Per-habit streaks follow the same rule.
+      update public.habit_streaks hs
+         set last_date = v_new_today
+       where hs.user_id = old.id and hs.last_date >= v_old_today;
     end if;
     new.timezone_changed_at := now();
   end if;

@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 
 import { getTemplate, templateToHabit } from "@/lib/habits/templates";
+import { DEADLOCK, RETRY_MESSAGE, serverMessage } from "@/lib/supabase/errors";
 import { getVerifiedUser } from "@/lib/supabase/session";
 import {
   habitCreateSchema,
@@ -63,8 +64,10 @@ function fromDb(error: PgError) {
       // Rate limit from the habits trigger; its message and hint are ours.
       return fail(
         "rate_limited",
-        `${(error.message ?? "Too many new habits").replace(/(?<![.!?])$/, ".")}${error.hint ? ` ${error.hint}` : ""}`,
+        serverMessage(error.message ?? "Too many new habits", error.hint),
       );
+    case DEADLOCK:
+      return fail("failed", RETRY_MESSAGE);
     case "23514":
       // Must match the cap message in the habits trigger (migration
       // 20261116000100_habits.sql); pgTAP 020_habits_rls.sql pins that text.
