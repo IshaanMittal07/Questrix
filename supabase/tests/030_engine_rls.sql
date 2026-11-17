@@ -1,7 +1,7 @@
 -- Phase 4: game-engine tables — RLS, privileges, keys, config (#66).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(149);
+select plan(166);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -43,9 +43,9 @@ insert into public.habit_completions
 insert into public.daily_progress (user_id, local_date, completed_count, counted_for_streak) values
   ('11111111-1111-1111-1111-111111111111', '2026-11-16', 1, true),
   ('22222222-2222-2222-2222-222222222222', '2026-11-16', 1, true);
-insert into public.points_ledger (user_id, delta, reason) values
-  ('11111111-1111-1111-1111-111111111111', 20, 'completion'),
-  ('22222222-2222-2222-2222-222222222222', 10, 'completion');
+insert into public.points_ledger (user_id, delta, reason, ref_id) values
+  ('11111111-1111-1111-1111-111111111111', 20, 'completion', gen_random_uuid()),
+  ('22222222-2222-2222-2222-222222222222', 10, 'completion', gen_random_uuid());
 insert into public.habit_streaks (habit_id, user_id, current, longest, last_date) values
   ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', 1, 1, '2026-11-16'),
   ('bbbbbbbb-0000-0000-0000-000000000001', '22222222-2222-2222-2222-222222222222', 1, 1, '2026-11-16');
@@ -97,7 +97,7 @@ select is((select count(*)::int from pg_policies
              and (cmd <> 'SELECT' or roles <> array['authenticated']::name[] or permissive <> 'PERMISSIVE')),
   0, 'every engine policy is a permissive SELECT for authenticated only');
 
--- ── economy_value: internal, definer, pinned search_path ────────────────────
+-- ── economy_value: internal, invoker, pinned search_path ────────────────────
 select function_privs_are('public', 'economy_value', array['text'], 'anon', array[]::text[],
   'anon cannot execute economy_value');
 select function_privs_are('public', 'economy_value', array['text'], 'authenticated', array[]::text[],
@@ -228,6 +228,8 @@ select throws_ok($$select 1 from public.economy_config$$, '42501', null,
 
 -- ── Keys and constraints (as postgres, the functions' owner) ────────────────
 select pg_temp.as_postgres();
+-- The snapshot FKs are deferred to commit; check each statement here.
+set constraints all immediate;
 select throws_ok($$insert into public.habit_completions (habit_id, user_id, local_date, occurrence, base_points, multiplier, points_awarded)
   values ('aaaaaaaa-0000-0000-0000-000000000001', '22222222-2222-2222-2222-222222222222', '2026-11-16', 2, 20, 1.01, 20)$$,
   '23503', null, 'a completion must belong to the habit''s owner (composite FK)');
@@ -259,24 +261,49 @@ select throws_ok($$update public.daily_schedule set scheduled_count = -1$$, '235
   'scheduled_count is never negative');
 select throws_ok($$delete from public.daily_schedule
   where user_id = '11111111-1111-1111-1111-111111111111' and local_date = '2026-11-16'$$, '23503', null,
-  'deleting a day that has a snapshot fails loudly (no cascade)');
+  'deleting a day that has a snapshot fails (no cascade)');
 select throws_ok($$delete from public.daily_schedule_habits
   where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'$$, '23503', null,
-  'deleting a snapshot entry that has completions fails loudly (no cascade)');
+  'deleting a snapshot entry that has completions fails (no cascade)');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
+  values ('11111111-1111-1111-1111-111111111111', 20, 'completion')$$, '23514', null,
+  'an engine ledger entry must say what it is for (ref_id), so the once-index cannot be bypassed');
+select lives_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 30, 'refund', 'dddddddd-0000-0000-0000-000000000001')$$,
+  'a refund is booked');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 30, 'refund', 'dddddddd-0000-0000-0000-000000000001')$$,
+  '23505', null, 'the same refund cannot be booked twice');
+select lives_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', -30, 'purchase', 'dddddddd-0000-0000-0000-000000000002'),
+         ('11111111-1111-1111-1111-111111111111', -30, 'purchase', 'dddddddd-0000-0000-0000-000000000002')$$,
+  'a consumable can be bought again with the same ref');
+select throws_ok($$update public.economy_config set value = '1000' where key = 'schedule_max_habits'$$,
+  '23514', null, 'a schedule cap above 50 is rejected');
+select throws_ok($$update public.economy_config set value = '"15"' where key = 'undo_window_minutes'$$,
+  '23514', null, 'a config number stored as a string is rejected');
+select throws_ok($$update public.economy_config set value = '{"easy": 10, "medium": 20}' where key = 'base_points'$$,
+  '23514', null, 'base_points must cover every difficulty');
+select throws_ok($$update public.economy_config set value = '{"3": "lots"}' where key = 'milestones'$$,
+  '23514', null, 'milestone bonuses are numbers');
+select throws_ok($$update public.economy_config set value = '-0.01' where key = 'multiplier_step'$$,
+  '23514', null, 'the multiplier step cannot be negative');
+select throws_ok($$update public.daily_schedule set scheduled_count = 51$$, '23514', null,
+  'scheduled_count has a hard ceiling of 50 even if the config is mis-set');
 select throws_ok($$insert into public.habit_completions (habit_id, user_id, local_date, occurrence, base_points, multiplier, points_awarded)
   values ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', '2026-11-16', 2, 35, 1.5, 53)$$,
   '23514', null, 'points_awarded must equal floor(base × multiplier)');
 select lives_ok($$insert into public.habit_completions (habit_id, user_id, local_date, occurrence, base_points, multiplier, points_awarded, habit_longest_before)
   values ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', '2026-11-16', 2, 35, 1.5, 52, null)$$,
   'a correct award is accepted (floor(35 × 1.5) = 52)');
-select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
-  values ('11111111-1111-1111-1111-111111111111', -5, 'completion')$$, '23514', null,
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', -5, 'completion', gen_random_uuid())$$, '23514', null,
   'a completion entry is positive');
-select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
-  values ('11111111-1111-1111-1111-111111111111', 5, 'undo')$$, '23514', null,
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 5, 'undo', gen_random_uuid())$$, '23514', null,
   'an undo entry is negative');
-select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
-  values ('11111111-1111-1111-1111-111111111111', 5, 'purchase')$$, '23514', null,
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 5, 'purchase', gen_random_uuid())$$, '23514', null,
   'a purchase entry is negative');
 select lives_ok($$insert into public.points_ledger (user_id, delta, reason)
   values ('11111111-1111-1111-1111-111111111111', -5, 'admin_adjust')$$,
@@ -295,8 +322,8 @@ select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref
   '23505', null, 'and can''t be booked twice');
 select ok((select id is not null from public.streak_milestones_awarded limit 1),
   'milestones have an id for their ledger entries');
-select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
-  values ('11111111-1111-1111-1111-111111111111', 0, 'completion')$$, '23514', null,
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 0, 'completion', gen_random_uuid())$$, '23514', null,
   'ledger entries are never zero');
 select throws_ok($$update public.habit_streaks set current = 5, longest = 2$$, '23514', null,
   'longest is never below current');
@@ -345,11 +372,26 @@ select sequence_privs_are('public', 'points_ledger_id_seq', 'authenticated', arr
   'authenticated has no privileges on the ledger id sequence');
 select sequence_privs_are('public', 'points_ledger_id_seq', 'anon', array[]::text[],
   'anon has no privileges on the ledger id sequence');
-select table_privs_are('public', 'points_ledger', 'service_role', array['INSERT', 'REFERENCES', 'SELECT', 'TRIGGER'],
+select table_privs_are('public', 'points_ledger', 'service_role', array['INSERT', 'REFERENCES', 'SELECT'],
   'service_role can append to the ledger but not edit, delete or truncate it');
 select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
 select throws_ok($$select setval('public.points_ledger_id_seq', 1)$$, '42501', null,
   'a signed-in user cannot reset the ledger id sequence');
+select pg_temp.as_postgres();
+
+select col_is_null('public', 'daily_progress', 'longest_streak_before',
+  'daily_progress.longest_streak_before is nullable (first completion)');
+select col_is_null('public', 'habit_completions', 'habit_longest_before',
+  'habit_completions.habit_longest_before is nullable (first completion)');
+set local role service_role;
+select throws_ok($$update public.points_ledger set delta = 1$$, '42501', null,
+  'service_role cannot edit the ledger');
+select throws_ok($$delete from public.points_ledger$$, '42501', null,
+  'service_role cannot delete ledger entries');
+select throws_ok($$select public.economy_value('base_points')$$, '42501', null,
+  'service_role cannot call economy_value');
+select lives_ok($$update public.economy_config set value = '15' where key = 'undo_window_minutes'$$,
+  'service_role can still make a valid config edit');
 select pg_temp.as_postgres();
 
 -- ── economy_config.updated_at follows edits ─────────────────────────────────
@@ -357,6 +399,10 @@ update public.economy_config set updated_at = '2000-01-01' where key = 'multipli
 update public.economy_config set value = '50' where key = 'multiplier_cap';
 select ok((select updated_at > '2001-01-01' from public.economy_config where key = 'multiplier_cap'),
   'updating a config value stamps updated_at');
+
+-- Cascades remove rows through several FK actions; let the deferred
+-- snapshot FKs wait for all of them, as they do at commit.
+set constraints all deferred;
 
 -- ── Cascade: deleting a habit removes its engine rows, not the day ─────────
 delete from public.habits where id = 'aaaaaaaa-0000-0000-0000-000000000001';
@@ -370,11 +416,13 @@ select is((select count(*)::int from public.daily_schedule
            where user_id = '11111111-1111-1111-1111-111111111111' and local_date = '2026-11-16'), 1,
   'the day''s schedule row survives a habit delete');
 select is((select count(*)::int from public.points_ledger
-           where user_id = '11111111-1111-1111-1111-111111111111'), 4,
+           where user_id = '11111111-1111-1111-1111-111111111111'), 7,
   'ledger rows survive a habit delete (append-only)');
 
 -- ── Cascade: deleting a user removes all of their engine rows ───────────────
 delete from auth.users where id = '22222222-2222-2222-2222-222222222222';
+select lives_ok($$set constraints all immediate$$,
+  'the deferred snapshot FKs hold after account deletion (whatever order the cascades ran in)');
 select is((select count(*)::int from public.daily_schedule
            where user_id = '22222222-2222-2222-2222-222222222222'), 0, 'schedule days go with the user');
 select is((select count(*)::int from public.daily_progress

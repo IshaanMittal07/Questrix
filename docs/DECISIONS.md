@@ -229,14 +229,17 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - `FOR NO KEY UPDATE` still serialises engine calls against each other and against client profile updates, but it doesn't block foreign-key checks.
   - `ensure_daily_schedule` takes no explicit profile lock. It inserts with `on conflict do nothing`, keyed by the primary key.
   - The habits trigger and RPCs take the habit row or `habits_lock` before calling it.
-  - The #67 and #68 PRs record a two-session check of exactly this interleaving: a habit edit against `complete_habit`.
+  - **Only single-row paths call `ensure_daily_schedule`.** That means insert, unarchive, archive and a `days_of_week` change. `reorder_habits` never calls it, because order doesn't affect schedules. A multi-row statement that called it after locking one habit row could wait on another row that `complete_habit` holds `for share`, while `complete_habit` waits on the uncommitted `daily_schedule` row.
+  - **Username changes take `FOR UPDATE`.** Any profile UPDATE that sets the unique `username` takes `FOR UPDATE`, which blocks foreign-key checks; onboarding sets `username` and `timezone` together. So the timezone snapshot (D3) is skipped while `onboarded_at` is null.
+  - **Deadlocks are retryable.** The app's actions map a `40P01` deadlock to a retry.
+  - The #67 and #68 PRs record two-session checks: a habit edit against `complete_habit`, and reorder against the first `complete_habit` of a day.
   - This replaces the Phase 3 note, which would also have deadlocked: a client UPDATE locks the habit row before its BEFORE trigger runs.
 - **D6. Time seam for tests.** Internal `complete_habit_at(uid, habit, now)` and `undo_completion_at(...)` take the time as a parameter, and EXECUTE is revoked from every client role. The public RPCs are thin wrappers that use `auth.uid()` and `now()`. pgTAP runs in one transaction, so it needs the seam to simulate days.
 - **D7. `get_today`** returns JSON with only today's scheduled habits.
   - `at_risk` is computed on the server: today is scheduled, nothing is done yet, and the local time is 18:00 or later.
   - `level` is computed in SQL, and a parity test keeps it equal to `lib/points/levels.ts`.
   - It writes, through `ensure_daily_schedule`, so it's VOLATILE.
-- **D8. Milestones.** Awarded on the day's first completion when `current_streak` reaches a configured value, once per `(user_id, streak_run_started, milestone)`. `awarded_on` records the local day, so an undo that empties that day revokes the milestone. In Phase 4 there's no inbox notification: plan §6.2 wants one, but `notifications_inbox` arrives in Phase 7, so for now the milestone appears in the RPC's JSON and as confetti.
+- **D8. Milestones.** Awarded on the day's first completion when `current_streak` reaches a configured value, once per `(user_id, streak_run_started, milestone)`. Revoking a milestone **deletes** its row and writes an `undo` ledger entry whose `ref_id` is the old milestone id. If the user completes again that day, the milestone is re-awarded with a fresh id, so the ledger's once-per-ref index never collides. `awarded_on` records the local day, so an undo that empties that day revokes the milestone. In Phase 4 there's no inbox notification: plan §6.2 wants one, but `notifications_inbox` arrives in Phase 7, so for now the milestone appears in the RPC's JSON and as confetti.
 - **D9. Error codes.** Each refusal gets its own SQLSTATE (pinned in #68 and #69), so the UI maps codes, never message text. `P0002` covers both a missing habit and another user's habit.
 - **D10. Concurrency.** pgTAP runs in one transaction, so it can't open two sessions. The unique occurrence constraint and the lock are tested structurally, and a real two-session check is recorded in the `complete_habit` PR, as in #43.
 - **Spending before Phase 6.** pgTAP spends points through a postgres-only helper that writes an `admin_adjust` ledger entry. Phase 6 re-runs the invariant test with `purchase_item`.
@@ -247,12 +250,14 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - Undo needs `longest` as well, so it can restore exactly: `daily_progress.longest_streak_before` and `habit_completions.habit_longest_before`.
   - **Foreign keys.**
     - The composite keys tie every completion, snapshot entry and streak to the habit's owner. Those tables have no direct foreign key to `profiles`; they cascade through `habits`.
-    - The completion → snapshot and snapshot → day keys are **no action**, so a stray delete of a day or snapshot entry fails loudly instead of erasing completions. Account deletion still works, because every row goes in one statement.
+    - The completion → snapshot and snapshot → day keys are **not** cascades, so a stray delete of a day or snapshot entry fails instead of erasing completions.
+    - They're `deferrable initially deferred`, so the check runs at commit. Account deletion removes those rows through two cascades (profiles → days, and profiles → habits → snapshot), and Postgres fires cascades in trigger-name order, which isn't guaranteed. An immediate check could run before the snapshot rows are gone, depending on OIDs: a review reproduced the failure. pgTAP forces the check with `SET CONSTRAINTS ALL IMMEDIATE` after a deletion.
   - **Deleting a habit.** Clients can't delete habits. If `service_role` or account deletion does, the habit's completions, snapshot entries and streak go with it, and the day row and ledger stay. The balance therefore still equals the ledger sum. Accepted, and tested.
   - **Ledger.**
     - It's append-only even for `service_role`: no UPDATE, DELETE or TRUNCATE. The cascade from `profiles` still deletes, because foreign-key actions run as the table owner.
     - The sign follows the reason (CHECK).
-    - `(reason, ref_id)` is unique for completion, milestone and undo entries, so a retry can't book anything twice.
+    - `(reason, ref_id)` is unique for completion, milestone, undo and refund entries, so a retry can't book anything twice. Purchases aren't covered, because a consumable can be bought again with the same item.
+    - Engine entries must carry a `ref_id` (CHECK), so a null can't slip past the index.
     - `ref_id` points at the completion, milestone or `user_items` row.
   - **Points formula.** A CHECK pins `points_awarded = floor(base_points × multiplier)`.
   - **Sequences.** Supabase's default privileges give `anon` and `authenticated` USAGE and UPDATE on new sequences. A client could then `setval` the ledger's id and break every later insert. The migration revokes that for the ledger sequence and for future sequences.
@@ -260,4 +265,8 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - `economy_value` is SECURITY INVOKER, and no role can call it except the definer functions' owner.
     - `scheduled_count` has no hard upper bound; the config owns the cap.
     - Two CHECKs still limit config values: `profiles.streak_freezes` (0..2) caps `streak_freezes_max`, and `multiplier` (at most 9.99) caps the multiplier. ECONOMY.md says so.
+    - **Config values are validated** by `economy_config_value_valid` (a CHECK can't hold subqueries): shape and a sane range per key. `scheduled_count` keeps a hard ceiling of 50 in case the config is mis-set.
+    - **Multiplier rounding.** The formula CHECK uses the stored `numeric(4,2)` multiplier, so the engine rounds the multiplier to 2 dp before computing points.
+    - **`economy_value` is SECURITY INVOKER.** So its callers must be SECURITY DEFINER functions owned by `postgres`. The habits trigger functions that read config in #67 must run as definer, or a direct `service_role` write would fail.
+    - **Identity, not serial.** The default sequence privileges no longer reach clients, so a client-insertable table must use identity columns. Nothing is created as `supabase_admin`, whose default ACL still grants clients sequence access.
   - **Access.** Clients can only read their own rows, and the policies are written out per table. All writes happen in SECURITY DEFINER functions owned by `postgres`.

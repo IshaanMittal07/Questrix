@@ -5,11 +5,55 @@
 
 -- ── economy_config (DECISIONS § Phase 4, D4) ────────────────────────────────
 -- Tunable numbers, read by the engine functions. Documented in ECONOMY.md.
+-- A mis-set value would break every completion: check the shape and a sane
+-- range per key (the engine functions assume these). A function, because a
+-- CHECK can't contain subqueries.
+create function public.economy_config_value_valid(p_key text, value jsonb)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select case p_key
+      when 'base_points' then jsonb_typeof(value) = 'object'
+        and value ?& array['easy', 'medium', 'hard']
+        and (select bool_and(jsonb_typeof(v) = 'number' and (v)::numeric between 1 and 1000)
+             from jsonb_each(value) as e(k, v))
+      when 'multiplier_step' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 0 and 0.1
+      when 'multiplier_cap' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 0 and 365
+      when 'milestones' then jsonb_typeof(value) = 'object'
+        and (select bool_and(k ~ '^[1-9][0-9]{0,3}$' and jsonb_typeof(v) = 'number'
+                             and (v)::numeric between 1 and 100000)
+             from jsonb_each(value) as e(k, v))
+      when 'undo_window_minutes' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 1 and 1440
+      when 'streak_lookback_days' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 1 and 31
+      when 'streak_freezes_max' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 0 and 2
+      when 'schedule_max_habits' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 1 and 50
+      when 'habit_create_limits' then jsonb_typeof(value) = 'object'
+        and jsonb_typeof(value -> 'per_day') = 'number'
+        and jsonb_typeof(value -> 'per_30_days') = 'number'
+      when 'timezone_change_cooldown_days' then jsonb_typeof(value) = 'number'
+        and (value)::numeric between 0 and 365
+      else true
+    end;
+$$;
+-- Pure; service_role keeps EXECUTE so its config edits pass the CHECK.
+revoke all on function public.economy_config_value_valid(text, jsonb)
+  from public, anon, authenticated;
+
 create table public.economy_config (
   key text primary key
     constraint economy_config_key_format check (key ~ '^[a-z][a-z0-9_]{1,62}$'),
   value jsonb not null,
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint economy_config_value_valid
+    check (public.economy_config_value_valid(key, value))
 );
 
 insert into public.economy_config (key, value) values
@@ -83,9 +127,10 @@ create table public.daily_schedule (
   user_id uuid not null references public.profiles (id) on delete cascade,
   local_date date not null,
   -- Never decreases: habits are only ever added to a day's snapshot. The cap
-  -- is economy_config.schedule_max_habits, enforced by ensure_daily_schedule.
+  -- is economy_config.schedule_max_habits, enforced by ensure_daily_schedule;
+  -- 50 is a hard ceiling in case the config is mis-set.
   scheduled_count smallint not null default 0
-    constraint daily_schedule_count_nonnegative check (scheduled_count >= 0),
+    constraint daily_schedule_count_range check (scheduled_count between 0 and 50),
   created_at timestamptz not null default now(),
   primary key (user_id, local_date)
 );
@@ -101,12 +146,14 @@ create table public.daily_schedule_habits (
     constraint daily_schedule_habits_target_range check (target_per_day between 1 and 5),
   added_at timestamptz not null default now(),
   primary key (user_id, local_date, habit_id),
-  -- No action, not cascade: a stray delete of a day fails loudly instead of
-  -- erasing the snapshot (and, below, completions). Account deletion still
-  -- works: every row goes in the same statement, and NO ACTION is checked at
-  -- its end.
+  -- Not cascade: a stray delete of a day fails instead of erasing the
+  -- snapshot (and, below, completions). Deferred to commit, because account
+  -- deletion removes these rows through two cascades (profiles → days and
+  -- profiles → habits → snapshot) whose firing order isn't guaranteed; an
+  -- immediate check could run before the snapshot rows are gone.
   foreign key (user_id, local_date)
-    references public.daily_schedule (user_id, local_date),
+    references public.daily_schedule (user_id, local_date)
+    deferrable initially deferred,
   -- The habit belongs to the same user.
   foreign key (habit_id, user_id)
     references public.habits (id, user_id) on delete cascade
@@ -136,9 +183,11 @@ create table public.habit_completions (
   constraint habit_completions_occurrence_unique unique (habit_id, local_date, occurrence),
   -- A completion belongs to the habit's owner (DECISIONS § Phase 3)…
   foreign key (habit_id, user_id) references public.habits (id, user_id) on delete cascade,
-  -- …and the habit was in that day's schedule snapshot (no action: see above).
+  -- …and the habit was in that day's schedule snapshot (deferred, not
+  -- cascade: see daily_schedule_habits).
   foreign key (user_id, local_date, habit_id)
-    references public.daily_schedule_habits (user_id, local_date, habit_id),
+    references public.daily_schedule_habits (user_id, local_date, habit_id)
+    deferrable initially deferred,
   -- Cheap invariant: the award follows the formula (plan §6.1).
   constraint habit_completions_points_formula
     check (points_awarded = floor(base_points * multiplier))
@@ -175,6 +224,11 @@ create table public.points_ledger (
   -- user_items row. No FK: ledger rows outlive what they point at.
   ref_id uuid,
   created_at timestamptz not null default now(),
+  -- Engine entries always say what they're for, so the once-per-ref index
+  -- below can't be bypassed with a null.
+  constraint points_ledger_ref_required check (
+    ref_id is not null
+    or reason not in ('completion', 'streak_milestone', 'undo', 'purchase', 'refund')),
   -- The sign follows the reason; admin adjustments go either way.
   constraint points_ledger_sign check (
     case reason
@@ -188,10 +242,11 @@ create table public.points_ledger (
 );
 create index points_ledger_user_created_idx
   on public.points_ledger (user_id, created_at desc);
--- A completion, milestone or undo is booked at most once, even on a retry.
+-- A completion, milestone, undo or refund is booked at most once, even on a
+-- retry. (Not purchases: a consumable can be bought again with the same ref.)
 create unique index points_ledger_ref_once
   on public.points_ledger (reason, ref_id)
-  where reason in ('completion', 'streak_milestone', 'undo');
+  where reason in ('completion', 'streak_milestone', 'undo', 'refund');
 
 -- ── habit_streaks ───────────────────────────────────────────────────────────
 -- Per-habit streak (display only; no points). user_id is here, beyond plan
@@ -286,4 +341,4 @@ alter default privileges for role postgres in schema public
 
 -- The ledger is append-only even for the server key; the cascade from
 -- profiles still deletes (FK actions run as the table owner).
-revoke update, delete, truncate on public.points_ledger from service_role;
+revoke update, delete, truncate, trigger on public.points_ledger from service_role;

@@ -730,6 +730,10 @@ export type Database = {
     };
     Functions: {
       archive_habit: { Args: { p_habit_id: string }; Returns: undefined };
+      economy_config_value_valid: {
+        Args: { p_key: string; value: Json };
+        Returns: boolean;
+      };
       economy_value: { Args: { p_key: string }; Returns: Json };
       equip_item: {
         Args: { p_item_id: string; p_slot: string };
