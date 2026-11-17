@@ -178,7 +178,7 @@ A running log of choices made where the plan was ambiguous or where current tool
     - At most 30 habits created per 24 hours.
     - At most 100 habits created per 30 days.
 
-    Both are checked in the insert branch of the trigger, under the lock. They raise `QX001` with a hint, so the UI can tell a rate limit apart from invalid input (`23514`). They should move to `economy_config` when Phase 4 adds it.
+    Both are checked in the insert branch of the trigger, under the lock. They raise `QX001` with a hint, so the UI can tell a rate limit apart from invalid input (`23514`). They moved to `economy_config` in #67.
 
   - **`sort_order` is owned entirely by the server.** This deviates from plan §5.2, which granted it to clients on both insert and update.
     - New and unarchived habits go to the end of the active list.
@@ -193,7 +193,7 @@ A running log of choices made where the plan was ambiguous or where current tool
 
     `unique (id, user_id)` exists so Phase 4 completions can reference `(habit_id, user_id)`.
 - **Phase 4 requirements created by the habits table** (from the #43 security audit and code review; Phase 4 must satisfy them):
-  - **Snapshot before schedule edits.** Clients can edit `days_of_week` or archive habits directly, so a user who skipped day D could remove D's weekday before D is snapshotted, turning a miss into a rest day. Any INSERT, `days_of_week` change, archive or unarchive must first call `ensure_daily_schedule(user, local_today)`. That call also fills missing past days, up to 7. Edits then only affect days not yet snapshotted.
+  - **Snapshot before schedule edits.** Clients can edit `days_of_week` or archive habits directly, so a user who skipped day D could remove D's weekday before D is snapshotted, turning a miss into a rest day. Done in #67: see "Daily schedule (#67)" under Phase 4.
   - **Archive-and-recreate must not farm points.** The 20-active cap is not a points ceiling: complete a habit, archive it, create a new one, complete that. The creation limits above bound this, but `complete_habit` must also refuse habits created after that day's `daily_schedule` snapshot, or there must be a daily cap on completion points.
   - **Read the habit under lock.** `complete_habit` reads `target_per_day`, `difficulty` and `archived_at` under a row lock (`for share`, after the profile lock), never from client-cached values.
   - **Mid-day edits.** `difficulty` and `target_per_day` can be edited mid-day. Either snapshot them into that day's `daily_schedule` with `days_of_week`, or cap daily completion points.
@@ -220,7 +220,14 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
 - **D3. Timezone changes (#28).**
   - After onboarding, the timezone can change once per `timezone_change_cooldown_days` (7), tracked in `profiles.timezone_changed_at`. A change inside the cooldown raises `QX001` with a hint. Onboarding is exempt while `onboarded_at` is null.
   - The old timezone's day is snapshotted before the change.
-  - **Moving east.** If the change moves the local date past an already-counted `last_streak_date`, `last_streak_date` moves to the new local date. A cooldown alone wouldn't be enough: with a single change, a user could complete at UTC-12, switch to UTC+14 and complete "tomorrow" minutes later. With this rule no streak is gained, and extra points are bounded to one day per cooldown.
+  - **Moving east.** The new timezone's days up to its today are the same real day as the old today. If nothing was required there, `last_streak_date` moves to the new local date. "Nothing required" means today in the old zone was already counted, or every day since the last counted one was a rest day.
+    - A cooldown alone wouldn't be enough: with a single change, a user could complete at UTC-12, switch to UTC+14 and complete "tomorrow" minutes later. The rest-day case was a hole found in review (#67).
+    - With this rule no streak is gained, and extra points are bounded to one day per cooldown.
+    - If a scheduled day is still pending in the old zone, it stays pending and becomes a missed day (fail closed). Users should complete before switching.
+    - A streak older than the lookback isn't revived.
+    - Per-habit streaks follow the same rule.
+    - A jump of up to two days (UTC-12 late evening to UTC+14) bridges the skipped day without a completion; accepted.
+    - #28's end-to-end acceptance (two streak increments within 24 real hours) needs `complete_habit`, so #28 closes in #68.
   - **Moving west** is covered by plan §6.2 rule 0. The user can still collect points for the previous day's unused occurrences, but that is bounded to one day per cooldown too.
 - **D4. `economy_config`** is `key text PK, value jsonb`. It's read through the internal `economy_value(key)`, which raises if the key is missing. Signed-in users can read the table, but nobody can write it from a client. ECONOMY.md documents every key.
 - **D5. Lock order.**
@@ -231,7 +238,10 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - The habits trigger and RPCs take the habit row or `habits_lock` before calling it.
   - **Only single-row paths call `ensure_daily_schedule`.** That means insert, unarchive, archive and a `days_of_week` change. `reorder_habits` never calls it, because order doesn't affect schedules. A multi-row statement that called it after locking one habit row could wait on another row that `complete_habit` holds `for share`, while `complete_habit` waits on the uncommitted `daily_schedule` row.
   - **Username changes take `FOR UPDATE`.** Any profile UPDATE that sets the unique `username` takes `FOR UPDATE`, which blocks foreign-key checks; onboarding sets `username` and `timezone` together. So the timezone snapshot (D3) is skipped while `onboarded_at` is null.
-  - **Deadlocks are retryable.** The app's actions map a `40P01` deadlock to a retry.
+  - **Deadlocks are retryable.** The app's actions map a `40P01` deadlock to "Try again", in `lib/supabase/errors.ts`.
+  - **`complete_habit` and `undo_completion` snapshot before locking the habit row.** The order is profile, then `ensure_daily_schedule`, then habit `for share`. `ensure` only takes `KEY SHARE` on habit rows, which never conflicts, so it never waits while holding a habit lock that a habit UPDATE needs.
+  - **Multi-row client updates.** A client can still send a multi-row `UPDATE habits` (RLS limits it to its own rows). That can deadlock with its own `complete_habit`. It's self-only and retryable, so it's accepted.
+  - **Username and timezone together.** After onboarding, changing both in one statement is refused (`22023`). The username change would take `FOR UPDATE` on the profile while the snapshot waits on a concurrent day row.
   - The #67 and #68 PRs record two-session checks: a habit edit against `complete_habit`, and reorder against the first `complete_habit` of a day.
   - This replaces the Phase 3 note, which would also have deadlocked: a client UPDATE locks the habit row before its BEFORE trigger runs.
 - **D6. Time seam for tests.** Internal `complete_habit_at(uid, habit, now)` and `undo_completion_at(...)` take the time as a parameter, and EXECUTE is revoked from every client role. The public RPCs are thin wrappers that use `auth.uid()` and `now()`. pgTAP runs in one transaction, so it needs the seam to simulate days.
@@ -285,6 +295,15 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Timezone (#28).** `profiles_validate` enforces the cooldown (`QX001`, with a hint naming the date), snapshots the old timezone's days, applies the eastward rule, and stamps `timezone_changed_at`.
     - The onboarding exemption checks the _old_ `onboarded_at`, because step 1 sets the username, which stamps `onboarded_at`, and the timezone in one update.
     - Clients can read `timezone_changed_at` but not write it.
+  - **Review fixes (round 1).**
+    - `snapshot_add_habit` locks today's `daily_schedule` row `FOR NO KEY UPDATE` before counting, so concurrent additions can't pass the cap together.
+    - The day loop steps in integers. `generate_series(date, date, interval)` runs in the session timezone and skipped a day where DST changes at midnight (Santiago).
+    - There's a fast path when today is already snapshotted.
+    - The creation limits are checked before the snapshot.
+    - `habits_lock` is taken before the snapshot for any `archived_at` change, not only for inserts.
+    - On a timezone change, days further back are also snapshotted, so a move west can't rebuild an older day with an edited schedule.
+    - The cooldown hint gives the local time in the user's old timezone ("on or after YYYY-MM-DD HH:MI").
+    - A habit insert for a user with no profile now fails with `P0002 Profile not found` from the snapshot, before the FK check.
   - **Two-session check (D10), run against the local stack.** All three cases passed: the second session waited for the first, then committed. There was no deadlock, and each day was snapshotted once, with the pre-edit schedule.
     1. Two habit edits racing to take a day's first snapshot.
     2. `archive_habit` against a habit insert.

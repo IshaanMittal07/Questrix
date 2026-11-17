@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { DEADLOCK, RETRY_MESSAGE, serverMessage } from "@/lib/supabase/errors";
 import { createClient } from "@/lib/supabase/server";
 import { timezoneSchema } from "@/lib/validation/profile";
 
@@ -27,10 +28,9 @@ export async function updateTimezone(
     if (error.code === "22023") return { error: "Pick a valid timezone." };
     // QX001: the once-a-week cooldown (#28); the message and hint are ours.
     if (error.code === "QX001") {
-      return {
-        error: `${error.message}.${error.hint ? ` ${error.hint}` : ""}`,
-      };
+      return { error: serverMessage(error.message, error.hint) };
     }
+    if (error.code === DEADLOCK) return { error: RETRY_MESSAGE };
     return { error: "Couldn't save. Try again." };
   }
 

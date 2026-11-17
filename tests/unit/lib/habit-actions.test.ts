@@ -600,3 +600,14 @@ describe("edge cases", () => {
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 });
+
+describe("deadlocks", () => {
+  it("maps 40P01 to a retry message without leaking SQL", async () => {
+    results = [{ error: { code: "40P01", message: "deadlock detected" } }];
+    expect(await actions.archiveHabit(ID)).toEqual({
+      ok: false,
+      code: "failed",
+      error: "Something else was saving at the same time. Try again.",
+    });
+  });
+});

@@ -1,7 +1,7 @@
 -- Phase 4 (#67): daily schedule snapshots and the timezone-change limit.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(97);
+select plan(105);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -45,6 +45,8 @@ insert into public.habits (id, user_id, title, category, days_of_week, created_a
    array[pg_temp.dow_ago(1)], now() - interval '10 days'),
   -- Bob: daily, created long before he onboarded.
   ('bbbbbbbb-0000-0000-0000-000000000001', '22222222-2222-2222-2222-222222222222', 'Read', 'learning',
+   '{0,1,2,3,4,5,6}', now() - interval '10 days'),
+  ('eeeeeeee-0000-0000-0000-000000000001', '55555555-5555-5555-5555-555555555555', 'Stretch', 'fitness',
    '{0,1,2,3,4,5,6}', now() - interval '10 days'),
   ('cccccccc-0000-0000-0000-000000000001', '33333333-3333-3333-3333-333333333333', 'Walk', 'fitness',
    '{0,1,2,3,4,5,6}', now() - interval '10 days');
@@ -303,7 +305,7 @@ update public.profiles set timezone = 'Pacific/Kiritimati'
 select pg_temp.as_postgres();
 select is((select last_streak_date from public.profiles where id = '55555555-5555-5555-5555-555555555555'),
   public.local_date_in('Etc/GMT+12', now()) - 3,
-  'moving east without a counted day today changes nothing');
+  'moving east with a scheduled day still pending changes nothing (it stays a miss)');
 
 -- An unknown timezone is still rejected before anything else.
 select pg_temp.as_user('66666666-6666-6666-6666-666666666666');
@@ -578,6 +580,101 @@ select is((select difficulty::text from public.daily_schedule_habits
   'a service_role difficulty edit applies from tomorrow too');
 
 -- Deferred FKs hold at the end.
+-- ── Round 1 review fixes ─────────────────────────────────────────────────────
+-- Rest-day bridge (the #28 hole): Zoe counted 2 days ago, yesterday and today
+-- are rest days (no habits), then she jumps east. The new today inherits.
+insert into auth.users (id, email) values ('d1d1d1d1-0000-0000-0000-000000000001', 'zoe@example.com');
+update public.profiles set onboarded_at = now() - interval '10 days', timezone = 'Etc/GMT+12',
+                           last_streak_date = public.local_date_in('Etc/GMT+12', now()) - 2
+  where id = 'd1d1d1d1-0000-0000-0000-000000000001';
+select pg_temp.as_user('d1d1d1d1-0000-0000-0000-000000000001');
+update public.profiles set timezone = 'Pacific/Kiritimati'
+  where id = 'd1d1d1d1-0000-0000-0000-000000000001';
+select pg_temp.as_postgres();
+select is((select last_streak_date from public.profiles where id = 'd1d1d1d1-0000-0000-0000-000000000001'),
+  public.local_date_in('Pacific/Kiritimati', now()),
+  'moving east across rest days inherits the new today (no extra streak day)');
+
+-- A streak already broken (older than the lookback) isn't revived.
+insert into auth.users (id, email) values ('d2d2d2d2-0000-0000-0000-000000000002', 'yan@example.com');
+update public.profiles set onboarded_at = now() - interval '30 days', timezone = 'Etc/GMT+12',
+                           last_streak_date = public.local_date_in('Etc/GMT+12', now()) - 20
+  where id = 'd2d2d2d2-0000-0000-0000-000000000002';
+select pg_temp.as_user('d2d2d2d2-0000-0000-0000-000000000002');
+update public.profiles set timezone = 'Pacific/Kiritimati'
+  where id = 'd2d2d2d2-0000-0000-0000-000000000002';
+select pg_temp.as_postgres();
+select is((select last_streak_date from public.profiles where id = 'd2d2d2d2-0000-0000-0000-000000000002'),
+  public.local_date_in('Etc/GMT+12', now()) - 20,
+  'a streak older than the lookback isn''t revived by a jump east');
+
+-- Per-habit streaks follow the eastward rule.
+insert into auth.users (id, email) values ('d3d3d3d3-0000-0000-0000-000000000003', 'xia@example.com');
+insert into public.habits (id, user_id, title, category, created_at) values
+  ('c1c1c1c1-0000-0000-0000-000000000001', 'd3d3d3d3-0000-0000-0000-000000000003', 'Run', 'fitness',
+   now() - interval '5 days');
+update public.profiles set onboarded_at = now() - interval '5 days', timezone = 'Etc/GMT+12',
+                           last_streak_date = public.local_date_in('Etc/GMT+12', now())
+  where id = 'd3d3d3d3-0000-0000-0000-000000000003';
+insert into public.habit_streaks (habit_id, user_id, current, longest, last_date) values
+  ('c1c1c1c1-0000-0000-0000-000000000001', 'd3d3d3d3-0000-0000-0000-000000000003', 3, 3,
+   public.local_date_in('Etc/GMT+12', now()));
+select pg_temp.as_user('d3d3d3d3-0000-0000-0000-000000000003');
+update public.profiles set timezone = 'Pacific/Kiritimati'
+  where id = 'd3d3d3d3-0000-0000-0000-000000000003';
+select pg_temp.as_postgres();
+select is((select last_date from public.habit_streaks where habit_id = 'c1c1c1c1-0000-0000-0000-000000000001'),
+  public.local_date_in('Pacific/Kiritimati', now()), 'a habit''s counted day moves east too');
+
+-- Username and timezone in one statement after onboarding is refused (D5).
+select pg_temp.as_user('66666666-6666-6666-6666-666666666666');
+select throws_ok($$update public.profiles set username = 'fay_new', timezone = 'Asia/Tokyo'
+                   where id = '66666666-6666-6666-6666-666666666666'$$,
+  '22023', 'Change your username and timezone separately',
+  'a username and timezone change in one statement is refused after onboarding');
+select pg_temp.as_postgres();
+
+-- The cooldown hint is in the user's timezone, with a time.
+-- Dave is in Asia/Tokyo (UTC+9) from an earlier test.
+update public.profiles set timezone_changed_at = now() - interval '1 day'
+  where id = '44444444-4444-4444-4444-444444444444';
+select pg_temp.as_user('44444444-4444-4444-4444-444444444444');
+select throws_like($$update public.profiles set timezone = 'Europe/Berlin'
+                     where id = '44444444-4444-4444-4444-444444444444'$$,
+  'You can change your timezone once every 7 days', 'the cooldown still applies');
+select pg_temp.as_postgres();
+create function pg_temp.tz_hint() returns text language plpgsql as $f$
+declare v text;
+begin
+  perform set_config('role', 'authenticated', true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', '44444444-4444-4444-4444-444444444444', 'role', 'authenticated')::text, true);
+  begin
+    update public.profiles set timezone = 'Europe/Berlin' where id = '44444444-4444-4444-4444-444444444444';
+  exception when sqlstate 'QX001' then
+    get stacked diagnostics v = pg_exception_hint;
+  end;
+  perform set_config('role', 'postgres', true);
+  return v;
+end $f$;
+select is(pg_temp.tz_hint(),
+  'Try again on or after '
+    || to_char((now() + interval '6 days') at time zone 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') || '.',
+  'the hint shows the local time (Tokyo, UTC+9) when the change is allowed');
+
+-- Santiago changes DST at local midnight: the integer day loop doesn't skip.
+insert into auth.users (id, email) values ('d4d4d4d4-0000-0000-0000-000000000004', 'sam@example.com');
+update public.profiles set onboarded_at = '2026-09-01 12:00:00+00', timezone = 'America/Santiago'
+  where id = 'd4d4d4d4-0000-0000-0000-000000000004';
+set local timezone = 'America/Santiago';
+select is(public.ensure_daily_schedule('d4d4d4d4-0000-0000-0000-000000000004', '2026-09-08 15:00:00+00'),
+  '2026-09-08'::date, 'Santiago: today is 2026-09-08');
+select is((select array_agg(local_date order by local_date)::text from public.daily_schedule
+           where user_id = 'd4d4d4d4-0000-0000-0000-000000000004'),
+  '{2026-09-01,2026-09-02,2026-09-03,2026-09-04,2026-09-05,2026-09-06,2026-09-07,2026-09-08}',
+  'every day is snapshotted across a midnight DST change, today included');
+set local timezone = 'UTC';
+
 select lives_ok($$set constraints all immediate$$, 'every snapshot row has its day');
 
 select * from finish();
