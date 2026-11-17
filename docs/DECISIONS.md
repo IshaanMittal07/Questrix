@@ -197,8 +197,48 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **Archive-and-recreate must not farm points.** The 20-active cap is not a points ceiling: complete a habit, archive it, create a new one, complete that. The creation limits above bound this, but `complete_habit` must also refuse habits created after that day's `daily_schedule` snapshot, or there must be a daily cap on completion points.
   - **Read the habit under lock.** `complete_habit` reads `target_per_day`, `difficulty` and `archived_at` under a row lock (`for share`, after the profile lock), never from client-cached values.
   - **Mid-day edits.** `difficulty` and `target_per_day` can be edited mid-day. Either snapshot them into that day's `daily_schedule` with `days_of_week`, or cap daily completion points.
-  - **Lock order.** Take the profile lock, then `habits_lock`, then row locks. The trigger will call `ensure_daily_schedule`, which likely takes the profile lock while `habits_lock` is held, so `complete_habit` must not take them in the opposite order.
+  - **Lock order.** Superseded by DECISIONS § Phase 4, D5: `ensure_daily_schedule` takes no profile lock, so the habits trigger never takes it either.
   - **`UPDATE OF` triggers.** `habits_before_write` doesn't fire for columns changed by another BEFORE trigger. A future trigger that sets `archived_at` would skip the cap.
   - **Completion ownership.** Completions use a composite FK `(habit_id, user_id) references habits (id, user_id)`.
   - **Weekday type.** Compare weekdays with `extract(dow from d)::smallint = any (days_of_week)`, because `extract` returns numeric.
   - **Phase 5:** `due_reminders` needs a partial index on active habits with reminders, and must handle local times that don't exist or happen twice on DST days.
+
+## Phase 4
+
+Pinned before coding, from the planner (#65). Each task records refinements below its own heading.
+
+- **D1. Per-habit schedule snapshot.** Plan §5.2 had `daily_schedule(user_id, local_date, scheduled_count)`. Phase 4 adds a child table, `daily_schedule_habits(user_id, local_date, habit_id, difficulty, target_per_day)`.
+  - **When a habit enters a day's snapshot:** when the day is first snapshotted, and again when the habit is inserted or unarchived, or has that day added to `days_of_week`.
+  - **Never removed.** Archiving or editing a habit doesn't remove it, so `scheduled_count` never falls. A day holds at most 20 habits, which bounds archive-and-recreate farming.
+  - **What reads the snapshot.** Points, targets and "scheduled today" all come from the snapshot, never the live habit. Changes to `difficulty` and `target_per_day` therefore apply from the next day.
+  - **Enforced by the database.** `habit_completions` has a foreign key to the snapshot, so a completion of an unscheduled habit can't exist.
+- **D2. Lazy backfill instead of the nightly job.** Plan §5.2 and §6.2 call for a nightly pg_cron job to fill `daily_schedule`. Instead, `ensure_daily_schedule` fills missing days on demand. This deviation drops the job.
+  - Up to 7 past days are filled, rebuilt from `created_at`/`archived_at` and the current `days_of_week`. That's accurate because every edit to the days snapshots first.
+  - Never earlier than the onboarding date.
+  - A day still missing counts as not a rest day (fail closed, as in the plan).
+  - pg_cron stays out of the stack until Phase 5 reminders.
+- **D3. Timezone changes (#28).**
+  - After onboarding, the timezone can change once per `timezone_change_cooldown_days` (7), tracked in `profiles.timezone_changed_at`. A change inside the cooldown raises `QX001` with a hint. Onboarding is exempt while `onboarded_at` is null.
+  - The old timezone's day is snapshotted before the change.
+  - **Moving east.** If the change moves the local date past an already-counted `last_streak_date`, `last_streak_date` moves to the new local date. A cooldown alone wouldn't be enough: with a single change, a user could complete at UTC-12, switch to UTC+14 and complete "tomorrow" minutes later. With this rule no streak is gained, and extra points are bounded to one day per cooldown.
+  - **Moving west** is covered by plan §6.2 rule 0.
+- **D4. `economy_config`** is `key text PK, value jsonb`. It's read through the internal `economy_value(key)`, which raises if the key is missing. Signed-in users can read the table, but nobody can write it from a client. ECONOMY.md documents every key.
+- **D5. Lock order.**
+  - `complete_habit` and `undo_completion` take the profile row `for update`, then the habit row `for share`, then call `ensure_daily_schedule`.
+  - `ensure_daily_schedule` takes no profile lock. It inserts with `on conflict do nothing`, keyed by the primary key.
+  - The habits trigger and RPCs take the habit row or `habits_lock` before calling it, and never take the profile lock.
+  - This replaces the Phase 3 note, which would have deadlocked: a client UPDATE locks the habit row before its BEFORE trigger runs.
+- **D6. Time seam for tests.** Internal `complete_habit_at(uid, habit, now)` and `undo_completion_at(...)` take the time as a parameter, and EXECUTE is revoked from every client role. The public RPCs are thin wrappers that use `auth.uid()` and `now()`. pgTAP runs in one transaction, so it needs the seam to simulate days.
+- **D7. `get_today`** returns JSON with only today's scheduled habits.
+  - `at_risk` is computed on the server: today is scheduled, nothing is done yet, and the local time is 18:00 or later.
+  - `level` is computed in SQL, and a parity test keeps it equal to `lib/points/levels.ts`.
+  - It writes, through `ensure_daily_schedule`, so it's VOLATILE.
+- **D8. Milestones.** Awarded on the day's first completion when `current_streak` reaches a configured value, once per `(user_id, streak_run_started, milestone)`. `awarded_on` records the local day, so an undo that empties that day revokes the milestone. In Phase 4 there's no inbox notification: plan §6.2 wants one, but `notifications_inbox` arrives in Phase 7, so for now the milestone appears in the RPC's JSON and as confetti.
+- **D9. Error codes.** Each refusal gets its own SQLSTATE (pinned in #68 and #69), so the UI maps codes, never message text. `P0002` covers both a missing habit and another user's habit.
+- **D10. Concurrency.** pgTAP runs in one transaction, so it can't open two sessions. The unique occurrence constraint and the lock are tested structurally, and a real two-session check is recorded in the `complete_habit` PR, as in #43.
+- **Spending before Phase 6.** pgTAP spends points through a postgres-only helper that writes an `admin_adjust` ledger entry. Phase 6 re-runs the invariant test with `purchase_item`.
+- **Engine schema (#66).**
+  - `habit_streaks` has a `user_id` (plan §5.2 had none), so the owner-only policy can filter on it.
+  - `streak_milestones_awarded` also stores `points` and `awarded_on`, so an undo knows what to revoke.
+  - The composite foreign keys tie every completion, snapshot and streak to the habit's owner.
+  - Clients can only read their own rows, and the policies are written out per table. All writes happen in SECURITY DEFINER functions owned by `postgres`.

@@ -34,6 +34,154 @@ export type Database = {
   };
   public: {
     Tables: {
+      daily_progress: {
+        Row: {
+          completed_count: number;
+          counted_for_streak: boolean;
+          last_streak_date_before: string | null;
+          local_date: string;
+          streak_before: number | null;
+          streak_freezes_before: number | null;
+          streak_run_started_before: string | null;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          completed_count?: number;
+          counted_for_streak?: boolean;
+          last_streak_date_before?: string | null;
+          local_date: string;
+          streak_before?: number | null;
+          streak_freezes_before?: number | null;
+          streak_run_started_before?: string | null;
+          user_id: string;
+        };
+        Update: {
+          completed_count?: number;
+          counted_for_streak?: boolean;
+          last_streak_date_before?: string | null;
+          local_date?: string;
+          streak_before?: number | null;
+          streak_freezes_before?: number | null;
+          streak_run_started_before?: string | null;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "daily_progress_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "daily_progress_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      daily_schedule: {
+        Row: {
+          created_at: string;
+          local_date: string;
+          scheduled_count: number;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          local_date: string;
+          scheduled_count?: number;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          local_date?: string;
+          scheduled_count?: number;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "daily_schedule_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "daily_schedule_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      daily_schedule_habits: {
+        Row: {
+          added_at: string;
+          difficulty: Database["public"]["Enums"]["habit_difficulty"];
+          habit_id: string;
+          local_date: string;
+          target_per_day: number;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          added_at?: string;
+          difficulty: Database["public"]["Enums"]["habit_difficulty"];
+          habit_id: string;
+          local_date: string;
+          target_per_day: number;
+          user_id: string;
+        };
+        Update: {
+          added_at?: string;
+          difficulty?: Database["public"]["Enums"]["habit_difficulty"];
+          habit_id?: string;
+          local_date?: string;
+          target_per_day?: number;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "daily_schedule_habits_habit_id_user_id_fkey";
+            columns: ["habit_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "habits";
+            referencedColumns: ["id", "user_id"];
+          },
+          {
+            foreignKeyName: "daily_schedule_habits_user_id_local_date_fkey";
+            columns: ["user_id", "local_date"];
+            isOneToOne: false;
+            referencedRelation: "daily_schedule";
+            referencedColumns: ["user_id", "local_date"];
+          },
+        ];
+      };
+      economy_config: {
+        Row: {
+          key: string;
+          updated_at: string;
+          value: NonNullable<Json>;
+        };
+        ComputedFields: never;
+        Insert: {
+          key: string;
+          updated_at?: string;
+          value: NonNullable<Json>;
+        };
+        Update: {
+          key?: string;
+          updated_at?: string;
+          value?: NonNullable<Json>;
+        };
+        Relationships: [];
+      };
       equipped_cosmetics: {
         Row: {
           accessory_id: string | null;
@@ -139,6 +287,97 @@ export type Database = {
             isOneToOne: true;
             referencedRelation: "public_profiles";
             referencedColumns: ["id"];
+          },
+        ];
+      };
+      habit_completions: {
+        Row: {
+          base_points: number;
+          completed_at: string;
+          habit_current_before: number | null;
+          habit_id: string;
+          habit_last_date_before: string | null;
+          id: string;
+          local_date: string;
+          multiplier: number;
+          occurrence: number;
+          points_awarded: number;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          base_points: number;
+          completed_at?: string;
+          habit_current_before?: number | null;
+          habit_id: string;
+          habit_last_date_before?: string | null;
+          id?: string;
+          local_date: string;
+          multiplier: number;
+          occurrence: number;
+          points_awarded: number;
+          user_id: string;
+        };
+        Update: {
+          base_points?: number;
+          completed_at?: string;
+          habit_current_before?: number | null;
+          habit_id?: string;
+          habit_last_date_before?: string | null;
+          id?: string;
+          local_date?: string;
+          multiplier?: number;
+          occurrence?: number;
+          points_awarded?: number;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "habit_completions_habit_id_user_id_fkey";
+            columns: ["habit_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "habits";
+            referencedColumns: ["id", "user_id"];
+          },
+          {
+            foreignKeyName: "habit_completions_user_id_local_date_habit_id_fkey";
+            columns: ["user_id", "local_date", "habit_id"];
+            isOneToOne: false;
+            referencedRelation: "daily_schedule_habits";
+            referencedColumns: ["user_id", "local_date", "habit_id"];
+          },
+        ];
+      };
+      habit_streaks: {
+        Row: {
+          current: number;
+          habit_id: string;
+          last_date: string | null;
+          longest: number;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          current?: number;
+          habit_id: string;
+          last_date?: string | null;
+          longest?: number;
+          user_id: string;
+        };
+        Update: {
+          current?: number;
+          habit_id?: string;
+          last_date?: string | null;
+          longest?: number;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "habit_streaks_habit_id_user_id_fkey";
+            columns: ["habit_id", "user_id"];
+            isOneToOne: false;
+            referencedRelation: "habits";
+            referencedColumns: ["id", "user_id"];
           },
         ];
       };
@@ -258,6 +497,49 @@ export type Database = {
         };
         Relationships: [];
       };
+      points_ledger: {
+        Row: {
+          created_at: string;
+          delta: number;
+          id: number;
+          reason: Database["public"]["Enums"]["ledger_reason"];
+          ref_id: string | null;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          delta: number;
+          id?: never;
+          reason: Database["public"]["Enums"]["ledger_reason"];
+          ref_id?: string | null;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          delta?: number;
+          id?: never;
+          reason?: Database["public"]["Enums"]["ledger_reason"];
+          ref_id?: string | null;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "points_ledger_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "points_ledger_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       profiles: {
         Row: {
           bio: string | null;
@@ -312,6 +594,49 @@ export type Database = {
           username?: string;
         };
         Relationships: [];
+      };
+      streak_milestones_awarded: {
+        Row: {
+          awarded_on: string;
+          created_at: string;
+          milestone: number;
+          points: number;
+          streak_run_started: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          awarded_on: string;
+          created_at?: string;
+          milestone: number;
+          points: number;
+          streak_run_started: string;
+          user_id: string;
+        };
+        Update: {
+          awarded_on?: string;
+          created_at?: string;
+          milestone?: number;
+          points?: number;
+          streak_run_started?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "streak_milestones_awarded_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "streak_milestones_awarded_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       user_items: {
         Row: {
@@ -396,6 +721,7 @@ export type Database = {
     };
     Functions: {
       archive_habit: { Args: { p_habit_id: string }; Returns: undefined };
+      economy_value: { Args: { p_key: string }; Returns: Json };
       equip_item: {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
