@@ -524,7 +524,7 @@ Shown on the **Add Habit** screen as a "Suggested for you" carousel plus inline 
 
 - **Onboarding** (3 steps): pick username + avatar base → pick up to 3 starter habits from templates (with suggestions; skippable) → enable notifications (with the iOS install sheet when needed).
 - **Today**: greeting + level/XP ring + streak flame with count + points balance; list of today's habits as big tappable cards (tap = complete; progress pips for multi-per-day; long-press/⋯ = undo within 15 min). Completing shows a "+20 ×1.12" floating number, haptic (`navigator.vibrate` where supported; iOS Safari ignores it — fine), and a confetti burst on milestones.
-- **Habits**: manage list, drag-to-reorder, archive, edit; Add Habit (templates, suggestions, form).
+- **Habits**: manage list, reorder (move up/down buttons; see DECISIONS § Phase 3, #47), archive, edit; Add Habit (templates, suggestions, form).
 - **Feed**: Following / Everyone tabs, compose post with "attach my weekly summary" toggle, likes, comments, report, block.
 - **Shop**: tabs per category, rarity-coloured cards, live avatar preview before buying, confirm dialog showing balance after purchase.
 - **Profile**: avatar with equipped cosmetics, coloured/styled name, title, level, streaks, heatmap calendar of the last 12 weeks, badges/milestones, posts. Edit = equip items.

@@ -17,9 +17,15 @@ test("create, edit, reorder, archive and restore habits", async ({
   await page.getByRole("link", { name: "Add habit" }).click();
   await expect(page).toHaveURL(/\/habits\/new$/);
   await page.getByLabel("Name").fill("Study");
-  await expect(page.getByText(/Specific habits stick/)).toBeVisible();
+  // The visible hint, and its one-off announcement in the status region.
+  await expect(page.getByText(/Specific habits stick/).first()).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: /Specific habits stick/ }),
+  ).toHaveCount(1);
   await page.getByLabel("Name").fill("Practise guitar 20 min");
-  await expect(page.getByText(/Specific habits stick/)).toBeHidden();
+  await expect(
+    page.locator("form div").getByText(/Specific habits stick/),
+  ).toHaveCount(0);
   await page.getByLabel("Category").selectOption("learning");
   await page.getByRole("button", { name: "Add habit" }).click();
   await expect(page).toHaveURL(/\/habits$/);
@@ -77,7 +83,7 @@ test("create, edit, reorder, archive and restore habits", async ({
     .click();
   await expect(list.getByRole("listitem")).toHaveCount(2);
 
-  // An unknown or malformed id is a 404, not a crash.
+  // An unknown or malformed id shows the not-found page, not a crash.
   await page.goto("/habits/not-a-uuid/edit");
-  await expect(page.getByText(/could not be found|404/i).first()).toBeVisible();
+  await expect(page.getByText("This page could not be found.")).toBeVisible();
 });

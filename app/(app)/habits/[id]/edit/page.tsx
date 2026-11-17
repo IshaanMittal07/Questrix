@@ -5,7 +5,7 @@ import { Suspense } from "react";
 
 import { HabitForm } from "@/components/habits/HabitForm";
 import { Card } from "@/components/ui/Card";
-import { habitFormContext, toFormValues } from "@/lib/habits/form-data";
+import { coachingContext, toFormValues } from "@/lib/habits/form-data";
 import { getMyHabit } from "@/lib/habits/queries";
 
 export const metadata: Metadata = { title: "Edit habit" };
@@ -16,9 +16,11 @@ async function EditHabitContent({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const habit = await getMyHabit(id);
+  const [habit, coaching] = await Promise.all([
+    getMyHabit(id),
+    coachingContext(id.toLowerCase()),
+  ]);
   if (!habit) notFound();
-  const { coaching } = await habitFormContext(habit.id);
   return (
     <HabitForm
       mode="edit"

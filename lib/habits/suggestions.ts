@@ -5,7 +5,7 @@ import {
   type HabitDifficulty,
   type HabitTemplate,
 } from "@/lib/habits/templates";
-import { cleanHabitText, HABIT_LIMITS } from "@/lib/validation/habit";
+import { cleanHabitText, HABIT_LIMITS } from "@/lib/habits/limits";
 
 /**
  * Suggestion engine and coaching hints (plan §8.2). Pure functions, no I/O.
