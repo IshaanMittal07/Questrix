@@ -117,6 +117,14 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **Reminder times** accept `HH:MM`, optionally with seconds (PostgREST returns `07:30:00`), and output `HH:MM`, as the trigger truncates to the minute.
   - **Updates can't change `template_key`,** although the column grant allows it: it records where a habit came from.
   - **Parity** between `cleanHabitText` and `habits_clean_text` is pinned on both sides: unit tests in JS and pgTAP vectors in SQL, because `\s` depends on the database's ctype. pgTAP runs on the local and CI image only, so the RUNBOOK has a one-off check on the hosted project after the first `db push`.
+- **Habit queries and actions (#46).**
+  - **Where they live.** `lib/habits/queries.ts` (`server-only`, `cache`d per request) and `lib/habits/actions.ts` (`"use server"`), so the habits page and onboarding step 2 share them.
+  - **Results, not throws.** Actions return `{ ok: true, data } | { ok: false, code, error, field? }`. `code` is one of `invalid`, `signed_out`, `not_found`, `at_cap`, `rate_limited`, `stale` and `failed`, so the UI can react without parsing text. Database errors are mapped; raw SQL messages are never shown, except the trigger's own `QX001` rate-limit message and hint, which we wrote for users.
+  - **Not found is one answer.** A malformed id, another user's habit (hidden by RLS) and `P0002` all return `not_found`, so ids can't be probed.
+  - **Updates are scoped twice:** RLS plus an explicit `user_id` filter. Zero updated rows means `not_found`.
+  - **Starter habits** (`addStarterHabits`) take template keys only: at most 3, unique, all known. Every field comes from the library through `templateToHabit` and `habitCreateSchema`. One multi-row insert, so the cap and rate limits apply to all or none. An empty list (Skip) doesn't touch the database.
+  - **Archived list cap.** Habits are never deleted, so `listArchivedHabits` returns the 200 most recently archived. The suggestion engine's "already added" filter (rule 4) sees those plus every active habit. A template archived longer ago than that may be suggested again, which is acceptable.
+  - **Revalidation.** Every successful write calls `revalidatePath` for `/habits` and `/today`.
 - **`template_key`** is used for analytics and suggestion matching only: rule 1 identifies the user's habit X by it, and rule 4 filters on it. It is never trusted as proof of anything (no points, no verification).
 - **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.
 - **Reminder times are independent of `target_per_day` (decided in #43).** Reminders are notifications, not occurrences. A habit with `target_per_day = 3` can have one reminder or none, and "Drink 2 L of water" can have 4 reminders with a target of 4. Coupling the two would block common setups and buy nothing, because completions (Phase 4) are capped by `target_per_day` alone.
