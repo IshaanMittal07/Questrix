@@ -11,6 +11,9 @@ test.beforeEach(async ({ page }) => skipSplash(page));
 test("create, edit, reorder, archive and restore habits", async ({
   page,
 }, testInfo) => {
+  // A long flow (sign-up plus a dozen round trips): near the 60s default
+  // when the suite runs in parallel.
+  test.slow();
   await signUpAndOnboard(page, testInfo);
   await skipStarterHabits(page);
 
@@ -55,10 +58,16 @@ test("create, edit, reorder, archive and restore habits", async ({
   await page
     .getByRole("button", { name: "Move Practise guitar 20 min down" })
     .focus();
+  // The move is optimistic: wait for the Server Action (a POST) to finish
+  // before reloading, or the reload can race it.
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "POST" && r.url().includes("/habits"),
+  );
   await page.keyboard.press("Enter");
   await expect(list.getByRole("link").last()).toContainText(
     "Practise guitar 20 min",
   );
+  await saved;
   await expect(
     page.getByRole("button", { name: "Move Practise guitar 20 min up" }),
   ).toBeFocused();

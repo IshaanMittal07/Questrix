@@ -9,6 +9,7 @@ vi.mock("@/lib/habits/actions", () => ({
 const push = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push }) }));
 
+const { HABIT_TEMPLATES } = await import("@/lib/habits/templates");
 const { StarterHabitsForm } =
   await import("@/app/onboarding/habits/StarterHabitsForm");
 
@@ -217,7 +218,9 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(
       screen.queryByRole("checkbox", { name: "Floss", hidden: true }),
     ).toBeNull();
-    expect(screen.getAllByRole("checkbox", { hidden: true })).toHaveLength(28);
+    expect(screen.getAllByRole("checkbox", { hidden: true })).toHaveLength(
+      HABIT_TEMPLATES.length - 2,
+    );
   });
 
   it("hides an empty suggestions group", () => {
@@ -225,6 +228,30 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(
       screen.queryByRole("group", { name: "Suggested for you" }),
     ).toBeNull();
+  });
+
+  it("is inert while adding: no toggles, no Skip", async () => {
+    const user = userEvent.setup();
+    let resolve!: (v: unknown) => void;
+    addStarterHabits.mockReturnValue(new Promise((r) => (resolve = r)));
+    render(<StarterHabitsForm suggestions={suggestions} />);
+    const boxes = suggested().getAllByRole("checkbox");
+    await user.click(boxes[0]);
+    await user.click(screen.getByRole("button", { name: "Add 1 habit" }));
+    await screen.findByRole("button", { name: "Adding…" });
+
+    await user.click(boxes[1]);
+    expect(boxes[1]).not.toBeChecked();
+    expect(boxes[1]).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 3 picked.");
+
+    const skip = screen.getByRole("link", { name: "Skip for now" });
+    expect(skip).toHaveAttribute("aria-disabled", "true");
+    await user.click(skip);
+    expect(push).not.toHaveBeenCalled();
+
+    resolve({ ok: true, data: { count: 1 } });
+    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/today"));
   });
 
   it("skips unknown suggestion keys", () => {

@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { waitForSignInCode, waitForSignInLink } from "./helpers/mailpit";
 
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // Skip the launch splash in E2E (it plays once per session).
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
@@ -144,7 +146,10 @@ test("sign up with an email code → pick a username → land on Today", async (
     await expect(
       page
         .getByRole("list", { name: "Your habits" })
-        .getByRole("link", { name: title }),
+        // Chromium may put a space before the sr-only ", edit".
+        .getByRole("link", {
+          name: new RegExp(`^${escapeRegExp(title)}\\s*, edit$`),
+        }),
     ).toBeVisible();
   }
 
