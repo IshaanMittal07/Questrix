@@ -63,7 +63,7 @@ function fromDb(error: PgError) {
       // Rate limit from the habits trigger; its message and hint are ours.
       return fail(
         "rate_limited",
-        `${(error.message ?? "Too many new habits").replace(/\.?$/, ".")}${error.hint ? ` ${error.hint}` : ""}`,
+        `${(error.message ?? "Too many new habits").replace(/(?<![.!?])$/, ".")}${error.hint ? ` ${error.hint}` : ""}`,
       );
     case "23514":
       // Must match the cap message in the habits trigger (migration
