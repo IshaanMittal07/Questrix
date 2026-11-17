@@ -64,8 +64,11 @@ begin
   if v_onboarded is null then
     return v_today;
   end if;
-  -- Fast path: today is only ever claimed after the days before it in the
-  -- window, so if today exists, the window is filled.
+  -- Fast path: a call that claims today has walked the window before it.
+  -- After a move west the window can reach a day or two further back than
+  -- any earlier call did; those days stay missing. That's deliberate: they
+  -- were never snapshotted, so only an edited schedule could fill them now,
+  -- and a missing day counts as missed (fail closed, D2).
   if exists (select 1 from public.daily_schedule s
              where s.user_id = p_uid and s.local_date = v_today) then
     return v_today;
@@ -321,25 +324,25 @@ begin
     -- checks a concurrent snapshot makes; doing both here could deadlock (D5).
     if new.username is distinct from old.username then
       raise exception 'Change your username and timezone separately'
-        using errcode = '22023';
+        using errcode = 'QX002';
     end if;
     v_cooldown := (public.economy_value('timezone_change_cooldown_days'))::int;
     if old.timezone_changed_at is not null
        and old.timezone_changed_at > now() - make_interval(days => v_cooldown) then
       raise exception 'You can change your timezone once every % days', v_cooldown
         using errcode = 'QX001',
-              -- In the user's (old) timezone, not the session's.
+              -- In the user's (old) timezone, rounded up to the minute so
+              -- a retry at that time succeeds.
               hint = 'Try again on or after '
-                || to_char((old.timezone_changed_at + make_interval(days => v_cooldown))
-                           at time zone old.timezone, 'YYYY-MM-DD HH24:MI')
-                || '.';
+                || to_char(date_trunc('minute',
+                             (old.timezone_changed_at + make_interval(days => v_cooldown)
+                              + interval '59 seconds') at time zone old.timezone),
+                           'YYYY-MM-DD HH24:MI')
+                || ' (' || old.timezone || ').';
     end if;
     -- Snapshot the old timezone's days first; the profile row still holds
-    -- the old timezone until this statement finishes. Also a couple of days
-    -- further back: after a move west, the window reaches older days, which
-    -- must be filled with the schedule they had, not an edited one.
+    -- the old timezone until this statement finishes.
     v_lookback := (public.economy_value('streak_lookback_days'))::int;
-    perform public.ensure_daily_schedule(old.id, now() - interval '2 days');
     v_old_today := public.ensure_daily_schedule(old.id, now());
     v_new_today := public.local_date_in(new.timezone, now());
     -- Moving east: the new timezone's days up to its today are the same real
@@ -356,11 +359,24 @@ begin
          left join public.daily_schedule s
            on s.user_id = old.id and s.local_date = old.last_streak_date + g.i
          where s.scheduled_count is distinct from 0) then
-      new.last_streak_date := v_new_today;
-      -- Per-habit streaks follow the same rule.
+      new.last_streak_date := greatest(old.last_streak_date, v_new_today);
+    end if;
+    -- Per-habit streaks, each on its own schedule: a habit inherits if it has
+    -- nothing pending in the old zone (counted today, or not in any day's
+    -- snapshot since its last count; a missing day fails closed).
+    if v_new_today > v_old_today then
       update public.habit_streaks hs
-         set last_date = v_new_today
-       where hs.user_id = old.id and hs.last_date >= v_old_today;
+         set last_date = greatest(hs.last_date, v_new_today)
+       where hs.user_id = old.id
+         and hs.last_date >= v_old_today - v_lookback
+         and not exists (
+           select 1 from generate_series(1, v_old_today - hs.last_date) as g(i)
+           left join public.daily_schedule s
+             on s.user_id = old.id and s.local_date = hs.last_date + g.i
+           left join public.daily_schedule_habits sh
+             on sh.user_id = old.id and sh.local_date = s.local_date
+            and sh.habit_id = hs.habit_id
+           where s.local_date is null or sh.habit_id is not null);
     end if;
     new.timezone_changed_at := now();
   end if;

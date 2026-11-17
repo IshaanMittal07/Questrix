@@ -225,13 +225,15 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - With this rule no streak is gained, and extra points are bounded to one day per cooldown.
     - If a scheduled day is still pending in the old zone, it stays pending and becomes a missed day (fail closed). Users should complete before switching.
     - A streak older than the lookback isn't revived.
-    - Per-habit streaks follow the same rule.
+    - Per-habit streaks follow the same rule, each on its own schedule. A habit inherits if it was counted today, or if it wasn't in any day's snapshot since its last count. A missing day fails closed.
+    - Inheriting restarts the lookback clock, so an all-rest stretch can outlast `streak_lookback_days` across a jump; accepted. Shifting the date instead would make the new timezone's days fail closed as misses.
     - A jump of up to two days (UTC-12 late evening to UTC+14) bridges the skipped day without a completion; accepted.
     - #28's end-to-end acceptance (two streak increments within 24 real hours) needs `complete_habit`, so #28 closes in #68.
   - **Moving west** is covered by plan §6.2 rule 0. The user can still collect points for the previous day's unused occurrences, but that is bounded to one day per cooldown too.
 - **D4. `economy_config`** is `key text PK, value jsonb`. It's read through the internal `economy_value(key)`, which raises if the key is missing. Signed-in users can read the table, but nobody can write it from a client. ECONOMY.md documents every key.
 - **D5. Lock order.**
-  - `complete_habit`, `undo_completion` and, later, `purchase_item` lock the profile row `for no key update`, then the habit row `for share`, then call `ensure_daily_schedule`.
+  - `complete_habit`, `undo_completion` and, later, `purchase_item` lock the profile row `for no key update`, then call `ensure_daily_schedule`, then lock the habit row `for share` (see below).
+    - They must not lock the `daily_schedule` row at SHARE or above before the habit row. A habit edit holds the habit row, then waits on the day row in `snapshot_add_habit`. Read the day row unlocked: apart from append-only snapshot entries, it doesn't change.
     - Plan §6 says `for update`. That would deadlock: inserting a `daily_schedule` row checks its foreign key by taking `FOR KEY SHARE` on `profiles`, which conflicts with `FOR UPDATE`.
     - `FOR NO KEY UPDATE` still serialises engine calls against each other and against client profile updates, but it doesn't block foreign-key checks.
   - `ensure_daily_schedule` takes no explicit profile lock. It inserts with `on conflict do nothing`, keyed by the primary key.
@@ -241,7 +243,8 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Deadlocks are retryable.** The app's actions map a `40P01` deadlock to "Try again", in `lib/supabase/errors.ts`.
   - **`complete_habit` and `undo_completion` snapshot before locking the habit row.** The order is profile, then `ensure_daily_schedule`, then habit `for share`. `ensure` only takes `KEY SHARE` on habit rows, which never conflicts, so it never waits while holding a habit lock that a habit UPDATE needs.
   - **Multi-row client updates.** A client can still send a multi-row `UPDATE habits` (RLS limits it to its own rows). That can deadlock with its own `complete_habit`. It's self-only and retryable, so it's accepted.
-  - **Username and timezone together.** After onboarding, changing both in one statement is refused (`22023`). The username change would take `FOR UPDATE` on the profile while the snapshot waits on a concurrent day row.
+    - The same goes for a direct single-row archive (row lock, then `habits_lock`) racing that user's own reorder (`habits_lock` first).
+  - **Username and timezone together.** After onboarding, changing both in one statement is refused (`QX002`, distinct from onboarding's "unknown timezone" `22023`). The username change would take `FOR UPDATE` on the profile while the snapshot waits on a concurrent day row.
   - The #67 and #68 PRs record two-session checks: a habit edit against `complete_habit`, and reorder against the first `complete_habit` of a day.
   - This replaces the Phase 3 note, which would also have deadlocked: a client UPDATE locks the habit row before its BEFORE trigger runs.
 - **D6. Time seam for tests.** Internal `complete_habit_at(uid, habit, now)` and `undo_completion_at(...)` take the time as a parameter, and EXECUTE is revoked from every client role. The public RPCs are thin wrappers that use `auth.uid()` and `now()`. pgTAP runs in one transaction, so it needs the seam to simulate days.
@@ -301,8 +304,8 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - There's a fast path when today is already snapshotted.
     - The creation limits are checked before the snapshot.
     - `habits_lock` is taken before the snapshot for any `archived_at` change, not only for inserts.
-    - On a timezone change, days further back are also snapshotted, so a move west can't rebuild an older day with an edited schedule.
-    - The cooldown hint gives the local time in the user's old timezone ("on or after YYYY-MM-DD HH:MI").
+    - **After a move west**, the new window can reach a day or two further back than any earlier snapshot. Those days stay missing on purpose: only an edited schedule could fill them now, and a missing day counts as missed (fail closed, D2). **#68 must treat a missing `daily_schedule` row in the lookback as a missed day.**
+    - The cooldown hint gives the local time in the user's old timezone ("on or after YYYY-MM-DD HH:MI (Zone)", rounded up to the minute).
     - A habit insert for a user with no profile now fails with `P0002 Profile not found` from the snapshot, before the FK check.
   - **Two-session check (D10), run against the local stack.** All three cases passed: the second session waited for the first, then committed. There was no deadlock, and each day was snapshotted once, with the pre-edit schedule.
     1. Two habit edits racing to take a day's first snapshot.

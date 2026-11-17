@@ -1,7 +1,7 @@
 -- Phase 4 (#67): daily schedule snapshots and the timezone-change limit.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(105);
+select plan(110);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -306,6 +306,8 @@ select pg_temp.as_postgres();
 select is((select last_streak_date from public.profiles where id = '55555555-5555-5555-5555-555555555555'),
   public.local_date_in('Etc/GMT+12', now()) - 3,
   'moving east with a scheduled day still pending changes nothing (it stays a miss)');
+select ok(pg_temp.sched('55555555-5555-5555-5555-555555555555', public.local_date_in('Etc/GMT+12', now())) > 0,
+  '(the old-zone day really was scheduled, so it was pending)');
 
 -- An unknown timezone is still rejected before anything else.
 select pg_temp.as_user('66666666-6666-6666-6666-666666666666');
@@ -630,7 +632,7 @@ select is((select last_date from public.habit_streaks where habit_id = 'c1c1c1c1
 select pg_temp.as_user('66666666-6666-6666-6666-666666666666');
 select throws_ok($$update public.profiles set username = 'fay_new', timezone = 'Asia/Tokyo'
                    where id = '66666666-6666-6666-6666-666666666666'$$,
-  '22023', 'Change your username and timezone separately',
+  'QX002', 'Change your username and timezone separately',
   'a username and timezone change in one statement is refused after onboarding');
 select pg_temp.as_postgres();
 
@@ -659,7 +661,8 @@ begin
 end $f$;
 select is(pg_temp.tz_hint(),
   'Try again on or after '
-    || to_char((now() + interval '6 days') at time zone 'Asia/Tokyo', 'YYYY-MM-DD HH24:MI') || '.',
+    || to_char(date_trunc('minute', (now() + interval '6 days' + interval '59 seconds') at time zone 'Asia/Tokyo'),
+               'YYYY-MM-DD HH24:MI') || ' (Asia/Tokyo).',
   'the hint shows the local time (Tokyo, UTC+9) when the change is allowed');
 
 -- Santiago changes DST at local midnight: the integer day loop doesn't skip.
@@ -673,7 +676,58 @@ select is((select array_agg(local_date order by local_date)::text from public.da
            where user_id = 'd4d4d4d4-0000-0000-0000-000000000004'),
   '{2026-09-01,2026-09-02,2026-09-03,2026-09-04,2026-09-05,2026-09-06,2026-09-07,2026-09-08}',
   'every day is snapshotted across a midnight DST change, today included');
-set local timezone = 'UTC';
+reset timezone;
+
+-- Per-habit east rule, independent of the global one: A counted today, B
+-- pending today (so the global rule doesn't fire), C not scheduled since its
+-- last count. A and C move; B doesn't.
+insert into auth.users (id, email) values ('d5d5d5d5-0000-0000-0000-000000000005', 'pip@example.com');
+insert into public.habits (id, user_id, title, category, days_of_week, created_at) values
+  ('c5c5c5c5-0000-0000-0000-00000000000a', 'd5d5d5d5-0000-0000-0000-000000000005', 'A', 'mind',
+   '{0,1,2,3,4,5,6}', now() - interval '5 days'),
+  ('c5c5c5c5-0000-0000-0000-00000000000b', 'd5d5d5d5-0000-0000-0000-000000000005', 'B', 'mind',
+   '{0,1,2,3,4,5,6}', now() - interval '5 days'),
+  ('c5c5c5c5-0000-0000-0000-00000000000c', 'd5d5d5d5-0000-0000-0000-000000000005', 'C', 'mind',
+   array[extract(dow from public.local_date_in('Etc/GMT+12', now()) - 2)::smallint], now() - interval '5 days');
+update public.profiles set onboarded_at = now() - interval '5 days', timezone = 'Etc/GMT+12',
+                           last_streak_date = public.local_date_in('Etc/GMT+12', now())
+  where id = 'd5d5d5d5-0000-0000-0000-000000000005';
+insert into public.habit_streaks (habit_id, user_id, current, longest, last_date) values
+  ('c5c5c5c5-0000-0000-0000-00000000000a', 'd5d5d5d5-0000-0000-0000-000000000005', 2, 2,
+   public.local_date_in('Etc/GMT+12', now())),
+  ('c5c5c5c5-0000-0000-0000-00000000000b', 'd5d5d5d5-0000-0000-0000-000000000005', 2, 2,
+   public.local_date_in('Etc/GMT+12', now()) - 1),
+  ('c5c5c5c5-0000-0000-0000-00000000000c', 'd5d5d5d5-0000-0000-0000-000000000005', 1, 1,
+   public.local_date_in('Etc/GMT+12', now()) - 2);
+select pg_temp.as_user('d5d5d5d5-0000-0000-0000-000000000005');
+update public.profiles set timezone = 'Pacific/Kiritimati'
+  where id = 'd5d5d5d5-0000-0000-0000-000000000005';
+select pg_temp.as_postgres();
+select is((select last_date from public.habit_streaks where habit_id = 'c5c5c5c5-0000-0000-0000-00000000000a'),
+  public.local_date_in('Pacific/Kiritimati', now()), 'a habit counted today moves east');
+select is((select last_date from public.habit_streaks where habit_id = 'c5c5c5c5-0000-0000-0000-00000000000b'),
+  public.local_date_in('Etc/GMT+12', now()) - 1, 'a habit pending today doesn''t');
+select is((select last_date from public.habit_streaks where habit_id = 'c5c5c5c5-0000-0000-0000-00000000000c'),
+  public.local_date_in('Pacific/Kiritimati', now()),
+  'a habit off-schedule since its last count moves east (its own rest days)');
+
+-- After a move west, a day further back than any earlier window stays
+-- missing (fail closed), even though the new window reaches it.
+insert into auth.users (id, email) values ('d6d6d6d6-0000-0000-0000-000000000006', 'quin@example.com');
+insert into public.habits (id, user_id, title, category, created_at) values
+  ('c6c6c6c6-0000-0000-0000-000000000001', 'd6d6d6d6-0000-0000-0000-000000000006', 'Daily', 'mind',
+   now() - interval '20 days');
+update public.profiles set onboarded_at = now() - interval '20 days', timezone = 'Pacific/Kiritimati'
+  where id = 'd6d6d6d6-0000-0000-0000-000000000006';
+select public.ensure_daily_schedule('d6d6d6d6-0000-0000-0000-000000000006', now());
+select pg_temp.as_user('d6d6d6d6-0000-0000-0000-000000000006');
+update public.profiles set timezone = 'Etc/GMT+12' where id = 'd6d6d6d6-0000-0000-0000-000000000006';
+select pg_temp.as_postgres();
+select public.ensure_daily_schedule('d6d6d6d6-0000-0000-0000-000000000006', now());
+select ok(not exists (select 1 from public.daily_schedule
+                      where user_id = 'd6d6d6d6-0000-0000-0000-000000000006'
+                        and local_date = public.local_date_in('Etc/GMT+12', now()) - 7),
+  'after a move west, the oldest day of the new window stays missing (counts as missed)');
 
 select lives_ok($$set constraints all immediate$$, 'every snapshot row has its day');
 
