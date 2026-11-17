@@ -248,12 +248,32 @@ describe("suggestHabits", () => {
     );
   });
 
+  it("rule 1 also matches a hand-typed title, as rule 4 does", () => {
+    const s = suggestHabits([habit({ title: "workout", category: "fitness" })]);
+    expect(find(s, "stretch")).toMatchObject({
+      reasons: expect.arrayContaining(["pair"]),
+      pairedWith: "workout",
+    });
+    expect(
+      find(suggestHabits([habit({ title: "Weightlifting" })]), "stretch")
+        ?.reasons,
+    ).not.toContain("pair");
+  });
+
+  it("rule 4 handles many archived duplicates", () => {
+    const archived = Array.from({ length: 2000 }, (_, i) =>
+      habit({
+        title: i % 2 ? "Old habit" : `Old habit ${i}`,
+        archived_at: "x",
+      }),
+    );
+    archived.push(habit({ title: "meditate 10 min", archived_at: "x" }));
+    expect(keys(suggestHabits(archived))).not.toContain("meditate");
+  });
+
   it("rule 1 counts once even if two habits trigger it", () => {
     const s = suggestHabits(
-      [
-        fromTemplate("workout"),
-        fromTemplate("workout", { title: "Gym", archived_at: null }),
-      ],
+      [fromTemplate("workout"), fromTemplate("workout", { title: "Gym" })],
       { templates: [tpl({ key: "stretch", category: "fitness" })] },
     );
     expect(s[0].score).toBe(SCORES.pair);
@@ -644,7 +664,24 @@ describe("coaching hints", () => {
 
   it("suggests a specific rewrite of a vague title", () => {
     const [hint] = coachingHints(draft({ title: "Study" }), ctx(0));
-    expect(hint.message).toContain('"Study 45 min for [goal]"');
+    expect(hint.message).toBe(
+      'Specific habits stick. Add an amount or a time, like "Study 45 min for [exam]".',
+    );
+  });
+
+  it("never calls a library template title vague", () => {
+    for (const t of HABIT_TEMPLATES) {
+      expect(isVagueTitle(t.title)).toBe(false);
+      expect(isVagueTitle(t.title.toUpperCase())).toBe(false);
+    }
+  });
+
+  it("ignores emoji-only titles and invisible characters", () => {
+    expect(isVagueTitle(String.fromCodePoint(0x1f4aa))).toBe(false);
+    // A zero-width space glued to a word doesn't make it a separate word.
+    expect(isVagueTitle(`${String.fromCodePoint(0x200b)}Go for a run`)).toBe(
+      false,
+    );
   });
 
   describe("reminder collisions", () => {
@@ -781,5 +818,20 @@ describe("stackingCopy", () => {
 
   it("keeps acronyms and fills a blank title", () => {
     expect(stackingCopy("SPF", "  ")).toBe("After I SPF, I will [new habit].");
+  });
+
+  it("keeps mixed-case words and a leading I", () => {
+    expect(stackingCopy("LeetCode / practice problem", "I stretch")).toBe(
+      "After I LeetCode / practice problem, I will I stretch.",
+    );
+    expect(stackingCopy("GitHub push", "Floss")).toBe(
+      "After I GitHub push, I will floss.",
+    );
+  });
+
+  it("strips invisible characters", () => {
+    expect(stackingCopy("Floss", `${String.fromCodePoint(0x200b)}Read`)).toBe(
+      "After I floss, I will read.",
+    );
   });
 });

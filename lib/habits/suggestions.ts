@@ -1,10 +1,11 @@
 import {
+  getTemplate,
   HABIT_TEMPLATES,
   type HabitCategory,
   type HabitDifficulty,
   type HabitTemplate,
 } from "@/lib/habits/templates";
-import { HABIT_LIMITS } from "@/lib/validation/habit";
+import { cleanHabitText, HABIT_LIMITS } from "@/lib/validation/habit";
 
 /**
  * Suggestion engine and coaching hints (plan §8.2). Pure functions, no I/O.
@@ -112,8 +113,25 @@ export function titleSimilarity(a: string, b: string) {
 
 export const DUPLICATE_THRESHOLD = 0.8;
 
+/** A title normalised once, for many comparisons. */
+type PreparedTitle = { norm: string; len: number };
+
+function prepareTitle(title: string): PreparedTitle {
+  const norm = normalizeTitle(title);
+  return { norm, len: [...norm].length };
+}
+
+/** Same result as titleSimilarity(a, b) > 0.8, without needless work. */
+function preparedDuplicate(a: PreparedTitle, b: PreparedTitle) {
+  if (a.norm === b.norm) return true;
+  const len = Math.max(a.len, b.len);
+  // The distance is at least the length difference, which bounds similarity.
+  if (1 - Math.abs(a.len - b.len) / len <= DUPLICATE_THRESHOLD) return false;
+  return 1 - levenshtein(a.norm, b.norm) / len > DUPLICATE_THRESHOLD;
+}
+
 export function isDuplicateTitle(a: string, b: string) {
-  return titleSimilarity(a, b) > DUPLICATE_THRESHOLD;
+  return preparedDuplicate(prepareTitle(a), prepareTitle(b));
 }
 
 export type SuggestionReason = "pair" | "category_gap" | "slot_gap" | "popular";
@@ -122,7 +140,10 @@ export type Suggestion = {
   template: HabitTemplate;
   score: number;
   reasons: SuggestionReason[];
-  /** Title of the user's habit that triggered rule 1, for "Pairs with …". */
+  /**
+   * Title of the user's habit that triggered rule 1, for "Pairs with …".
+   * User content: render it as text, never as HTML.
+   */
   pairedWith?: string;
 };
 
@@ -143,10 +164,18 @@ export function suggestHabits(
 ): Suggestion[] {
   const active = habits.filter((h) => h.archived_at === null);
 
+  // "Has X" means X's key or a fuzzy match of X's title, as in rule 4.
+  const activeTitles = active.map((h) => ({ h, p: prepareTitle(h.title) }));
   const pairedBy = new Map<string, string>();
   for (const [from, to] of COMPLEMENTARY_PAIRS) {
-    const owner = active.find((h) => h.template_key === from);
-    if (owner && !pairedBy.has(to)) pairedBy.set(to, owner.title);
+    if (pairedBy.has(to)) continue;
+    const fromTitle = prepareTitle(getTemplate(from)?.title ?? "");
+    const owner = activeTitles.find(
+      ({ h, p }) =>
+        h.template_key === from ||
+        (fromTitle.len > 0 && preparedDuplicate(p, fromTitle)),
+    );
+    if (owner) pairedBy.set(to, owner.h.title);
   }
 
   const usedCategories = new Set(active.map((h) => h.category));
@@ -162,12 +191,21 @@ export function suggestHabits(
   const ownedKeys = new Set(
     habits.flatMap((h) => (h.template_key ? [h.template_key] : [])),
   );
-  const ownedTitles = habits.map((h) => h.title);
+  // Archived habits pile up over time: normalise and de-duplicate once.
+  const ownedTitles = [
+    ...new Map(
+      habits.map((h) => {
+        const p = prepareTitle(h.title);
+        return [p.norm, p] as const;
+      }),
+    ).values(),
+  ];
 
   const out: Suggestion[] = [];
   for (const template of templates) {
     if (ownedKeys.has(template.key)) continue;
-    if (ownedTitles.some((t) => isDuplicateTitle(t, template.title))) continue;
+    const title = prepareTitle(template.title);
+    if (ownedTitles.some((t) => preparedDuplicate(t, title))) continue;
 
     const reasons: SuggestionReason[] = [];
     let score = 0;
@@ -260,14 +298,24 @@ export type CoachingHint =
   | { kind: "too_hard"; message: string };
 
 const DIGIT_RE = /\p{N}/u;
+const LETTER_RE = /\p{L}/u;
+const TEMPLATE_TITLES = new Set(
+  HABIT_TEMPLATES.map((t) => normalizeTitle(t.title)),
+);
 
-/** ≤ 2 words with no number or time, e.g. "Study". Blank is not vague. */
+/**
+ * ≤ 2 words with a letter and no number or time, e.g. "Study". Blank,
+ * emoji-only and library template titles are not vague.
+ */
 export function isVagueTitle(title: string) {
-  const words = title.trim().split(/\s+/u).filter(Boolean);
+  const t = cleanHabitText(title);
+  const words = t.split(/\s+/u).filter(Boolean);
   return (
     words.length > 0 &&
     words.length <= COACHING.vagueMaxWords &&
-    !DIGIT_RE.test(title)
+    LETTER_RE.test(t) &&
+    !DIGIT_RE.test(t) &&
+    !TEMPLATE_TITLES.has(normalizeTitle(t))
   );
 }
 
@@ -277,16 +325,21 @@ function clockDistance(a: number, b: number) {
   return Math.min(d, 24 * 60 - d);
 }
 
-/** Lowercases the first letter unless the word looks like an acronym. */
+/**
+ * Lowercases the first letter, unless the first word has capitals after it
+ * (SPF, LeetCode) or is "I".
+ */
 function asClause(title: string) {
-  const t = title.trim();
-  const [first, second] = [...t];
-  if (!first || (second && second !== second.toLowerCase())) return t;
+  const t = cleanHabitText(title);
+  const word = t.split(/\s/u)[0];
+  const [first] = [...word];
+  if (!first || word === "I" || /\p{Lu}/u.test(word.slice(first.length)))
+    return t;
   return first.toLowerCase() + t.slice(first.length);
 }
 
 export function stackingCopy(existing: string, next: string) {
-  const n = next.trim() ? asClause(next) : "[new habit]";
+  const n = cleanHabitText(next) ? asClause(next) : "[new habit]";
   return `After I ${asClause(existing)}, I will ${n}.`;
 }
 
@@ -322,10 +375,10 @@ export function coachingHints(
   }
 
   if (isVagueTitle(draft.title)) {
-    const t = draft.title.trim();
     hints.push({
       kind: "vague_title",
-      message: `Specific habits stick. Try "${t} 45 min for [goal]" instead of "${t}".`,
+      message:
+        'Specific habits stick. Add an amount or a time, like "Study 45 min for [exam]".',
     });
   }
 

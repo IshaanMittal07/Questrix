@@ -104,9 +104,9 @@ A running log of choices made where the plan was ambiguous or where current tool
   - **The "first week" coaching hint** is measured from `profiles.onboarded_at`, not from account creation.
   - **Implementation (#45).** `lib/habits/templates.ts` and `lib/habits/suggestions.ts`.
     - Suggestions are only templates with a **positive score**; the template library lists the rest.
-    - Rule 1 pairs are **one-directional** (Workout → Stretch, not back). Rule 5 (social proof) takes an optional `popularKeys` set, empty until Phase 7.
+    - Rule 1 pairs are **one-directional** (Workout → Stretch, not back). "The user has X" means a habit with X's key **or** a title that fuzzily matches X's, the same test rule 4 uses, so hand-typed habits get pairings too. Rule 5 (social proof) takes an optional `popularKeys` set, empty until Phase 7.
     - Habit-count hints count **the new habit too**: "more than 5" fires when the user already has 5 active habits. The first week ends exactly 7 days after `onboarded_at`; a user who hasn't onboarded counts as in it. Above 8 the stronger warning replaces the first-week one, and at 20 an `at_cap` hint replaces both. Count hints are skipped when editing.
-    - Vague title: 1–2 words and no numeric character (`\p{N}`), which also covers times.
+    - Vague title: 1–2 words of cleaned text with a letter and no numeric character (`\p{N}`, which also covers times). Library template titles are exempt ("Floss" and "Workout" are fine as picked), and the hint uses the plan's generic example rather than splicing in the user's words.
     - Reminder collisions use the nearest existing reminder within ±10 min, wrapping at midnight. The `stack` hint carries the plan's "After I …, I will …" copy.
     - Template icons are single-code-point emoji with no variation selector or ZWJ, so the source has no invisible characters. Medication has no default time, so its reminders start off.
 - **Onboarding step 2** lets the user pick **up to** 3 starter habits, and can be skipped. The original plan (`QUESTRIX_BUILD_PLAN.md`) §9 said "pick 3".
