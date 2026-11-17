@@ -155,7 +155,8 @@ A running log of choices made where the plan was ambiguous or where current tool
     - Picks and Skip are inert while the request is in flight.
     - After adding, the client still navigates with `router.push`, because `addStarterHabits` is shared with `/habits`. Phase 5's step 3 will change where it goes.
   - **Step numbering.** The page says "Step 2" without a total, because Phase 5 adds the notifications step.
-- **Phase 3 acceptance E2E (#49).** `tests/e2e/habit-template.spec.ts` runs on the `iphone-13` project only and uses taps throughout. It creates "Drink 2 L of water" from the full library, checks that every field was filled, that nothing overflows 390 px, that the habit survives a reload, and that it's no longer suggested.
+- **Phase 3 acceptance E2E (#49).** `tests/e2e/habit-template.spec.ts` runs on the `iphone-13` project only (`testIgnore` on desktop). The habit flow uses taps.
+  - **What it checks.** "Meditate 10 min" is suggested to a new user. The test picks it from the full library and checks every field the template fills: name, icon, category, difficulty, days, target, "Remind me" and the time. It then checks that nothing overflows the viewport, that the habit survives a reload, and that rule 4 drops it from the suggestions, waiting for the suggestions to load first.
   - **Exact label matching.** Next 16 with `cacheComponents` keeps previously visited routes mounted but hidden, and `getByLabel` matches substrings ("Name" in "Username", "Reminder time 1" in "Remove reminder time 1"). So E2E label lookups use `exact: true`.
 - **`template_key`** is used for analytics and suggestion matching only: rule 1 identifies the user's habit X by it, and rule 4 filters on it. It is never trusted as proof of anything (no points, no verification).
 - **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.
