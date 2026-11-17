@@ -155,13 +155,24 @@ export function HabitForm(props: Props) {
 
   // Announce a hint only when its kind first appears, so typing doesn't
   // re-announce text that embeds the title on every keystroke.
-  const announcedKinds = useRef<Set<string>>(new Set());
+  // Hints already shown on load aren't announced, except the cap.
+  const announcedKinds = useRef<Set<string>>(
+    new Set(hints.filter((h) => h.kind !== "at_cap").map((h) => h.kind)),
+  );
   useEffect(() => {
     const kinds = new Set(hints.map((h) => h.kind));
     const fresh = hints.filter((h) => !announcedKinds.current.has(h.kind));
     announcedKinds.current = kinds;
-    if (fresh.length > 0)
-      setHintAnnouncement(fresh.map((h) => h.message).join(" "));
+    // Clear a stale announcement so the virtual cursor doesn't find it.
+    // It depends on the previous kinds (a ref), so it can't be derived
+    // during render.
+    const next =
+      kinds.size === 0
+        ? ""
+        : fresh.length > 0
+          ? fresh.map((h) => h.message).join(" ")
+          : null;
+    if (next !== null) setHintAnnouncement(next);
   }, [hints]);
 
   function pick(t: HabitTemplate) {
@@ -377,7 +388,10 @@ export function HabitForm(props: Props) {
         </div>
 
         {/* Visual hints; announcements go through the status region below. */}
-        <div className="flex flex-col gap-2 empty:hidden">
+        <div
+          data-testid="coaching-hints"
+          className="flex flex-col gap-2 empty:hidden"
+        >
           {hints.map((h) => (
             <div
               key={h.kind}
@@ -533,7 +547,11 @@ export function HabitForm(props: Props) {
                     ),
                   )
                 }
-                className={fieldClass}
+                // Still editable, but dimmed while reminders are off.
+                className={cn(
+                  fieldClass,
+                  !values.reminders_enabled && "opacity-60",
+                )}
               />
               <Button
                 variant="ghost"

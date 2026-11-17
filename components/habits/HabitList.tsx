@@ -131,14 +131,19 @@ export function HabitList({
     if (atCap || restoring) return;
     setError("");
     setRestoring(h.id);
+    // Set before the await: the refreshed list may commit as soon as it lands.
+    focusAfter.current = { kind: "habit", id: h.id };
     startTransition(async () => {
-      const res = await unarchiveHabit(h.id);
-      setRestoring(null);
-      if (res.ok) {
-        focusAfter.current = { kind: "habit", id: h.id };
-        setStatus(`${h.title} restored.`);
-      } else {
-        setError(res.error);
+      try {
+        const res = await unarchiveHabit(h.id);
+        if (res.ok) {
+          setStatus(`${h.title} restored.`);
+        } else {
+          focusAfter.current = null;
+          setError(res.error);
+        }
+      } finally {
+        setRestoring(null);
       }
     });
   }
@@ -200,7 +205,12 @@ export function HabitList({
               <Card
                 className={cn(
                   "flex items-center gap-3 border-l-4 py-3",
-                  (h.color && ACCENT_BORDER[h.color]) || "border-l-white/10",
+                  // The column holds any string; unknown values get the neutral border.
+                  (h.color &&
+                    (ACCENT_BORDER as Record<string, string | undefined>)[
+                      h.color
+                    ]) ||
+                    "border-l-white/10",
                 )}
               >
                 <span aria-hidden="true" className="w-7 text-center text-xl">

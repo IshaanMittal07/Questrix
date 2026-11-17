@@ -154,8 +154,15 @@ describe("HabitForm (create)", { timeout: 20_000 }, () => {
       .getAllByRole("status")
       .find((el) => el.textContent?.includes("Specific habits stick"));
     expect(status).toHaveClass("sr-only");
-    await user.type(screen.getByLabelText("Name"), " 45 min");
+    // Still vague while typing: the announcement doesn't change.
+    const before = status?.textContent;
+    await user.type(screen.getByLabelText("Name"), " hard");
+    expect(status?.textContent).toBe(before);
+    await user.clear(screen.getByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), "Study 45 min");
     expect(screen.queryByText(/Specific habits stick/, VISIBLE)).toBeNull();
+    // Nothing left to say: the region is cleared.
+    expect(status).toHaveTextContent("");
   });
 
   it("suggests stacking when a reminder collides with another habit", async () => {
@@ -185,6 +192,14 @@ describe("HabitForm (create)", { timeout: 20_000 }, () => {
     const add = screen.getByRole("button", { name: "Add habit" });
     expect(add).toHaveAttribute("aria-disabled", "true");
     expect(add).toHaveAccessibleDescription(cap.textContent!);
+  });
+
+  it("doesn't submit at the cap, by click or by Enter", async () => {
+    const user = userEvent.setup();
+    createForm(20);
+    await user.type(screen.getByLabelText("Name"), "Read 20 pages{Enter}");
+    await user.click(screen.getByRole("button", { name: "Add habit" }));
+    expect(createHabit).not.toHaveBeenCalled();
   });
 
   it("shows a server field error next to the field and focuses it", async () => {
