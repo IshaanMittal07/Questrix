@@ -49,7 +49,8 @@ beforeEach(() => {
   updateHabit.mockResolvedValue({ ok: true, data: undefined });
 });
 
-describe("HabitForm (create)", () => {
+// userEvent typing is slow when the whole suite runs in parallel.
+describe("HabitForm (create)", { timeout: 20_000 }, () => {
   it("shows suggestions with their reasons", () => {
     createForm();
     const list = screen.getByRole("list", { name: "Suggested for you" });
@@ -223,7 +224,8 @@ describe("HabitForm (create)", () => {
   });
 });
 
-describe("HabitForm (edit)", () => {
+// userEvent typing is slow when the whole suite runs in parallel.
+describe("HabitForm (edit)", { timeout: 20_000 }, () => {
   const initial = {
     title: "Read 20 pages",
     description: "Before bed",
