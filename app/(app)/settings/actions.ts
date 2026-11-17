@@ -24,9 +24,14 @@ export async function updateTimezone(
     .eq("id", userId);
   if (error) {
     // 22023: this browser knows the zone, but the server's tz database doesn't.
-    return error.code === "22023"
-      ? { error: "Pick a valid timezone." }
-      : { error: "Couldn't save. Try again." };
+    if (error.code === "22023") return { error: "Pick a valid timezone." };
+    // QX001: the once-a-week cooldown (#28); the message and hint are ours.
+    if (error.code === "QX001") {
+      return {
+        error: `${error.message}.${error.hint ? ` ${error.hint}` : ""}`,
+      };
+    }
+    return { error: "Couldn't save. Try again." };
   }
 
   revalidatePath("/settings");
