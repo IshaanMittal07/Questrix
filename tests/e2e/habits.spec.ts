@@ -11,7 +11,9 @@ test("create, edit, reorder, archive and restore habits", async ({
   await expect(page).toHaveURL(/\/today$/);
 
   await page.goto("/habits");
-  await expect(page.getByText(/No habits yet/)).toBeVisible();
+  // .first(): during streaming React briefly holds a hidden copy of the
+  // content, which getByText also matches.
+  await expect(page.getByText(/No habits yet/).first()).toBeVisible();
 
   // A custom habit.
   await page.getByRole("link", { name: "Add habit" }).click();
@@ -85,5 +87,7 @@ test("create, edit, reorder, archive and restore habits", async ({
 
   // An unknown or malformed id shows the not-found page, not a crash.
   await page.goto("/habits/not-a-uuid/edit");
-  await expect(page.getByText("This page could not be found.")).toBeVisible();
+  await expect(
+    page.getByText("This page could not be found.").first(),
+  ).toBeVisible();
 });
