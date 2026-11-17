@@ -155,6 +155,8 @@ A running log of choices made where the plan was ambiguous or where current tool
     - Picks and Skip are inert while the request is in flight.
     - After adding, the client still navigates with `router.push`, because `addStarterHabits` is shared with `/habits`. Phase 5's step 3 will change where it goes.
   - **Step numbering.** The page says "Step 2" without a total, because Phase 5 adds the notifications step.
+- **Phase 3 acceptance E2E (#49).** `tests/e2e/habit-template.spec.ts` runs on the `iphone-13` project only and uses taps throughout. It creates "Drink 2 L of water" from the full library, checks that every field was filled, that nothing overflows 390 px, that the habit survives a reload, and that it's no longer suggested.
+  - **Exact label matching.** Next 16 with `cacheComponents` keeps previously visited routes mounted but hidden, and `getByLabel` matches substrings ("Name" in "Username", "Reminder time 1" in "Remove reminder time 1"). So E2E label lookups use `exact: true`.
 - **`template_key`** is used for analytics and suggestion matching only: rule 1 identifies the user's habit X by it, and rule 4 filters on it. It is never trusted as proof of anything (no points, no verification).
 - **Ordering risk.** The routing extraction (#39, merged) had to land before onboarding step 2 (#48). That's now satisfied.
 - **Reminder times are independent of `target_per_day` (decided in #43).** Reminders are notifications, not occurrences. A habit with `target_per_day = 3` can have one reminder or none, and "Drink 2 L of water" can have 4 reminders with a target of 4. Coupling the two would block common setups and buy nothing, because completions (Phase 4) are capped by `target_per_day` alone.
