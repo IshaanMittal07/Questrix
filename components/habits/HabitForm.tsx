@@ -1,12 +1,29 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useId, useMemo, useState, useTransition } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/cn";
 import { createHabit, updateHabit } from "@/lib/habits/actions";
-import { coachingHints, type SuggestionReason } from "@/lib/habits/suggestions";
+import {
+  CATEGORY_LABELS,
+  COLOR_LABELS,
+  COLOR_SWATCH,
+  REASON_LABELS,
+  type CoachingInput,
+  type HabitFormValues,
+  type SuggestionView,
+} from "@/lib/habits/display";
+import { HABIT_COLORS, HABIT_LIMITS } from "@/lib/habits/limits";
+import { coachingHints } from "@/lib/habits/suggestions";
 import {
   getTemplate,
   HABIT_TEMPLATES,
@@ -14,20 +31,6 @@ import {
   type HabitDifficulty,
   type HabitTemplate,
 } from "@/lib/habits/templates";
-import { HABIT_COLORS, HABIT_LIMITS } from "@/lib/validation/habit";
-
-export const CATEGORY_LABELS: Record<HabitCategory, string> = {
-  health: "Health",
-  fitness: "Fitness",
-  mind: "Mind",
-  learning: "Learning",
-  career: "Career",
-  self_care: "Self-care",
-  nutrition: "Nutrition",
-  finance: "Finance",
-  social: "Social",
-  other: "Other",
-};
 
 const DIFFICULTIES: { value: HabitDifficulty; label: string }[] = [
   { value: "easy", label: "Easy" },
@@ -35,58 +38,26 @@ const DIFFICULTIES: { value: HabitDifficulty; label: string }[] = [
   { value: "hard", label: "Hard" },
 ];
 
-const COLOR_SWATCH: Record<string, string> = {
-  cyan: "bg-cyan",
-  violet: "bg-violet",
-  magenta: "bg-magenta",
-  success: "bg-success",
-  warning: "bg-warning",
-};
-
 const DAY_NAMES = [
-  ["Sun", "Sunday"],
-  ["Mon", "Monday"],
-  ["Tue", "Tuesday"],
-  ["Wed", "Wednesday"],
-  ["Thu", "Thursday"],
-  ["Fri", "Friday"],
-  ["Sat", "Saturday"],
+  ["Su", "Sunday"],
+  ["Mo", "Monday"],
+  ["Tu", "Tuesday"],
+  ["We", "Wednesday"],
+  ["Th", "Thursday"],
+  ["Fr", "Friday"],
+  ["Sa", "Saturday"],
 ] as const;
 // Monday first, as in describeDays.
 const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
-const REASON_LABELS: Record<SuggestionReason, string> = {
-  pair: "Pairs well",
-  category_gap: "New area",
-  slot_gap: "Fills a gap in your day",
-  popular: "Popular with friends",
-};
-
-export type HabitFormValues = {
-  title: string;
-  description: string;
-  icon: string;
-  category: HabitCategory;
-  difficulty: HabitDifficulty;
-  color: string | null;
-  days_of_week: number[];
-  target_per_day: number;
-  reminder_times: string[];
-  reminders_enabled: boolean;
-};
-
-export type SuggestionView = {
-  key: string;
-  reasons: SuggestionReason[];
-  pairedWith?: string;
-};
-
-export type CoachingInput = {
-  activeHabits: { title: string; reminder_times: string[] }[];
-  /** ISO timestamps, from the server so both renders agree. */
-  onboardedAt: string | null;
-  now: string;
-};
+/** Fields whose errors render next to them. */
+const INLINE_ERRORS = new Set([
+  "title",
+  "icon",
+  "description",
+  "days_of_week",
+  "reminder_times",
+]);
 
 const EMPTY: HabitFormValues = {
   title: "",
@@ -115,17 +86,10 @@ function fromTemplate(t: HabitTemplate): HabitFormValues {
   };
 }
 
-/** Fields whose errors render next to them. */
-const INLINE_ERRORS = new Set([
-  "title",
-  "icon",
-  "description",
-  "days_of_week",
-  "reminder_times",
-]);
+type TimeRow = { key: number; time: string };
 
 const fieldClass =
-  "bg-surface-2 text-text min-h-12 w-full rounded-xl border border-white/10 px-3";
+  "bg-surface-2 text-text min-h-12 w-full rounded-xl border border-white/10 px-3 disabled:opacity-50";
 
 type Props =
   | {
@@ -145,42 +109,67 @@ type Props =
 
 /**
  * Add/Edit Habit. In create mode a template or suggestion pre-fills the
- * fields and records template_key. Coaching hints are advisory and announced
- * politely; the server validates and enforces everything.
+ * fields and records template_key, which stays even if the fields are then
+ * edited: it records where the habit came from (DECISIONS § Phase 3).
+ * Coaching hints are advisory; the server validates and enforces everything.
  */
 export function HabitForm(props: Props) {
   const router = useRouter();
   const id = useId();
   const fid = (name: string) => `${id}-${name}`;
-  const [values, setValues] = useState<HabitFormValues>(
-    props.mode === "edit" ? props.initial : EMPTY,
+  const initial = props.mode === "edit" ? props.initial : EMPTY;
+  const [values, setValues] = useState<HabitFormValues>(initial);
+  const nextKey = useRef(initial.reminder_times.length);
+  const [times, setTimes] = useState<TimeRow[]>(() =>
+    initial.reminder_times.map((time, key) => ({ key, time })),
   );
   const [templateKey, setTemplateKey] = useState<string | undefined>();
   const [error, setError] = useState<{ message: string; field?: string }>();
   const [notice, setNotice] = useState("");
+  const [hintAnnouncement, setHintAnnouncement] = useState("");
   const [pending, startTransition] = useTransition();
 
   const set = <K extends keyof HabitFormValues>(
     key: K,
     value: HabitFormValues[K],
   ) => setValues((v) => ({ ...v, [key]: value }));
+  const reminderTimes = times.map((t) => t.time);
 
   const hints = useMemo(
     () =>
-      coachingHints(values, {
-        activeHabits: props.coaching.activeHabits,
-        onboardedAt: props.coaching.onboardedAt
-          ? new Date(props.coaching.onboardedAt)
-          : null,
-        now: new Date(props.coaching.now),
-        editing: props.mode === "edit",
-      }),
-    [values, props.coaching, props.mode],
+      coachingHints(
+        { ...values, reminder_times: times.map((t) => t.time) },
+        {
+          activeHabits: props.coaching.activeHabits,
+          onboardedAt: props.coaching.onboardedAt
+            ? new Date(props.coaching.onboardedAt)
+            : null,
+          now: new Date(props.coaching.now),
+          editing: props.mode === "edit",
+        },
+      ),
+    [values, times, props.coaching, props.mode],
   );
-  const atCap = hints.some((h) => h.kind === "at_cap");
+  const atCap =
+    props.mode === "create" && hints.some((h) => h.kind === "at_cap");
+
+  // Announce a hint only when its kind first appears, so typing doesn't
+  // re-announce text that embeds the title on every keystroke.
+  const announcedKinds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const kinds = new Set(hints.map((h) => h.kind));
+    const fresh = hints.filter((h) => !announcedKinds.current.has(h.kind));
+    announcedKinds.current = kinds;
+    if (fresh.length > 0)
+      setHintAnnouncement(fresh.map((h) => h.message).join(" "));
+  }, [hints]);
 
   function pick(t: HabitTemplate) {
-    setValues(fromTemplate(t));
+    const v = fromTemplate(t);
+    setValues(v);
+    setTimes(
+      v.reminder_times.map((time) => ({ key: nextKey.current++, time })),
+    );
     setTemplateKey(t.key);
     setError(undefined);
     setNotice(
@@ -199,8 +188,40 @@ export function HabitForm(props: Props) {
     );
   }
 
+  function addTime() {
+    const key = nextKey.current++;
+    setTimes((rows) => [...rows, { key, time: "09:00" }]);
+    requestAnimationFrame(() =>
+      document.getElementById(fid(`time-${key}`))?.focus(),
+    );
+  }
+
+  function removeTime(index: number) {
+    const after = times[index + 1] ?? times[index - 1];
+    setTimes((rows) => rows.filter((_, j) => j !== index));
+    // Keep focus nearby: the next row, else the previous one, else Add.
+    requestAnimationFrame(() =>
+      document
+        .getElementById(after ? fid(`time-${after.key}`) : fid("add-time"))
+        ?.focus(),
+    );
+  }
+
+  function focusField(field: string) {
+    const target =
+      field === "days_of_week"
+        ? fid(`day-${DAY_ORDER[0]}`)
+        : field === "reminder_times"
+          ? times[0]
+            ? fid(`time-${times[0].key}`)
+            : fid("add-time")
+          : fid(field);
+    document.getElementById(target)?.focus();
+  }
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (pending || atCap) return;
     setError(undefined);
     const fields = {
       title: values.title,
@@ -211,7 +232,7 @@ export function HabitForm(props: Props) {
       color: values.color,
       days_of_week: values.days_of_week,
       target_per_day: values.target_per_day,
-      reminder_times: values.reminder_times.filter(Boolean),
+      reminder_times: reminderTimes.filter(Boolean),
       reminders_enabled: values.reminders_enabled,
     };
     startTransition(async () => {
@@ -226,7 +247,7 @@ export function HabitForm(props: Props) {
         return;
       }
       setError({ message: res.error, field: res.field });
-      if (res.field) document.getElementById(fid(res.field))?.focus();
+      if (res.field) focusField(res.field);
     });
   }
 
@@ -236,10 +257,14 @@ export function HabitForm(props: Props) {
         {error.message}
       </p>
     ) : null;
-  const describedBy = (field: string) =>
-    error?.field === field ? fid(`${field}-error`) : undefined;
+  const invalidProps = (field: string) =>
+    error?.field === field
+      ? { "aria-invalid": true, "aria-describedby": fid(`${field}-error`) }
+      : {};
 
   const suggested = props.mode === "create" ? props.suggestions : [];
+  const selected = (t: HabitTemplate) =>
+    templateKey === t.key ? <span className="sr-only">, selected</span> : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -260,7 +285,6 @@ export function HabitForm(props: Props) {
                   <li key={s.key}>
                     <button
                       type="button"
-                      aria-pressed={templateKey === t.key}
                       onClick={() => pick(t)}
                       className={cn(
                         "bg-surface flex min-h-12 w-full items-center gap-3 rounded-2xl border px-3 py-2 text-left",
@@ -273,7 +297,10 @@ export function HabitForm(props: Props) {
                         {t.icon}
                       </span>
                       <span className="min-w-0 flex-1">
-                        <span className="block font-semibold">{t.title}</span>
+                        <span className="block font-semibold">
+                          {t.title}
+                          {selected(t)}
+                        </span>
                         <span className="text-muted block text-sm">
                           {s.pairedWith
                             ? `Pairs with ${s.pairedWith}`
@@ -304,7 +331,6 @@ export function HabitForm(props: Props) {
                         <li key={t.key}>
                           <button
                             type="button"
-                            aria-pressed={templateKey === t.key}
                             onClick={() => pick(t)}
                             className={cn(
                               "bg-surface-2 min-h-11 rounded-full border px-3 text-sm",
@@ -315,6 +341,7 @@ export function HabitForm(props: Props) {
                           >
                             <span aria-hidden="true">{t.icon} </span>
                             {t.title}
+                            {selected(t)}
                           </button>
                         </li>
                       ))}
@@ -339,20 +366,22 @@ export function HabitForm(props: Props) {
             id={fid("title")}
             value={values.title}
             onChange={(e) => set("title", e.target.value)}
+            // Above the real limit, so the server explains a long title.
             maxLength={HABIT_LIMITS.titleMax * 2}
             autoComplete="off"
-            aria-invalid={error?.field === "title" || undefined}
-            aria-describedby={describedBy("title")}
+            {...invalidProps("title")}
             className={fieldClass}
             placeholder="e.g. Read 20 pages"
           />
           {errorFor("title")}
         </div>
 
-        <div aria-live="polite" className="flex flex-col gap-2 empty:hidden">
+        {/* Visual hints; announcements go through the status region below. */}
+        <div className="flex flex-col gap-2 empty:hidden">
           {hints.map((h) => (
             <div
               key={h.kind}
+              id={fid(`hint-${h.kind}`)}
               className={cn(
                 "rounded-xl border px-3 py-2 text-sm",
                 h.kind === "at_cap" || h.kind === "overload"
@@ -367,6 +396,9 @@ export function HabitForm(props: Props) {
             </div>
           ))}
         </div>
+        <p role="status" aria-live="polite" className="sr-only">
+          {hintAnnouncement}
+        </p>
 
         <div className="grid grid-cols-[5rem_1fr] gap-3">
           <div className="flex flex-col gap-1">
@@ -378,8 +410,7 @@ export function HabitForm(props: Props) {
               value={values.icon}
               onChange={(e) => set("icon", e.target.value)}
               maxLength={HABIT_LIMITS.iconMax}
-              aria-invalid={error?.field === "icon" || undefined}
-              aria-describedby={describedBy("icon")}
+              {...invalidProps("icon")}
               className={cn(fieldClass, "text-center text-xl")}
               placeholder="✨"
             />
@@ -426,25 +457,24 @@ export function HabitForm(props: Props) {
           </div>
         </fieldset>
 
-        <fieldset className="flex flex-col gap-2">
-          <legend
-            id={fid("days_of_week")}
-            tabIndex={-1}
-            className="mb-1 text-sm font-semibold"
-          >
-            Days
-          </legend>
-          <div className="flex justify-between gap-1">
+        <fieldset
+          className="flex flex-col gap-2"
+          {...invalidProps("days_of_week")}
+        >
+          <legend className="mb-1 text-sm font-semibold">Days</legend>
+          {/* A grid so 7 targets fit a 320px screen (about 37 x 44 px). */}
+          <div className="grid grid-cols-7 gap-1">
             {DAY_ORDER.map((d) => (
               <button
                 key={d}
+                id={fid(`day-${d}`)}
                 type="button"
                 aria-pressed={values.days_of_week.includes(d)}
                 aria-label={DAY_NAMES[d][1]}
                 onClick={() => toggleDay(d)}
-                className="bg-surface-2 aria-pressed:bg-cyan aria-pressed:text-bg size-11 rounded-full border border-white/10 text-xs font-semibold"
+                className="bg-surface-2 aria-pressed:bg-cyan aria-pressed:text-bg h-11 w-full rounded-full border border-white/10 text-xs font-semibold"
               >
-                {DAY_NAMES[d][0].slice(0, 2)}
+                {DAY_NAMES[d][0]}
               </button>
             ))}
           </div>
@@ -475,14 +505,11 @@ export function HabitForm(props: Props) {
           </select>
         </div>
 
-        <fieldset className="flex flex-col gap-2">
-          <legend
-            id={fid("reminder_times")}
-            tabIndex={-1}
-            className="mb-1 text-sm font-semibold"
-          >
-            Reminders
-          </legend>
+        <fieldset
+          className="flex flex-col gap-2"
+          {...invalidProps("reminder_times")}
+        >
+          <legend className="mb-1 text-sm font-semibold">Reminders</legend>
           <label className="flex min-h-11 items-center gap-3 text-sm">
             <input
               type="checkbox"
@@ -492,17 +519,17 @@ export function HabitForm(props: Props) {
             />
             Remind me
           </label>
-          {values.reminder_times.map((t, i) => (
-            <div key={i} className="flex items-center gap-2">
+          {times.map((row, i) => (
+            <div key={row.key} className="flex items-center gap-2">
               <input
+                id={fid(`time-${row.key}`)}
                 type="time"
-                value={t}
+                value={row.time}
                 aria-label={`Reminder time ${i + 1}`}
                 onChange={(e) =>
-                  set(
-                    "reminder_times",
-                    values.reminder_times.map((x, j) =>
-                      j === i ? e.target.value : x,
+                  setTimes((rows) =>
+                    rows.map((r) =>
+                      r.key === row.key ? { ...r, time: e.target.value } : r,
                     ),
                   )
                 }
@@ -512,24 +539,14 @@ export function HabitForm(props: Props) {
                 variant="ghost"
                 size="icon"
                 aria-label={`Remove reminder time ${i + 1}`}
-                onClick={() =>
-                  set(
-                    "reminder_times",
-                    values.reminder_times.filter((_, j) => j !== i),
-                  )
-                }
+                onClick={() => removeTime(i)}
               >
                 <span aria-hidden="true">✕</span>
               </Button>
             </div>
           ))}
-          {values.reminder_times.length < HABIT_LIMITS.remindersMax ? (
-            <Button
-              variant="secondary"
-              onClick={() =>
-                set("reminder_times", [...values.reminder_times, "09:00"])
-              }
-            >
+          {times.length < HABIT_LIMITS.remindersMax ? (
+            <Button id={fid("add-time")} variant="secondary" onClick={addTime}>
               Add a reminder time
             </Button>
           ) : null}
@@ -538,7 +555,7 @@ export function HabitForm(props: Props) {
 
         <fieldset className="flex flex-col gap-2">
           <legend className="mb-1 text-sm font-semibold">Colour</legend>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {[null, ...HABIT_COLORS].map((c) => (
               <label
                 key={c ?? "none"}
@@ -558,7 +575,9 @@ export function HabitForm(props: Props) {
                     c ? COLOR_SWATCH[c] : "bg-surface-2",
                   )}
                 />
-                <span className="sr-only">{c ?? "No colour"}</span>
+                <span className="sr-only">
+                  {c ? COLOR_LABELS[c] : "No colour"}
+                </span>
               </label>
             ))}
           </div>
@@ -574,8 +593,7 @@ export function HabitForm(props: Props) {
             onChange={(e) => set("description", e.target.value)}
             maxLength={HABIT_LIMITS.descriptionMax * 2}
             rows={3}
-            aria-invalid={error?.field === "description" || undefined}
-            aria-describedby={describedBy("description")}
+            {...invalidProps("description")}
             className={cn(fieldClass, "py-2")}
           />
           {errorFor("description")}
@@ -595,10 +613,14 @@ export function HabitForm(props: Props) {
           </p>
         ) : null}
 
+        {/* aria-disabled keeps it focusable, so the reason can be heard. */}
         <Button
           type="submit"
           size="lg"
-          disabled={pending || (props.mode === "create" && atCap)}
+          disabled={pending}
+          aria-disabled={atCap || undefined}
+          aria-describedby={atCap ? fid("hint-at_cap") : undefined}
+          className={cn(atCap && "opacity-50")}
         >
           {pending
             ? "Saving…"

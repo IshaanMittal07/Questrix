@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { HabitList } from "@/components/habits/HabitList";
 import { Card } from "@/components/ui/Card";
+import { toListItem } from "@/lib/habits/form-data";
 import { listActiveHabits, listArchivedHabits } from "@/lib/habits/queries";
 
 export const metadata: Metadata = { title: "Habits" };
@@ -12,7 +13,12 @@ async function HabitsContent() {
     listActiveHabits(),
     listArchivedHabits(),
   ]);
-  return <HabitList active={active} archived={archived} />;
+  return (
+    <HabitList
+      active={active.map(toListItem)}
+      archived={archived.map(toListItem)}
+    />
+  );
 }
 
 export default function HabitsPage() {

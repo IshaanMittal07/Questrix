@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   useEffect,
+  useId,
   useOptimistic,
   useRef,
   useState,
@@ -11,35 +13,15 @@ import {
 
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { cn } from "@/lib/cn";
 import {
   archiveHabit,
   reorderHabits,
   unarchiveHabit,
 } from "@/lib/habits/actions";
-import type { Habit } from "@/lib/habits/queries";
+import { ACCENT_BORDER, type HabitListItem } from "@/lib/habits/display";
+import { HABIT_LIMITS } from "@/lib/habits/limits";
 import { describeDays } from "@/lib/habits/schedule";
-import { cn } from "@/lib/cn";
-import { HABIT_LIMITS } from "@/lib/validation/habit";
-
-export type HabitListItem = Pick<
-  Habit,
-  | "id"
-  | "title"
-  | "icon"
-  | "color"
-  | "days_of_week"
-  | "target_per_day"
-  | "reminder_times"
-  | "reminders_enabled"
->;
-
-export const ACCENT_BORDER: Record<string, string> = {
-  cyan: "border-l-cyan",
-  violet: "border-l-violet",
-  magenta: "border-l-magenta",
-  success: "border-l-success",
-  warning: "border-l-warning",
-};
 
 type Change = { type: "order"; ids: string[] } | { type: "remove"; id: string };
 
@@ -58,10 +40,17 @@ function summary(h: HabitListItem) {
   return parts.join(" · ");
 }
 
+/** Where focus goes after the list changes. */
+type FocusTarget =
+  | { kind: "move"; id: string; dir: "up" | "down" }
+  | { kind: "habit"; id: string }
+  | { kind: "add" };
+
 /**
  * The habits list: reorder (optimistic, with keyboard move up/down buttons
- * rather than drag only), archive, restore, and Add (disabled at the cap).
- * Moves and errors are announced in live regions.
+ * rather than drag), archive, restore, and Add (unavailable at the cap, with
+ * the reason). Moves and errors are announced, and focus never falls back
+ * to the page after a control disappears.
  */
 export function HabitList({
   active,
@@ -70,24 +59,37 @@ export function HabitList({
   active: HabitListItem[];
   archived: HabitListItem[];
 }) {
+  const router = useRouter();
+  const capNoteId = useId();
   const [items, change] = useOptimistic(active, applyChange);
   const [, startTransition] = useTransition();
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const listRef = useRef<HTMLOListElement>(null);
-  const focusAfter = useRef<{ id: string; dir: "up" | "down" } | null>(null);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const focusAfter = useRef<FocusTarget | null>(null);
   const atCap = items.length >= HABIT_LIMITS.activeMax;
 
-  // Keep focus on the moved habit's button, or its sibling once disabled.
   useEffect(() => {
     const want = focusAfter.current;
-    if (!want || !listRef.current) return;
+    const root = rootRef.current;
+    if (!want || !root) return;
+    const q = (sel: string) =>
+      root.querySelector<HTMLElement>(`${sel}:not(:disabled)`);
+    let el: HTMLElement | null = null;
+    if (want.kind === "move") {
+      el =
+        q(`[data-move="${want.id}:${want.dir}"]`) ??
+        q(`[data-move="${want.id}:${want.dir === "up" ? "down" : "up"}"]`);
+    } else if (want.kind === "habit") {
+      el = q(`[data-edit="${want.id}"]`);
+    } else {
+      el = q("[data-add]");
+    }
+    // A restored habit appears only after the server refresh: keep waiting.
+    if (!el && want.kind === "habit") return;
     focusAfter.current = null;
-    const find = (dir: string) =>
-      listRef.current?.querySelector<HTMLButtonElement>(
-        `[data-move="${want.id}:${dir}"]:not(:disabled)`,
-      );
-    (find(want.dir) ?? find(want.dir === "up" ? "down" : "up"))?.focus();
+    el?.focus();
   }, [items]);
 
   function move(index: number, dir: "up" | "down") {
@@ -96,17 +98,26 @@ export function HabitList({
     const ids = items.map((h) => h.id);
     [ids[index], ids[to]] = [ids[to], ids[index]];
     const title = items[index].title;
-    focusAfter.current = { id: items[index].id, dir };
+    focusAfter.current = { kind: "move", id: items[index].id, dir };
     setError("");
     setStatus(`${title} moved to position ${to + 1} of ${ids.length}.`);
     startTransition(async () => {
       change({ type: "order", ids });
       const res = await reorderHabits(ids);
-      if (!res.ok) setError(res.error);
+      if (res.ok) return;
+      setStatus(`Couldn't move ${title}. The order was restored.`);
+      setError(res.error);
+      // Another tab changed the list: fetch the current one.
+      if (res.code === "stale") router.refresh();
     });
   }
 
-  function archive(h: HabitListItem) {
+  function archive(index: number) {
+    const h = items[index];
+    const neighbour = items[index + 1] ?? items[index - 1];
+    focusAfter.current = neighbour
+      ? { kind: "habit", id: neighbour.id }
+      : { kind: "add" };
     setError("");
     setStatus(`${h.title} archived.`);
     startTransition(async () => {
@@ -117,29 +128,53 @@ export function HabitList({
   }
 
   function restore(h: HabitListItem) {
+    if (atCap || restoring) return;
     setError("");
+    setRestoring(h.id);
     startTransition(async () => {
       const res = await unarchiveHabit(h.id);
-      if (res.ok) setStatus(`${h.title} restored.`);
-      else setError(res.error);
+      setRestoring(null);
+      if (res.ok) {
+        focusAfter.current = { kind: "habit", id: h.id };
+        setStatus(`${h.title} restored.`);
+      } else {
+        setError(res.error);
+      }
     });
   }
 
+  // Rendered by Add and again under the archived list; only the first copy
+  // carries the id that both controls reference.
+  const capNote = (withId: boolean) => (
+    <p
+      id={withId ? capNoteId : undefined}
+      className="text-muted text-center text-sm"
+    >
+      You have {HABIT_LIMITS.activeMax} active habits, the most allowed. Archive
+      one to add or restore another.
+    </p>
+  );
+
   return (
-    <div className="flex flex-col gap-4">
+    <div ref={rootRef} className="flex flex-col gap-4">
       {atCap ? (
         <div className="flex flex-col gap-1">
-          <Button disabled aria-describedby="habit-cap-note">
+          {/* aria-disabled keeps it focusable, so the reason can be heard. */}
+          <Button
+            data-add
+            aria-disabled="true"
+            aria-describedby={capNoteId}
+            className="opacity-50"
+          >
             Add habit
           </Button>
-          <p id="habit-cap-note" className="text-muted text-center text-sm">
-            You have {HABIT_LIMITS.activeMax} active habits, the most allowed.
-            Archive one to add another.
-          </p>
+          {capNote(true)}
         </div>
       ) : (
         <Button asChild>
-          <Link href="/habits/new">Add habit</Link>
+          <Link href="/habits/new" data-add>
+            Add habit
+          </Link>
         </Button>
       )}
 
@@ -159,11 +194,7 @@ export function HabitList({
           </p>
         </Card>
       ) : (
-        <ol
-          ref={listRef}
-          aria-label="Your habits"
-          className="flex flex-col gap-2"
-        >
+        <ol aria-label="Your habits" className="flex flex-col gap-2">
           {items.map((h, i) => (
             <li key={h.id}>
               <Card
@@ -178,6 +209,7 @@ export function HabitList({
                 <div className="min-w-0 flex-1">
                   <Link
                     href={`/habits/${h.id}/edit`}
+                    data-edit={h.id}
                     className="block truncate font-semibold underline-offset-4 hover:underline"
                   >
                     {h.title}
@@ -210,7 +242,7 @@ export function HabitList({
                     variant="ghost"
                     size="icon"
                     aria-label={`Archive ${h.title}`}
-                    onClick={() => archive(h)}
+                    onClick={() => archive(i)}
                   >
                     <span aria-hidden="true">✕</span>
                   </Button>
@@ -222,7 +254,7 @@ export function HabitList({
       )}
 
       {archived.length > 0 ? (
-        <details className="group">
+        <details>
           <summary className="text-muted min-h-11 cursor-pointer py-2 text-sm font-semibold">
             Archived ({archived.length})
           </summary>
@@ -237,15 +269,20 @@ export function HabitList({
                   <Button
                     variant="secondary"
                     aria-label={`Restore ${h.title}`}
-                    disabled={atCap}
+                    aria-disabled={atCap || restoring !== null || undefined}
+                    aria-describedby={atCap ? capNoteId : undefined}
+                    className={cn(
+                      (atCap || restoring !== null) && "opacity-50",
+                    )}
                     onClick={() => restore(h)}
                   >
-                    Restore
+                    {restoring === h.id ? "Restoring…" : "Restore"}
                   </Button>
                 </Card>
               </li>
             ))}
           </ul>
+          {atCap ? capNote(false) : null}
         </details>
       ) : null}
     </div>

@@ -14,7 +14,9 @@ export async function skipSplash(page: Page) {
 /** A short id unique per run and per project, for emails and usernames. */
 export function uniqueId(testInfo: TestInfo) {
   const suffix = testInfo.project.name === "iphone-13" ? "i" : "d";
-  return `${Date.now().toString(36)}${suffix}`;
+  // Worker index and a random digit keep parallel workers apart.
+  const rand = Math.floor(Math.random() * 36).toString(36);
+  return `${Date.now().toString(36)}${testInfo.workerIndex.toString(36)}${rand}${suffix}`;
 }
 
 /**

@@ -4,12 +4,15 @@ import { Suspense } from "react";
 
 import { HabitForm } from "@/components/habits/HabitForm";
 import { Card } from "@/components/ui/Card";
-import { habitFormContext } from "@/lib/habits/form-data";
+import { coachingContext, suggestionsForMe } from "@/lib/habits/form-data";
 
 export const metadata: Metadata = { title: "Add habit" };
 
 async function NewHabitContent() {
-  const { suggestions, coaching } = await habitFormContext();
+  const [suggestions, coaching] = await Promise.all([
+    suggestionsForMe(),
+    coachingContext(),
+  ]);
   return (
     <HabitForm mode="create" suggestions={suggestions} coaching={coaching} />
   );
