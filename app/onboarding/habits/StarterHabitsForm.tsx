@@ -93,7 +93,7 @@ export function StarterHabitsForm({
           <input
             type="checkbox"
             checked={checked}
-            aria-disabled={blocked || undefined}
+            aria-disabled={blocked || pending || undefined}
             aria-describedby={blocked ? `${detailId} ${countId}` : detailId}
             onChange={() => {
               if (!blocked) toggle(t.key);
@@ -105,9 +105,13 @@ export function StarterHabitsForm({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block font-semibold">{t.title}</span>
+            {/* Visible, but outside the accessible name (aria-hidden here,
+                read once through aria-describedby below). */}
+            <span aria-hidden="true" className="text-muted block text-sm">
+              {CATEGORY_LABELS[t.category]}
+            </span>
           </span>
         </label>
-        {/* Outside the label, so the checkbox's name is just the title. */}
         <span id={detailId} className="sr-only">
           {CATEGORY_LABELS[t.category]}
         </span>
@@ -172,7 +176,7 @@ export function StarterHabitsForm({
           disabled={pending}
           aria-disabled={none || undefined}
           aria-describedby={none ? countId : undefined}
-          className={cn(none && "opacity-50")}
+          className={cn(none && "opacity-50 active:scale-100")}
         >
           {pending
             ? "Adding…"
@@ -180,7 +184,11 @@ export function StarterHabitsForm({
               ? "Pick a habit to add"
               : `Add ${picked.length} habit${picked.length === 1 ? "" : "s"}`}
         </Button>
-        <Button asChild variant="ghost">
+        <Button
+          asChild
+          variant="ghost"
+          className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+        >
           <Link
             href={HOME_PATH}
             aria-disabled={pending || undefined}

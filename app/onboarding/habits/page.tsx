@@ -13,8 +13,10 @@ export const metadata: Metadata = { title: "Pick your habits" };
 async function StarterHabitsData() {
   // The proxy already gates this page, but it lets requests through when
   // its profile lookup fails: check step 1 here too.
+  // Like the proxy, only bounce on a known answer: a failed lookup (null)
+  // isn't "not onboarded".
   const me = await getMyProfile();
-  if (!me?.profile.onboarded_at) redirect(ONBOARDING_PATH);
+  if (me && !me.profile.onboarded_at) redirect(ONBOARDING_PATH);
 
   // For a new user every category and slot is empty, so this ranks the
   // library by the plan's priority (health, mind, fitness first).
@@ -23,6 +25,8 @@ async function StarterHabitsData() {
     listActiveHabits(),
     listArchivedHabits(),
   ]);
+  // The archived list is capped (ARCHIVED_LIST_MAX); a template archived
+  // longer ago may be offered again, which the server cap tolerates.
   const ownedKeys = [...active, ...archived].flatMap((h) =>
     h.template_key ? [h.template_key] : [],
   );
