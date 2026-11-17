@@ -5,43 +5,65 @@
 
 -- ── economy_config (DECISIONS § Phase 4, D4) ────────────────────────────────
 -- Tunable numbers, read by the engine functions. Documented in ECONOMY.md.
+-- Config validation helpers: a jsonb number in [lo, hi], optionally whole.
+-- Nested CASEs so the cast only runs on numbers (AND order isn't guaranteed).
+create function public.jsonb_num_between(v jsonb, lo numeric, hi numeric, whole boolean)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select case
+    when v is null or jsonb_typeof(v) <> 'number' then false
+    else (v::numeric between lo and hi) and (not whole or v::numeric = trunc(v::numeric))
+  end;
+$$;
+revoke all on function public.jsonb_num_between(jsonb, numeric, numeric, boolean)
+  from public, anon, authenticated;
+
 -- A mis-set value would break every completion: check the shape and a sane
 -- range per key (the engine functions assume these). A function, because a
--- CHECK can't contain subqueries.
+-- CHECK can't contain subqueries. Never returns null (a CHECK passes on
+-- null). Unknown keys are rejected, so a new key needs a migration that
+-- updates this. After changing it with create or replace, re-check existing
+-- rows: alter table ... validate constraint won't, so drop and re-add the
+-- CHECK.
+--
+-- multiplier_step (≤ 0.1) × multiplier_cap (≤ 89) keeps 1 + step × cap
+-- ≤ 9.9, inside habit_completions.multiplier numeric(4,2) ≤ 9.99.
 create function public.economy_config_value_valid(p_key text, value jsonb)
 returns boolean
 language sql
 immutable
 set search_path = ''
 as $$
-  select case p_key
-      when 'base_points' then jsonb_typeof(value) = 'object'
-        and value ?& array['easy', 'medium', 'hard']
-        and (select bool_and(jsonb_typeof(v) = 'number' and (v)::numeric between 1 and 1000)
-             from jsonb_each(value) as e(k, v))
-      when 'multiplier_step' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 0 and 0.1
-      when 'multiplier_cap' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 0 and 365
-      when 'milestones' then jsonb_typeof(value) = 'object'
-        and (select bool_and(k ~ '^[1-9][0-9]{0,3}$' and jsonb_typeof(v) = 'number'
-                             and (v)::numeric between 1 and 100000)
-             from jsonb_each(value) as e(k, v))
-      when 'undo_window_minutes' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 1 and 1440
-      when 'streak_lookback_days' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 1 and 31
-      when 'streak_freezes_max' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 0 and 2
-      when 'schedule_max_habits' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 1 and 50
-      when 'habit_create_limits' then jsonb_typeof(value) = 'object'
-        and jsonb_typeof(value -> 'per_day') = 'number'
-        and jsonb_typeof(value -> 'per_30_days') = 'number'
-      when 'timezone_change_cooldown_days' then jsonb_typeof(value) = 'number'
-        and (value)::numeric between 0 and 365
-      else true
-    end;
+  select coalesce(case p_key
+    when 'base_points' then
+      jsonb_typeof(value) = 'object'
+      and value ?& array['easy', 'medium', 'hard']
+      and public.jsonb_num_between(value -> 'easy', 1, 1000, true)
+      and public.jsonb_num_between(value -> 'medium', 1, 1000, true)
+      and public.jsonb_num_between(value -> 'hard', 1, 1000, true)
+    when 'multiplier_step' then public.jsonb_num_between(value, 0, 0.1, false)
+    when 'multiplier_cap' then public.jsonb_num_between(value, 0, 89, true)
+    when 'milestones' then
+      -- {} is allowed: no milestones.
+      jsonb_typeof(value) = 'object'
+      and coalesce((select bool_and(k ~ '^[1-9][0-9]{0,3}$'
+                                    and public.jsonb_num_between(v, 1, 100000, true))
+                    from jsonb_each(value) as e(k, v)), true)
+    when 'undo_window_minutes' then public.jsonb_num_between(value, 1, 1440, true)
+    when 'streak_lookback_days' then public.jsonb_num_between(value, 1, 31, true)
+    when 'streak_freezes_max' then public.jsonb_num_between(value, 0, 2, true)
+    when 'schedule_max_habits' then public.jsonb_num_between(value, 1, 50, true)
+    when 'habit_create_limits' then
+      jsonb_typeof(value) = 'object'
+      and value ?& array['per_day', 'per_30_days']
+      and public.jsonb_num_between(value -> 'per_day', 1, 1000, true)
+      and public.jsonb_num_between(value -> 'per_30_days', 1, 10000, true)
+    when 'timezone_change_cooldown_days' then public.jsonb_num_between(value, 0, 365, true)
+    else false
+  end, false);
 $$;
 -- Pure; service_role keeps EXECUTE so its config edits pass the CHECK.
 revoke all on function public.economy_config_value_valid(text, jsonb)

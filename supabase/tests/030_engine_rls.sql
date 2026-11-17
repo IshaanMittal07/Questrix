@@ -1,7 +1,7 @@
 -- Phase 4: game-engine tables — RLS, privileges, keys, config (#66).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(166);
+select plan(173);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -288,6 +288,20 @@ select throws_ok($$update public.economy_config set value = '{"3": "lots"}' wher
   '23514', null, 'milestone bonuses are numbers');
 select throws_ok($$update public.economy_config set value = '-0.01' where key = 'multiplier_step'$$,
   '23514', null, 'the multiplier step cannot be negative');
+select throws_ok($$update public.economy_config set value = '{}' where key = 'habit_create_limits'$$,
+  '23514', null, 'habit creation limits need both keys (no null pass)');
+select throws_ok($$update public.economy_config set value = '{"per_day": -5, "per_30_days": -1}' where key = 'habit_create_limits'$$,
+  '23514', null, 'habit creation limits are positive');
+select throws_ok($$update public.economy_config set value = '{"easy": 10.5, "medium": 20, "hard": 35}' where key = 'base_points'$$,
+  '23514', null, 'base points are whole numbers');
+select throws_ok($$update public.economy_config set value = '1.5' where key = 'streak_freezes_max'$$,
+  '23514', null, 'the freeze cap is a whole number');
+select throws_ok($$update public.economy_config set value = '90' where key = 'multiplier_cap'$$,
+  '23514', null, 'the multiplier cap keeps 1 + step × cap within numeric(4,2)');
+select throws_ok($$insert into public.economy_config (key, value) values ('schedule_max_habit', '20')$$,
+  '23514', null, 'an unknown (mistyped) config key is rejected');
+select ok(public.economy_config_value_valid('milestones', '{}'),
+  'no milestones at all is allowed');
 select throws_ok($$update public.daily_schedule set scheduled_count = 51$$, '23514', null,
   'scheduled_count has a hard ceiling of 50 even if the config is mis-set');
 select throws_ok($$insert into public.habit_completions (habit_id, user_id, local_date, occurrence, base_points, multiplier, points_awarded)
