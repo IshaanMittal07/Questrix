@@ -1,7 +1,7 @@
 -- Phase 4: game-engine tables — RLS, privileges, keys, config (#66).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(91);
+select plan(149);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -74,6 +74,52 @@ select table_privs_are('public', 'economy_config', 'authenticated', array['SELEC
 select table_privs_are('public', 'economy_config', 'anon', array[]::text[],
   'anon has no privileges on economy_config');
 
+-- ── Policies: exactly one owner-read policy per table, nothing else ────────
+select policies_are('public', 'daily_schedule', array['daily_schedule: owner can read'],
+  'daily_schedule has only the owner-read policy');
+select policies_are('public', 'daily_schedule_habits', array['daily_schedule_habits: owner can read'],
+  'daily_schedule_habits has only the owner-read policy');
+select policies_are('public', 'habit_completions', array['habit_completions: owner can read'],
+  'habit_completions has only the owner-read policy');
+select policies_are('public', 'daily_progress', array['daily_progress: owner can read'],
+  'daily_progress has only the owner-read policy');
+select policies_are('public', 'points_ledger', array['points_ledger: owner can read'],
+  'points_ledger has only the owner-read policy');
+select policies_are('public', 'habit_streaks', array['habit_streaks: owner can read'],
+  'habit_streaks has only the owner-read policy');
+select policies_are('public', 'streak_milestones_awarded', array['streak_milestones_awarded: owner can read'],
+  'streak_milestones_awarded has only the owner-read policy');
+select policies_are('public', 'economy_config', array['economy_config: readable by signed-in users'],
+  'economy_config has only the signed-in read policy');
+select is((select count(*)::int from pg_policies
+           where schemaname = 'public'
+             and tablename in (select name from engine_tables union all select 'economy_config')
+             and (cmd <> 'SELECT' or roles <> array['authenticated']::name[] or permissive <> 'PERMISSIVE')),
+  0, 'every engine policy is a permissive SELECT for authenticated only');
+
+-- ── economy_value: internal, definer, pinned search_path ────────────────────
+select function_privs_are('public', 'economy_value', array['text'], 'anon', array[]::text[],
+  'anon cannot execute economy_value');
+select function_privs_are('public', 'economy_value', array['text'], 'authenticated', array[]::text[],
+  'authenticated cannot execute economy_value');
+select isnt_definer('public', 'economy_value', array['text'],
+  'economy_value is SECURITY INVOKER (only definer functions call it)');
+select function_privs_are('public', 'economy_value', array['text'], 'service_role', array[]::text[],
+  'service_role cannot execute economy_value either');
+select is((select proconfig from pg_proc where oid = 'public.economy_value(text)'::regprocedure),
+  array['search_path=""'], 'economy_value pins search_path to empty');
+
+-- ── Ledger identity and undo-state columns ──────────────────────────────────
+select is((select attidentity::text from pg_attribute
+           where attrelid = 'public.points_ledger'::regclass and attname = 'id'), 'a',
+  'points_ledger.id is GENERATED ALWAYS (ids cannot be chosen)');
+select col_is_null('public', 'daily_progress', 'streak_before', 'daily_progress.streak_before is nullable');
+select col_is_null('public', 'daily_progress', 'last_streak_date_before', 'daily_progress.last_streak_date_before is nullable');
+select col_is_null('public', 'daily_progress', 'streak_freezes_before', 'daily_progress.streak_freezes_before is nullable');
+select col_is_null('public', 'daily_progress', 'streak_run_started_before', 'daily_progress.streak_run_started_before is nullable');
+select col_is_null('public', 'habit_completions', 'habit_current_before', 'habit_completions.habit_current_before is nullable');
+select col_is_null('public', 'habit_completions', 'habit_last_date_before', 'habit_completions.habit_last_date_before is nullable');
+
 -- ── Read isolation ──────────────────────────────────────────────────────────
 select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
 select is((select count(*)::int from public.daily_schedule), 1, 'Alice sees only her daily_schedule');
@@ -143,6 +189,34 @@ select throws_ok($$insert into public.economy_config (key, value) values ('x_key
 select throws_ok($$select public.economy_value('base_points')$$, '42501', null,
   'clients cannot call the internal config getter');
 
+select throws_ok($$insert into public.points_ledger (id, user_id, delta, reason) overriding system value
+  values (1, '11111111-1111-1111-1111-111111111111', 5000, 'admin_adjust')$$, '42501', null,
+  'Alice cannot write a ledger row with a chosen id');
+
+-- ── Bob cannot read Alice's rows even by key ────────────────────────────────
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+select is((select count(*)::int from public.habit_completions
+           where id = 'cccccccc-0000-0000-0000-00000000000a'), 0,
+  'Bob cannot read Alice''s completion by id');
+select is((select count(*)::int from public.habit_streaks
+           where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'), 0,
+  'Bob cannot read Alice''s habit streak by habit id');
+select is((select count(*)::int from public.daily_schedule_habits
+           where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'), 0,
+  'Bob cannot read Alice''s schedule snapshot by habit id');
+select is((select count(*)::int from public.daily_schedule
+           where user_id = '11111111-1111-1111-1111-111111111111' and local_date = '2026-11-16'), 0,
+  'Bob cannot read Alice''s daily_schedule by key');
+select is((select count(*)::int from public.daily_progress
+           where user_id = '11111111-1111-1111-1111-111111111111' and local_date = '2026-11-16'), 0,
+  'Bob cannot read Alice''s daily_progress by key');
+select is((select count(*)::int from public.points_ledger
+           where user_id = '11111111-1111-1111-1111-111111111111'), 0,
+  'Bob cannot read Alice''s ledger');
+select is((select count(*)::int from public.streak_milestones_awarded
+           where user_id = '11111111-1111-1111-1111-111111111111'), 0,
+  'Bob cannot read Alice''s milestones');
+
 -- ── Anon sees nothing ───────────────────────────────────────────────────────
 select pg_temp.as_anon();
 select throws_ok($$select 1 from public.habit_completions$$, '42501', null,
@@ -181,8 +255,46 @@ select throws_ok($$insert into public.daily_schedule_habits (user_id, local_date
 select throws_ok($$insert into public.daily_schedule_habits (user_id, local_date, habit_id, difficulty, target_per_day)
   values ('11111111-1111-1111-1111-111111111111', '2026-11-16', 'aaaaaaaa-0000-0000-0000-000000000001', 'easy', 6)$$,
   '23514', null, 'a snapshotted target is 1..5');
-select throws_ok($$update public.daily_schedule set scheduled_count = 21$$, '23514', null,
-  'a day holds at most 20 scheduled habits');
+select throws_ok($$update public.daily_schedule set scheduled_count = -1$$, '23514', null,
+  'scheduled_count is never negative');
+select throws_ok($$delete from public.daily_schedule
+  where user_id = '11111111-1111-1111-1111-111111111111' and local_date = '2026-11-16'$$, '23503', null,
+  'deleting a day that has a snapshot fails loudly (no cascade)');
+select throws_ok($$delete from public.daily_schedule_habits
+  where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'$$, '23503', null,
+  'deleting a snapshot entry that has completions fails loudly (no cascade)');
+select throws_ok($$insert into public.habit_completions (habit_id, user_id, local_date, occurrence, base_points, multiplier, points_awarded)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', '2026-11-16', 2, 35, 1.5, 53)$$,
+  '23514', null, 'points_awarded must equal floor(base × multiplier)');
+select lives_ok($$insert into public.habit_completions (habit_id, user_id, local_date, occurrence, base_points, multiplier, points_awarded, habit_longest_before)
+  values ('aaaaaaaa-0000-0000-0000-000000000001', '11111111-1111-1111-1111-111111111111', '2026-11-16', 2, 35, 1.5, 52, null)$$,
+  'a correct award is accepted (floor(35 × 1.5) = 52)');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
+  values ('11111111-1111-1111-1111-111111111111', -5, 'completion')$$, '23514', null,
+  'a completion entry is positive');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
+  values ('11111111-1111-1111-1111-111111111111', 5, 'undo')$$, '23514', null,
+  'an undo entry is negative');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
+  values ('11111111-1111-1111-1111-111111111111', 5, 'purchase')$$, '23514', null,
+  'a purchase entry is negative');
+select lives_ok($$insert into public.points_ledger (user_id, delta, reason)
+  values ('11111111-1111-1111-1111-111111111111', -5, 'admin_adjust')$$,
+  'an admin adjustment can go either way');
+select lives_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 20, 'completion', 'cccccccc-0000-0000-0000-00000000000a')$$,
+  'a completion is booked with its id');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', 20, 'completion', 'cccccccc-0000-0000-0000-00000000000a')$$,
+  '23505', null, 'the same completion can''t be booked twice');
+select lives_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', -20, 'undo', 'cccccccc-0000-0000-0000-00000000000a')$$,
+  'its undo is booked once');
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values ('11111111-1111-1111-1111-111111111111', -20, 'undo', 'cccccccc-0000-0000-0000-00000000000a')$$,
+  '23505', null, 'and can''t be booked twice');
+select ok((select id is not null from public.streak_milestones_awarded limit 1),
+  'milestones have an id for their ledger entries');
 select throws_ok($$insert into public.points_ledger (user_id, delta, reason)
   values ('11111111-1111-1111-1111-111111111111', 0, 'completion')$$, '23514', null,
   'ledger entries are never zero');
@@ -201,6 +313,14 @@ select throws_ok($$insert into public.daily_progress (user_id, local_date, compl
   'completed_count is never negative');
 select throws_ok($$insert into public.economy_config (key, value) values ('Bad Key', '1')$$, '23514', null,
   'config keys are lowercase slugs');
+select throws_ok($$insert into public.points_ledger (id, user_id, delta, reason)
+  values (999999, '11111111-1111-1111-1111-111111111111', 5, 'completion')$$, '428C9', null,
+  'even the owner cannot pick a ledger id without OVERRIDING SYSTEM VALUE');
+select lives_ok($$insert into public.daily_progress
+  (user_id, local_date, completed_count, counted_for_streak,
+   streak_before, last_streak_date_before, streak_freezes_before, streak_run_started_before)
+  values ('11111111-1111-1111-1111-111111111111', '2026-11-19', 1, true, null, null, null, null)$$,
+  'a first-ever day stores null *_before undo state');
 
 -- ── Config ──────────────────────────────────────────────────────────────────
 select is(public.economy_value('base_points'), '{"easy": 10, "medium": 20, "hard": 35}'::jsonb,
@@ -220,8 +340,49 @@ select is(public.economy_value('timezone_change_cooldown_days')::int, 7, 'timezo
 select throws_ok($$select public.economy_value('nope')$$, 'P0002', 'Missing economy_config key: nope',
   'a missing config key raises');
 
+-- ── Ledger append-only, sequence locked ─────────────────────────────────────
+select sequence_privs_are('public', 'points_ledger_id_seq', 'authenticated', array[]::text[],
+  'authenticated has no privileges on the ledger id sequence');
+select sequence_privs_are('public', 'points_ledger_id_seq', 'anon', array[]::text[],
+  'anon has no privileges on the ledger id sequence');
+select table_privs_are('public', 'points_ledger', 'service_role', array['INSERT', 'REFERENCES', 'SELECT', 'TRIGGER'],
+  'service_role can append to the ledger but not edit, delete or truncate it');
+select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
+select throws_ok($$select setval('public.points_ledger_id_seq', 1)$$, '42501', null,
+  'a signed-in user cannot reset the ledger id sequence');
+select pg_temp.as_postgres();
+
+-- ── economy_config.updated_at follows edits ─────────────────────────────────
+update public.economy_config set updated_at = '2000-01-01' where key = 'multiplier_cap';
+update public.economy_config set value = '50' where key = 'multiplier_cap';
+select ok((select updated_at > '2001-01-01' from public.economy_config where key = 'multiplier_cap'),
+  'updating a config value stamps updated_at');
+
+-- ── Cascade: deleting a habit removes its engine rows, not the day ─────────
+delete from public.habits where id = 'aaaaaaaa-0000-0000-0000-000000000001';
+select is((select count(*)::int from public.habit_completions
+           where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'), 0, 'completions go with the habit');
+select is((select count(*)::int from public.daily_schedule_habits
+           where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'), 0, 'snapshot entries go with the habit');
+select is((select count(*)::int from public.habit_streaks
+           where habit_id = 'aaaaaaaa-0000-0000-0000-000000000001'), 0, 'the habit streak goes with the habit');
+select is((select count(*)::int from public.daily_schedule
+           where user_id = '11111111-1111-1111-1111-111111111111' and local_date = '2026-11-16'), 1,
+  'the day''s schedule row survives a habit delete');
+select is((select count(*)::int from public.points_ledger
+           where user_id = '11111111-1111-1111-1111-111111111111'), 4,
+  'ledger rows survive a habit delete (append-only)');
+
 -- ── Cascade: deleting a user removes all of their engine rows ───────────────
 delete from auth.users where id = '22222222-2222-2222-2222-222222222222';
+select is((select count(*)::int from public.daily_schedule
+           where user_id = '22222222-2222-2222-2222-222222222222'), 0, 'schedule days go with the user');
+select is((select count(*)::int from public.daily_progress
+           where user_id = '22222222-2222-2222-2222-222222222222'), 0, 'daily_progress goes with the user');
+select is((select count(*)::int from public.habit_streaks
+           where user_id = '22222222-2222-2222-2222-222222222222'), 0, 'habit streaks go with the user');
+select is((select count(*)::int from public.streak_milestones_awarded
+           where user_id = '22222222-2222-2222-2222-222222222222'), 0, 'milestones go with the user');
 select is((select count(*)::int from public.habit_completions
            where user_id = '22222222-2222-2222-2222-222222222222'), 0, 'completions go with the user');
 select is((select count(*)::int from public.points_ledger

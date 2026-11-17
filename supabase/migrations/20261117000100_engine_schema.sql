@@ -31,12 +31,16 @@ insert into public.economy_config (key, value) values
   -- After onboarding, the timezone can change once per this many days (#28).
   ('timezone_change_cooldown_days', '7');
 
-/** One config value; a missing key is a server bug, so it raises. */
+/**
+ * One config value; a missing key is a server bug, so it raises. Security
+ * invoker: its only callers are SECURITY DEFINER engine functions owned by
+ * postgres, so it needs no privileges of its own.
+ */
 create function public.economy_value(p_key text)
 returns jsonb
 language plpgsql
 stable
-security definer
+security invoker
 set search_path = ''
 as $$
 declare
@@ -49,7 +53,22 @@ begin
   return v;
 end;
 $$;
-revoke all on function public.economy_value(text) from public, anon, authenticated;
+revoke all on function public.economy_value(text) from public, anon, authenticated, service_role;
+
+create function public.economy_config_touch()
+returns trigger
+language plpgsql
+set search_path = ''
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+revoke all on function public.economy_config_touch() from public, anon, authenticated, service_role;
+create trigger economy_config_touch
+  before update on public.economy_config
+  for each row execute function public.economy_config_touch();
 
 alter table public.economy_config enable row level security;
 create policy "economy_config: readable by signed-in users"
@@ -63,9 +82,10 @@ grant select on public.economy_config to authenticated;
 create table public.daily_schedule (
   user_id uuid not null references public.profiles (id) on delete cascade,
   local_date date not null,
-  -- Never decreases: habits are only ever added to a day's snapshot.
+  -- Never decreases: habits are only ever added to a day's snapshot. The cap
+  -- is economy_config.schedule_max_habits, enforced by ensure_daily_schedule.
   scheduled_count smallint not null default 0
-    constraint daily_schedule_count_range check (scheduled_count between 0 and 20),
+    constraint daily_schedule_count_nonnegative check (scheduled_count >= 0),
   created_at timestamptz not null default now(),
   primary key (user_id, local_date)
 );
@@ -81,8 +101,12 @@ create table public.daily_schedule_habits (
     constraint daily_schedule_habits_target_range check (target_per_day between 1 and 5),
   added_at timestamptz not null default now(),
   primary key (user_id, local_date, habit_id),
+  -- No action, not cascade: a stray delete of a day fails loudly instead of
+  -- erasing the snapshot (and, below, completions). Account deletion still
+  -- works: every row goes in the same statement, and NO ACTION is checked at
+  -- its end.
   foreign key (user_id, local_date)
-    references public.daily_schedule (user_id, local_date) on delete cascade,
+    references public.daily_schedule (user_id, local_date),
   -- The habit belongs to the same user.
   foreign key (habit_id, user_id)
     references public.habits (id, user_id) on delete cascade
@@ -106,14 +130,18 @@ create table public.habit_completions (
     constraint habit_completions_points_nonnegative check (points_awarded >= 0),
   -- habit_streaks before this completion, for undo.
   habit_current_before int,
+  habit_longest_before int,
   habit_last_date_before date,
   completed_at timestamptz not null default now(),
   constraint habit_completions_occurrence_unique unique (habit_id, local_date, occurrence),
   -- A completion belongs to the habit's owner (DECISIONS § Phase 3)…
   foreign key (habit_id, user_id) references public.habits (id, user_id) on delete cascade,
-  -- …and the habit was in that day's schedule snapshot.
+  -- …and the habit was in that day's schedule snapshot (no action: see above).
   foreign key (user_id, local_date, habit_id)
-    references public.daily_schedule_habits (user_id, local_date, habit_id) on delete cascade
+    references public.daily_schedule_habits (user_id, local_date, habit_id),
+  -- Cheap invariant: the award follows the formula (plan §6.1).
+  constraint habit_completions_points_formula
+    check (points_awarded = floor(base_points * multiplier))
 );
 create index habit_completions_user_date_idx
   on public.habit_completions (user_id, local_date);
@@ -128,6 +156,7 @@ create table public.daily_progress (
     constraint daily_progress_count_nonnegative check (completed_count >= 0),
   counted_for_streak bool not null default false,
   streak_before int,
+  longest_streak_before int,
   last_streak_date_before date,
   streak_freezes_before smallint,
   streak_run_started_before date,
@@ -141,12 +170,28 @@ create table public.points_ledger (
   user_id uuid not null references public.profiles (id) on delete cascade,
   delta int not null constraint points_ledger_delta_nonzero check (delta <> 0),
   reason public.ledger_reason not null,
-  -- Completion id, item id or milestone row; null when there's nothing to point at.
+  -- completion → habit_completions.id; streak_milestone → the milestone's id;
+  -- undo → the completion or milestone it reverses; purchase/refund → the
+  -- user_items row. No FK: ledger rows outlive what they point at.
   ref_id uuid,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- The sign follows the reason; admin adjustments go either way.
+  constraint points_ledger_sign check (
+    case reason
+      when 'completion' then delta > 0
+      when 'streak_milestone' then delta > 0
+      when 'refund' then delta > 0
+      when 'purchase' then delta < 0
+      when 'undo' then delta < 0
+      else true
+    end)
 );
 create index points_ledger_user_created_idx
   on public.points_ledger (user_id, created_at desc);
+-- A completion, milestone or undo is booked at most once, even on a retry.
+create unique index points_ledger_ref_once
+  on public.points_ledger (reason, ref_id)
+  where reason in ('completion', 'streak_milestone', 'undo');
 
 -- ── habit_streaks ───────────────────────────────────────────────────────────
 -- Per-habit streak (display only; no points). user_id is here, beyond plan
@@ -166,6 +211,8 @@ create index habit_streaks_user_idx on public.habit_streaks (user_id);
 -- ── streak_milestones_awarded ───────────────────────────────────────────────
 -- Prevents awarding a milestone twice in one streak run.
 create table public.streak_milestones_awarded (
+  -- What its ledger entries point at (ref_id).
+  id uuid not null default gen_random_uuid() unique,
   user_id uuid not null references public.profiles (id) on delete cascade,
   streak_run_started date not null,
   milestone int not null constraint streak_milestones_positive check (milestone > 0),
@@ -229,3 +276,14 @@ create policy "streak_milestones_awarded: owner can read"
   using (user_id = (select auth.uid()));
 revoke all on public.streak_milestones_awarded from anon, authenticated;
 grant select on public.streak_milestones_awarded to authenticated;
+
+-- Supabase's default privileges give anon and authenticated USAGE/UPDATE on
+-- new sequences, so a client could setval() the ledger's id and break every
+-- later insert. Revoke it here and for future sequences.
+revoke all on sequence public.points_ledger_id_seq from anon, authenticated;
+alter default privileges for role postgres in schema public
+  revoke all on sequences from anon, authenticated;
+
+-- The ledger is append-only even for the server key; the cascade from
+-- profiles still deletes (FK actions run as the table owner).
+revoke update, delete, truncate on public.points_ledger from service_role;
