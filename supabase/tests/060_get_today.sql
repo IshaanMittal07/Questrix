@@ -2,7 +2,7 @@
 -- at_risk (D7) and the SQL side of the level parity test.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(75);
+select plan(78);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -69,6 +69,8 @@ select function_privs_are('public', 'get_today', array[]::text[], 'service_role'
   'nor can service_role');
 select function_privs_are('public', 'get_today_at', array['uuid', 'timestamp with time zone'],
   'authenticated', array[]::text[], 'clients cannot call the time seam');
+select function_privs_are('public', 'get_today_at', array['uuid', 'timestamp with time zone'],
+  'anon', array[]::text[], 'nor can anon');
 select function_privs_are('public', 'get_today_at', array['uuid', 'timestamp with time zone'],
   'service_role', array[]::text[], 'nor can service_role');
 select ok((select bool_and(proconfig @> array['search_path=""'] and prosecdef and provolatile = 'v')
@@ -520,6 +522,16 @@ select is((select array_agg(k || ':' || jsonb_typeof(c -> k) order by k)
            where n = 'g1b'),
   array['completed_at:string', 'id:string', 'occurrence:number', 'points_awarded:number', 'undoable_until:string'],
   'completion JSON types');
+
+-- ── undoable_until stops at local midnight (undo refuses yesterday, QX105) ──
+select pg_temp.done('30000007-0000-0000-0000-000000000000', 'e7000000-0000-0000-0000-000000000001', 5, 715);
+select ok((select (h -> 'completions' -> 0 ->> 'undoable_until')::timestamptz = pg_temp.t(5, 720)
+           from pg_temp.habit(pg_temp.today('30000007-0000-0000-0000-000000000000', 5, 716), 'Daily') h),
+  'a completion at 23:55 is undoable until 00:00, not 00:10');
+select throws_ok($$select public.undo_completion_at('30000007-0000-0000-0000-000000000000',
+                   (select id from public.habit_completions where user_id = '30000007-0000-0000-0000-000000000000'
+                    and local_date = pg_temp.day(5)), pg_temp.t(5, 721))$$,
+  'QX105', null, '(and undo indeed refuses it a minute after midnight)');
 
 -- ── The client wrapper ──────────────────────────────────────────────────────
 select pg_temp.as_user('30000007-0000-0000-0000-000000000000');
