@@ -34,6 +34,7 @@ declare
   v_done int;
   v_counted boolean;
   v_habits jsonb;
+  v_midnight timestamptz;
 begin
   if p_uid is null then
     raise exception 'Not signed in' using errcode = '28000';
@@ -52,6 +53,13 @@ begin
 
   v_today := public.ensure_daily_schedule(p_uid, p_now);
   v_hour := extract(hour from (p_now at time zone p.timezone))::int;
+  -- The first instant of tomorrow. Where midnight happens twice (a fall-back
+  -- at 01:00, e.g. Atlantic/Azores) Postgres picks the later 00:00; step back
+  -- to the earlier one, when the date really changes.
+  v_midnight := (v_today + 1)::timestamp at time zone p.timezone;
+  if public.local_date_in(p.timezone, v_midnight - interval '1 hour') > v_today then
+    v_midnight := v_midnight - interval '1 hour';
+  end if;
 
   -- The global streak as the next completion would see it (plan §6.2).
   v_streak := p.current_streak;
@@ -112,8 +120,7 @@ begin
                'completed_at', c.completed_at,
                -- Undo only works on today's completions (QX105), so the
                -- deadline stops at the end of the local day.
-               'undoable_until', least(c.completed_at + make_interval(mins => v_window),
-                                       (v_today + 1)::timestamp at time zone p.timezone)
+               'undoable_until', least(c.completed_at + make_interval(mins => v_window), v_midnight)
              ) order by c.occurrence) as items
       from public.habit_completions c
       where c.habit_id = h.id and c.user_id = p_uid and c.local_date = v_today
