@@ -26,7 +26,7 @@ create function public.streak_missed_days(p_uid uuid, p_from date, p_to date)
 returns int
 language sql
 stable
-security definer
+security invoker
 set search_path = ''
 as $$
   select count(*)::int
@@ -45,7 +45,7 @@ create function public.habit_missed_days(p_uid uuid, p_habit_id uuid, p_from dat
 returns int
 language sql
 stable
-security definer
+security invoker
 set search_path = ''
 as $$
   select count(*)::int
@@ -95,6 +95,9 @@ declare
   v_milestone int;
   v_bonus int;
   v_milestone_id uuid;
+  -- The streak was set this call (first ever, increment, freeze or reset),
+  -- as opposed to rules 0/1, which leave it alone. Milestones key off this.
+  v_streak_set boolean := false;
 begin
   if p_uid is null then
     raise exception 'Not signed in' using errcode = '28000';
@@ -104,7 +107,7 @@ begin
   --    without blocking foreign-key checks.
   select * into p from public.profiles where id = p_uid for no key update;
   if not found then
-    raise exception 'Habit not found' using errcode = 'P0002';
+    raise exception 'Profile not found' using errcode = 'P0002';
   end if;
   if p.onboarded_at is null then
     raise exception 'Finish onboarding first' using errcode = 'QX107';
@@ -159,25 +162,28 @@ begin
       v_streak := 1;
       v_run := v_today;
       v_last := v_today;
+      v_streak_set := true;
     elsif v_today <= v_last then
-      -- Rule 0 (moved west: an already-counted day) and rule 1: no change.
+      -- Rules 0 (moved west: an already-counted day) and 1 share this
+      -- branch: no change.
       null;
     else
-      if v_today - v_last - 1 > v_lookback then
-        v_missed := v_today - v_last - 1;  -- too long ago: broken
-      else
-        v_missed := public.streak_missed_days(p_uid, v_last, v_today);
-      end if;
+      -- null = broken: a gap longer than the lookback, freezes untouched.
+      v_missed := case when v_today - v_last - 1 > v_lookback then null
+                       else public.streak_missed_days(p_uid, v_last, v_today) end;
       if v_missed = 0 then
         v_streak := v_streak + 1;
-      elsif v_missed <= v_freezes and v_today - v_last - 1 <= v_lookback then
+      elsif v_missed <= v_freezes then
         v_freezes := v_freezes - v_missed;
         v_streak := v_streak + 1;
       else
         v_streak := 1;
         v_run := v_today;
       end if;
+      -- A run date is always set by now; defend against hand-edited rows.
+      v_run := coalesce(v_run, v_today);
       v_last := v_today;
+      v_streak_set := true;
     end if;
     v_longest := greatest(v_longest, v_streak);
 
@@ -208,16 +214,23 @@ begin
   --    snapshotted target. Every completion of the day stores the pre-day
   --    state, so undoing any one of them restores it exactly.
   select * into hs from public.habit_streaks where habit_id = p_habit_id;
+  -- Reported as-is unless the target is reached below.
   v_hcur := coalesce(hs.current, 0);
   v_hlong := coalesce(hs.longest, 0);
   v_hlast := hs.last_date;
 
+  -- The profile lock makes a clash unreachable for one user; on conflict
+  -- is the backstop, reported as the same "already done" refusal.
   insert into public.habit_completions
     (id, habit_id, user_id, local_date, occurrence, base_points, multiplier,
      points_awarded, habit_current_before, habit_longest_before, habit_last_date_before,
      completed_at)
   values (v_completion, p_habit_id, p_uid, v_today, v_occurrence, v_base, v_mult,
-          v_points, hs.current, hs.longest, hs.last_date, p_now);
+          v_points, hs.current, hs.longest, hs.last_date, p_now)
+  on conflict on constraint habit_completions_occurrence_unique do nothing;
+  if not found then
+    raise exception 'Already done % of % today', v_target, v_target using errcode = 'QX103';
+  end if;
 
   select count(*) into v_done_after from public.habit_completions c
   where c.habit_id = p_habit_id and c.local_date = v_today;
@@ -244,7 +257,7 @@ begin
     set completed_count = d.completed_count + 1;
 
   -- 9. Milestone: once per streak run, on the day the streak reaches it.
-  if v_first_today and v_streak is distinct from p.current_streak then
+  if v_streak_set then
     v_bonus := (public.economy_value('milestones') ->> v_streak::text)::int;
     if v_bonus is not null then
       insert into public.streak_milestones_awarded
@@ -281,17 +294,13 @@ begin
     'points_awarded', v_points,
     'multiplier', v_mult,
     'current_streak', p.current_streak,
-    'habit_streak', coalesce((select current from public.habit_streaks where habit_id = p_habit_id), 0),
+    'habit_streak', v_hcur,
     'milestone', v_milestone,
     'milestone_points', case when v_milestone is null then null else v_bonus end,
     'new_balance', p.points_balance,
     'lifetime_points', p.lifetime_points,
     'level', public.level_for(p.lifetime_points)
   );
-exception
-  -- The profile lock makes this unreachable for one user; kept as a backstop.
-  when unique_violation then
-    raise exception 'Already done today' using errcode = 'QX103';
 end;
 $$;
 
