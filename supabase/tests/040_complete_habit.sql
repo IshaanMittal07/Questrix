@@ -1,7 +1,7 @@
 -- Phase 4 (#68): complete_habit — points, streaks, freezes, milestones.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(133);
+select plan(134);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -291,6 +291,8 @@ select throws_ok($$select pg_temp.done('10000008-0000-0000-0000-000000000000', g
   'P0002', 'Habit not found', 'an unknown habit is "not found"');
 select throws_ok($$select public.complete_habit_at(null, 'a8000000-0000-0000-0000-000000000001', now())$$,
   '28000', 'Not signed in', 'no user is refused');
+select throws_ok($$select public.complete_habit_at(gen_random_uuid(), 'a8000000-0000-0000-0000-000000000001', now())$$,
+  'P0002', 'Profile not found', 'a user with no profile is refused (#70)');
 select throws_ok($$select public.complete_habit_at('10000009-0000-0000-0000-000000000000', 'a8000000-0000-0000-0000-000000000001', now())$$,
   'QX107', 'Finish onboarding first', 'a user who hasn''t onboarded is refused');
 select is((select count(*)::int from public.habit_completions where user_id = '10000008-0000-0000-0000-000000000000'), 1,
