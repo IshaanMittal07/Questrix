@@ -182,7 +182,8 @@ begin
 
   -- 8. Per-habit streak: advances when the day's count first reaches the
   --    snapshotted target. Every completion of the day stores the pre-day
-  --    state, so undoing any one of them restores it exactly.
+  --    state (the pin below enforces it after a relived day), so undoing
+  --    any one of them restores it exactly.
   select * into hs from public.habit_streaks where habit_id = p_habit_id;
   -- Reported as-is unless the target is reached below.
   v_hcur := coalesce(hs.current, 0);
@@ -301,8 +302,9 @@ $$;
  *   so they are rewritten to the restored one.
  * - Emptying a counted day that isn't last_streak_date, or dropping a day
  *   below target when it isn't the habit's last_date (possible only after
- *   a move west, when a later day counted on top of it), is refused (QX108): the later day's streak and saved states were built
- *   on this one and can't be restored exactly (security audit M1).
+ *   a move west, when a later day counted on top of it), is refused
+ *   (QX108): the later day's streak and saved states were built on this
+ *   one and can't be restored exactly (security audit M1).
  */
 create function public.undo_completion_at(p_uid uuid, p_completion_id uuid, p_now timestamptz)
 returns jsonb
@@ -368,7 +370,9 @@ begin
   where sh.user_id = p_uid and sh.local_date = c.local_date and sh.habit_id = c.habit_id;
   select count(*) into v_habit_done from public.habit_completions hc
   where hc.habit_id = c.habit_id and hc.local_date = c.local_date;
-  v_drops := v_habit_done = v_target;
+  -- A missing snapshot row is unreachable (they're deleted together); a
+  -- null target counts as dropping, so the guard below fails closed.
+  v_drops := coalesce(v_habit_done >= v_target, true);
   select * into hs from public.habit_streaks where habit_id = c.habit_id;
   if v_drops and hs.last_date is distinct from c.local_date then
     raise exception 'A later day already counts on this one' using errcode = 'QX108';

@@ -2,7 +2,7 @@
 -- window, the previous-day and spent-balance guards, milestone revocation.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(112);
+select plan(114);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -134,6 +134,10 @@ select function_privs_are('public', 'undo_completion_at', array['uuid', 'uuid', 
   'authenticated', array[]::text[], 'clients cannot call the time seam');
 select function_privs_are('public', 'undo_completion_at', array['uuid', 'uuid', 'timestamp with time zone'],
   'service_role', array[]::text[], 'nor can service_role');
+select function_privs_are('public', 'undo_completion_at', array['uuid', 'uuid', 'timestamp with time zone'],
+  'anon', array[]::text[], 'nor can anon');
+select function_privs_are('public', 'complete_habit_at', array['uuid', 'uuid', 'timestamp with time zone'],
+  'anon', array[]::text[], 'the redefined complete_habit_at seam stays closed to anon');
 select ok((select bool_and(proconfig @> array['search_path=""'] and prosecdef) from pg_proc
            where proname in ('undo_completion', 'undo_completion_at')
              and pronamespace = 'public'::regnamespace),
