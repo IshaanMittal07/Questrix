@@ -5,6 +5,7 @@
 --   P0002 completion not found (or not yours)
 --   QX104 the undo window has passed · QX105 not today's completion
 --   QX106 the balance can't cover it (the points were spent)
+--   QX108 a later day already built on this one (only after a move west)
 
 /**
  * Undo one of p_uid's completions as of p_now. Internal: the time seam for
@@ -14,14 +15,19 @@
  *   undo_window_minutes of completed_at.
  * - Refused if the balance can't cover the points plus any milestone the
  *   undo revokes, so "complete, spend, undo" can't go negative.
- * - The profile's streak state is restored from daily_progress only when
- *   this empties the day and the day is the profile's last_streak_date:
- *   earlier days' saved states are stale once a later day has counted.
+ * - The profile's streak state is restored from daily_progress when this
+ *   empties the day and the day is the profile's last_streak_date.
  *   Milestones awarded that day are revoked (their rows deleted, so a redo
  *   can earn them again with a fresh id).
- * - The per-habit streak is restored from the completion's saved state only
- *   when the habit's last counted day is this day and the day drops below
- *   its target. A null saved state means no streak row existed: delete it.
+ * - The per-habit streak is restored from the completion's saved state when
+ *   the day drops below its target and is the habit's last_date. A null
+ *   saved state means no streak row existed: delete it. Later days'
+ *   completions of the habit saved this day's streak as their before-state,
+ *   so they are rewritten to the restored one.
+ * - Emptying a counted day, or dropping a day below target, when a later
+ *   day has already counted on top of it (possible only after a move west)
+ *   is refused (QX108): the later day's streak and saved states were built
+ *   on this one and can't be restored exactly (security audit M1).
  */
 create function public.undo_completion_at(p_uid uuid, p_completion_id uuid, p_now timestamptz)
 returns jsonb
@@ -41,6 +47,8 @@ declare
   v_cost int;
   v_target smallint;
   v_habit_done int;
+  v_drops boolean;
+  hs public.habit_streaks%rowtype;
   m record;
   v_revoked int[] := '{}';
 begin
@@ -77,6 +85,22 @@ begin
                    and coalesce(d.counted_for_streak, false)
                    and p.last_streak_date = c.local_date;
 
+  if v_remaining = 0 and coalesce(d.counted_for_streak, false)
+     and p.last_streak_date > c.local_date then
+    raise exception 'A later day already counts on this one' using errcode = 'QX108';
+  end if;
+
+  -- Per-habit: does this undo take the day below its target?
+  select sh.target_per_day into v_target from public.daily_schedule_habits sh
+  where sh.user_id = p_uid and sh.local_date = c.local_date and sh.habit_id = c.habit_id;
+  select count(*) into v_habit_done from public.habit_completions hc
+  where hc.habit_id = c.habit_id and hc.local_date = c.local_date;
+  v_drops := v_habit_done = v_target;
+  select * into hs from public.habit_streaks where habit_id = c.habit_id;
+  if v_drops and hs.last_date > c.local_date then
+    raise exception 'A later day already counts on this one' using errcode = 'QX108';
+  end if;
+
   if v_restore_day then
     select coalesce(sum(sm.points), 0) into v_milestone_points
     from public.streak_milestones_awarded sm
@@ -94,13 +118,7 @@ begin
   values (p_uid, -c.points_awarded, 'undo', c.id);
 
   -- Per-habit streak.
-  select sh.target_per_day into v_target from public.daily_schedule_habits sh
-  where sh.user_id = p_uid and sh.local_date = c.local_date and sh.habit_id = c.habit_id;
-  select count(*) into v_habit_done from public.habit_completions hc
-  where hc.habit_id = c.habit_id and hc.local_date = c.local_date;
-  if v_habit_done < v_target
-     and exists (select 1 from public.habit_streaks hs
-                 where hs.habit_id = c.habit_id and hs.last_date = c.local_date) then
+  if v_drops and hs.last_date = c.local_date then
     if c.habit_current_before is null then
       delete from public.habit_streaks where habit_id = c.habit_id;
     else
@@ -110,6 +128,12 @@ begin
              last_date = c.habit_last_date_before
        where habit_id = c.habit_id;
     end if;
+    -- Later days' completions saved this day's streak; give them the restored one.
+    update public.habit_completions
+       set habit_current_before = c.habit_current_before,
+           habit_longest_before = c.habit_longest_before,
+           habit_last_date_before = c.habit_last_date_before
+     where habit_id = c.habit_id and local_date > c.local_date;
   end if;
 
   -- The day: one fewer completion; an emptied day can count again.

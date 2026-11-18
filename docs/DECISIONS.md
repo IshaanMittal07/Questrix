@@ -364,15 +364,19 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
 - **`undo_completion` (#69).**
   - **Codes (D9),** in addition to `complete_habit`'s:
 
-    | Code    | Meaning                                               |
-    | ------- | ----------------------------------------------------- |
-    | `P0002` | completion not found, not yours, or already undone    |
-    | `QX104` | the undo window (`undo_window_minutes`) has passed    |
-    | `QX105` | not from the user's current local day                 |
-    | `QX106` | the balance can't cover the points plus any milestone |
+    | Code    | Meaning                                                    |
+    | ------- | ---------------------------------------------------------- |
+    | `P0002` | completion not found, not yours, or already undone         |
+    | `QX104` | the undo window (`undo_window_minutes`) has passed         |
+    | `QX105` | not from the user's current local day                      |
+    | `QX106` | the balance can't cover the points plus any milestone      |
+    | `QX108` | a later day already counts on this one (after a move west) |
 
-  - **Order.** The profile `for no key update`, then the completion `for update`. There's no `ensure_daily_schedule` and no habit lock, a deviation from D5's original list. Undo never reads or writes the snapshot, and habit edits never touch completions, `habit_streaks` or `daily_progress`, so there's nothing to order against. The completion row lock only meets a cascade from deleting the habit or profile. A profile delete takes the profile row first. A `service_role` habit delete has no profile lock, but it only waits on the completion, and undo holds nothing it needs.
-  - **The checks run in this order:** ownership (`P0002`), the day (`QX105`), the window (`QX104`, inclusive at exactly 15 minutes), then the balance (`QX106`). The day is checked first, so a completion at 23:55 undone at 00:05 says "not today".
-  - **M1 is met.** Profile streak state is restored only when the undo empties the day and the day is `last_streak_date`. `habit_streaks` are restored only when the day drops below its target and the day is `last_date`. A null before-state deletes the streak row. pgTAP simulates a move west with the time seam: undoing day D after D+1 counted leaves the streak and the habit streak alone.
+  - **Order.** The profile `for no key update`, then the completion `for update`. There's no `ensure_daily_schedule` and no habit lock, a deviation from D5's original list. Undo only reads its snapshot entry (unlocked, D5) for the target, and habit edits never touch completions, `habit_streaks` or `daily_progress`, so there's nothing to order against. The completion row lock only meets a cascade from deleting the habit or profile. A profile delete takes the profile row first. A `service_role` habit delete has no profile lock, but it only waits on the completion, and undo holds nothing it needs.
+  - **The checks run in this order:** ownership (`P0002`), the day (`QX105`), the window (`QX104`, inclusive at exactly 15 minutes), then a later day built on this one (`QX108`), then the balance (`QX106`). The day is checked first, so a completion at 23:55 undone at 00:05 says "not today".
+  - **M1.** Profile streak state is restored when the undo empties the day and the day is `last_streak_date`. `habit_streaks` are restored when the day drops below its target and the day is `last_date`. A null before-state deletes the streak row.
+    - **A later day built on this one is refused (`QX108`).** After a move west, "today" can be day D again while D+1 has already counted on D's streak. Emptying D, or dropping D below a habit's target under D+1's habit streak, can't be restored exactly: D+1's streak and saved before-states assume D. The `test-writer` showed the first draft, which skipped the restore but allowed the undo, let a later undo of D+1 bring back a streak and a milestone for a D with no completion. That is reachable with one westward change across a 15-minute offset gap (Kathmandu to Kolkata). Refusing is the simplest exact rule; it can be over-strict for a D that counted under rule 0 or 1, which is accepted.
+    - **Later completions' saved habit state is rewritten.** When an undo restores a habit's streak, the habit's completions on later days (which haven't reached their target, or the undo would be refused) saved D's streak as their before-state. They're rewritten to the restored one, so undoing them later can't bring back D's streak.
+    - pgTAP simulates the move west with the time seam, and invariants pin "every streak ends on a day with a completion" and "every habit streak ends on a day that reached its target".
   - **Milestones** awarded on the emptied day are revoked as D8 describes. The balance check covers them, so "complete, spend, undo" can't go negative even with a milestone in play.
   - **`lifetime_points` decreases by the same amount as the balance,** which keeps the ledger invariant (`completion + streak_milestone + undo = lifetime`).
