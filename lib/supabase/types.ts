@@ -754,6 +754,8 @@ export type Database = {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
+      get_today: { Args: Record<PropertyKey, never>; Returns: Json };
+      get_today_at: { Args: { p_now: string; p_uid: string }; Returns: Json };
       habit_missed_days: {
         Args: {
           p_from: string;
