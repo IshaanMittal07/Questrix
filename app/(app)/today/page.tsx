@@ -1,44 +1,53 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Suspense } from "react";
 import { Avatar } from "@/components/avatar/Avatar";
+import { TodayView } from "@/components/today/TodayView";
+import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
-import { ProgressRing } from "@/components/ui/ProgressRing";
 import { getMyProfile } from "@/lib/profile/queries";
-import { levelProgress } from "@/lib/points/levels";
+import { getToday } from "@/lib/today/queries";
 
 export const metadata: Metadata = { title: "Today" };
 
-async function Greeting() {
-  const me = await getMyProfile();
-  if (!me) return null;
-  const { profile, layers } = me;
-  const { level, current, needed } = levelProgress(profile.lifetime_points);
-  const name = profile.display_name || profile.username;
+async function TodayContent() {
+  const [loaded, me] = await Promise.all([getToday(), getMyProfile()]);
+
+  if (!loaded.ok) {
+    if (loaded.reason === "not_onboarded") {
+      return (
+        <Card className="flex flex-col items-start gap-3">
+          <p>Finish setting up your account to start tracking.</p>
+          <Button asChild>
+            <Link href="/onboarding">Continue setup</Link>
+          </Button>
+        </Card>
+      );
+    }
+    return (
+      <Card role="alert">
+        <p className="text-danger">
+          {loaded.reason === "signed_out"
+            ? "You're signed out."
+            : "Couldn't load today. Reload the page, or try again shortly."}
+        </p>
+      </Card>
+    );
+  }
 
   return (
-    <Card className="flex items-center gap-4">
-      <Avatar
-        layers={layers}
-        size={64}
-        label={`${profile.username}'s avatar`}
-      />
-      <div className="min-w-0 flex-1">
-        <p className="text-muted text-sm">Welcome back,</p>
-        <p className="truncate text-lg font-bold">{name}</p>
-        <p className="text-muted text-sm">
-          <span aria-hidden="true">🔥</span> {profile.current_streak}-day streak
-          · {profile.points_balance} pts
-        </p>
-      </div>
-      <ProgressRing
-        value={current}
-        max={needed}
-        label={`Level ${level} progress`}
-        valueText={`${current} of ${needed} points to the next level`}
-      >
-        {level}
-      </ProgressRing>
-    </Card>
+    <TodayView
+      today={loaded.today}
+      avatar={
+        me ? (
+          <Avatar
+            layers={me.layers}
+            size={64}
+            label={`${me.profile.username}'s avatar`}
+          />
+        ) : null
+      }
+    />
   );
 }
 
@@ -46,14 +55,17 @@ export default function TodayPage() {
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-bold tracking-wider uppercase">Today</h1>
-      <Suspense fallback={<Card className="h-24 animate-pulse" />}>
-        <Greeting />
+      <Suspense
+        fallback={
+          <div className="flex flex-col gap-4" aria-busy="true">
+            <Card className="h-24 animate-pulse" />
+            <Card className="h-16 animate-pulse" />
+            <Card className="h-16 animate-pulse" />
+          </div>
+        }
+      >
+        <TodayContent />
       </Suspense>
-      <Card>
-        <p className="text-muted text-sm">
-          Your habits will appear here (Phase 3–4).
-        </p>
-      </Card>
     </div>
   );
 }

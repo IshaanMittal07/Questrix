@@ -317,3 +317,79 @@ html[data-splash="seen"] .qx-splash {
     transform: translateY(0);
   }
 }
+
+/* ── Today screen (#71) ───────────────────────────────────────────────── */
+.qx-pop {
+  animation: qx-pop 300ms ease-out;
+}
+
+.qx-flame {
+  display: inline-block;
+  transform-origin: 50% 90%;
+  animation: qx-flicker 1.6s ease-in-out infinite alternate;
+}
+
+@keyframes qx-flicker {
+  0% {
+    transform: scale(1) rotate(-3deg);
+  }
+  100% {
+    transform: scale(1.12) rotate(3deg);
+  }
+}
+
+/* Floating "+20 ×1.12" after a completion. */
+.qx-float {
+  animation: qx-float 1.2s ease-out forwards;
+}
+
+@keyframes qx-float {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-36px);
+  }
+}
+
+.qx-confetti__piece {
+  position: absolute;
+  top: -12px;
+  width: 8px;
+  height: 14px;
+  border-radius: 2px;
+  opacity: 0;
+  animation: qx-confetti 1.8s cubic-bezier(0.2, 0.6, 0.4, 1) forwards;
+}
+
+@keyframes qx-confetti {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--qx-drift), 105vh) rotate(var(--qx-spin));
+  }
+}
+
+/* Reduced motion: no confetti or flicker; the float shows briefly in place.
+   Milestones and points are still announced in text. */
+@media (prefers-reduced-motion: reduce) {
+  .qx-confetti {
+    display: none;
+  }
+  .qx-flame,
+  .qx-pop {
+    animation: none !important;
+  }
+  .qx-float {
+    animation: qx-fade-in 200ms ease-out forwards !important;
+    animation-duration: 200ms !important;
+  }
+}

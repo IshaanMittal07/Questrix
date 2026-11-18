@@ -11,7 +11,14 @@ function withValues(list: string[], ...extra: string[]) {
   return out;
 }
 
-export function TimezoneForm({ current }: { current: string }) {
+export function TimezoneForm({
+  current,
+  lockedUntil = null,
+}: {
+  current: string;
+  /** When the #28 cooldown ends (formatted), or null if a change is allowed. */
+  lockedUntil?: string | null;
+}) {
   const [state, action, pending] = useActionState<SettingsState, FormData>(
     updateTimezone,
     {},
@@ -36,10 +43,17 @@ export function TimezoneForm({ current }: { current: string }) {
       <p className="text-muted -mt-2 text-sm">
         Your day (and your streak) resets at midnight here.
       </p>
+      {lockedUntil ? (
+        <p id="timezone-cooldown" className="text-warning -mt-1 text-sm">
+          You changed your timezone recently. You can change it again from{" "}
+          {lockedUntil}.
+        </p>
+      ) : null}
       <select
         id="timezone"
         name="timezone"
         value={value}
+        aria-describedby={lockedUntil ? "timezone-cooldown" : undefined}
         onChange={(e) => setValue(e.target.value)}
         className="bg-surface-2 text-text min-h-12 rounded-xl border border-white/10 px-3"
       >
