@@ -9,7 +9,7 @@
 -- exists (DECISIONS: "Spending before Phase 6"); Phase 6 re-runs this with it.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(14);
+select plan(17);
 
 -- Users 4000000{1..4}; users 2 and 4 start with two freezes.
 insert into auth.users (id, email)
@@ -111,6 +111,29 @@ create function pg_temp.bump(p_k text) returns void language sql as $$
 create function pg_temp.stat(p_k text) returns int language sql as $$
   select coalesce((select n from stats where k = p_k), 0) $$;
 
+create temp table mismatches (step int, what text);
+
+/**
+ * Where get_today (taken just before) disagrees with the completion that
+ * followed, or null. The completion adds a day to the global streak unless
+ * the day is already covered (last_streak_date >= today), and to the habit
+ * streak when it reaches the target on a day after the habit's last_date.
+ */
+create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_last date,
+                                     p_hlast date, p_fb int, p_fa int) returns text language sql as $$
+  select case
+    when p_listed is null then 'completed but not listed'
+    when (p_gt ->> 'local_date') <> (p_c ->> 'local_date') then 'local_date'
+    when (p_listed ->> 'target')::int <> (p_c ->> 'target')::int then 'target'
+    when (p_c ->> 'current_streak')::int - (p_gt ->> 'current_streak')::int
+         <> case when p_last >= (p_c ->> 'local_date')::date then 0 else 1 end then 'current_streak'
+    when (p_gt ->> 'freezes_needed')::int <> p_fb - p_fa or (p_gt ->> 'streak_freezes')::int <> p_fb
+      then 'freezes_needed'
+    when (p_c ->> 'occurrence') = (p_c ->> 'target')
+         and (p_c ->> 'habit_streak')::int - (p_listed ->> 'habit_streak')::int
+             <> case when p_hlast >= (p_c ->> 'local_date')::date then 0 else 1 end then 'habit_streak'
+  end $$;
+
 create function pg_temp.simulate(p_steps int) returns void language plpgsql as $$
 declare
   v_now timestamptz := (date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')
@@ -122,6 +145,13 @@ declare
   v_amount int;
   r float8;
   v text[];
+  v_gt jsonb;
+  v_c jsonb;
+  v_listed jsonb;
+  v_last date;
+  v_hlast date;
+  v_fb int;
+  v_bad text;
 begin
   for step in 1 .. p_steps loop
     v_uid := ('4000000' || (1 + floor(random() * 4))::int || '-0000-0000-0000-000000000000')::uuid;
@@ -129,13 +159,37 @@ begin
     if r < 0.55 then
       v_habit := ('f' || substr(v_uid::text, 8, 1) || '00000' || (1 + floor(random() * 4))::int
                   || '-0000-0000-0000-000000000000')::uuid;
+      -- get_today first, in the same subtransaction (a refusal rolls back its
+      -- snapshot too, so the walk is unchanged); it must predict the result.
+      v_gt := null;
+      v_listed := null;
+      v_bad := null;
       begin
-        v_completion := (public.complete_habit_at(v_uid, v_habit, v_now) ->> 'completion_id')::uuid;
+        v_gt := public.get_today_at(v_uid, v_now);
+        select last_streak_date, streak_freezes into v_last, v_fb from public.profiles where id = v_uid;
+        v_hlast := (select hs.last_date from public.habit_streaks hs where hs.habit_id = v_habit);
+        v_listed := (select h from jsonb_array_elements(v_gt -> 'habits') h where (h ->> 'id')::uuid = v_habit);
+        v_c := public.complete_habit_at(v_uid, v_habit, v_now);
+        v_completion := (v_c ->> 'completion_id')::uuid;
         perform pg_temp.bump('complete');
+        v_bad := pg_temp.disagreement(v_gt, v_listed, v_c, v_last, v_hlast, v_fb,
+                                      (select streak_freezes from public.profiles where id = v_uid));
       exception when others then
         v_completion := null;
         perform pg_temp.bump('complete refused ' || sqlstate);
+        if sqlstate = 'QX101' and v_listed is not null then
+          v_bad := 'refused as unscheduled but listed';
+        elsif sqlstate = 'QX103' and (v_listed is null
+                                      or (v_listed ->> 'done')::int < (v_listed ->> 'target')::int) then
+          v_bad := 'refused as done but listed with room';
+        end if;
       end;
+      if v_gt is not null then
+        perform pg_temp.bump('get_today checked');
+      end if;
+      if v_bad is not null then
+        insert into mismatches values (step, v_bad);
+      end if;
       -- Often undone a few minutes later (sometimes past the window).
       if v_completion is not null and random() < 0.3 then
         v_now := v_now + floor(random() * 18) * interval '1 minute';
@@ -190,6 +244,9 @@ select lives_ok($$select pg_temp.simulate(800)$$, 'an 800-step random sequence r
 select is((select coalesce(array_agg(step || ': ' || array_to_string(what, ', ')), '{}') from failures), '{}'::text[],
   'every invariant held after every step');
 select is(pg_temp.violations(), '{}'::text[], 'and at the end');
+select is((select coalesce(array_agg(step || ': ' || what order by step), '{}') from mismatches), '{}'::text[],
+  'get_today predicted every completion (streak, freezes, habit streak, listing) and every refusal');
+select cmp_ok(pg_temp.stat('get_today checked'), '>=', 300, 'get_today was checked before at least 300 completion attempts');
 select is((select coalesce(array_agg(k order by k), '{}') from stats
            where k like '% refused %'
              and split_part(k, ' refused ', 2) not in ('QX101', 'QX103', 'QX104', 'QX105', 'QX106', 'QX108')),
@@ -217,6 +274,19 @@ update public.profiles set current_streak = 0, last_streak_date = null, streak_r
  where id = '40000001-0000-0000-0000-000000000000';
 select ok(not (pg_temp.violations() && array['balance = ledger', 'streak state is sane']),
   '(and clears once it''s repaired)');
+
+-- The parity checker flags a get_today that overstates (or fails to add) a day.
+select ok(pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 3, "freezes_needed": 0, "streak_freezes": 0}',
+            '{"target": 1, "habit_streak": 0}',
+            '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 3, "habit_streak": 1}',
+            '2026-01-01', null, 0, 0) = 'current_streak'
+          and pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 0, "streak_freezes": 0}',
+            '{"target": 1, "habit_streak": 0}',
+            '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 3, "habit_streak": 1}',
+            '2026-01-01', null, 0, 0) is null,
+  'the parity checker flags a wrong streak and passes a right one');
 
 select diag('stats: ' || (select string_agg(k || '=' || n, ', ' order by k) from stats));
 select lives_ok($$set constraints all immediate$$, 'deferred FKs hold');
