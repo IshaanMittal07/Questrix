@@ -733,6 +733,11 @@ export type Database = {
     };
     Functions: {
       archive_habit: { Args: { p_habit_id: string }; Returns: undefined };
+      complete_habit: { Args: { p_habit_id: string }; Returns: Json };
+      complete_habit_at: {
+        Args: { p_habit_id: string; p_now: string; p_uid: string };
+        Returns: Json;
+      };
       economy_config_value_valid: {
         Args: { p_key: string; value: Json };
         Returns: boolean;
@@ -746,6 +751,15 @@ export type Database = {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
+      habit_missed_days: {
+        Args: {
+          p_from: string;
+          p_habit_id: string;
+          p_to: string;
+          p_uid: string;
+        };
+        Returns: number;
+      };
       habits_clean_text: { Args: { p_text: string }; Returns: string };
       habits_lock: { Args: { p_user_id: string }; Returns: undefined };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
@@ -753,11 +767,16 @@ export type Database = {
         Args: { hi: number; lo: number; v: Json; whole: boolean };
         Returns: boolean;
       };
+      level_for: { Args: { p_lifetime: number }; Returns: number };
       local_date_in: { Args: { p_at: string; p_tz: string }; Returns: string };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
       snapshot_add_habit: {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
         Returns: undefined;
+      };
+      streak_missed_days: {
+        Args: { p_from: string; p_to: string; p_uid: string };
+        Returns: number;
       };
       unarchive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       username_available: { Args: { p_username: string }; Returns: boolean };

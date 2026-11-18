@@ -311,3 +311,40 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     1. Two habit edits racing to take a day's first snapshot.
     2. `archive_habit` against a habit insert.
     3. A timezone change against a habit edit.
+- **`complete_habit` (#68).**
+  - **Codes (D9).**
+
+    | Code    | Meaning                       |
+    | ------- | ----------------------------- |
+    | `QX101` | not scheduled today           |
+    | `QX102` | archived                      |
+    | `QX103` | target reached                |
+    | `QX107` | onboarding not finished       |
+    | `P0002` | habit not found, or not yours |
+    | `28000` | not signed in                 |
+
+    Undo's codes are added in #69.
+
+  - **Order.**
+    1. Profile `for no key update`.
+    2. `ensure_daily_schedule`.
+    3. Habit `for share` (D5).
+    4. Read the snapshot entry; this is the "scheduled today" check, and it supplies the difficulty and target.
+    5. Take the lowest free occurrence.
+    6. Run the streak rules, then compute points, then write the completion, the ledger, `daily_progress`, the habit streak, any milestone and the profile.
+  - **Streak rules (plan §6.2).**
+    - The streak changes on the day's first completion, tracked by `daily_progress.counted_for_streak`, so an undo that empties the day lets the next completion count again.
+    - Rule 0 also covers `D = last_streak_date`.
+    - A gap longer than `streak_lookback_days` breaks the streak without spending freezes.
+    - A missing snapshot row is a missed day (D2), through `streak_missed_days`.
+  - **Points.** The multiplier is rounded to 2 dp before `floor(base × multiplier)`, so the stored value reproduces the award (formula CHECK).
+  - **Per-habit streak.**
+    - It advances when the day's count first reaches the snapshotted target. A day in the habit's snapshot without that, or a missing day, is a miss (`habit_missed_days`). Days the habit wasn't scheduled are skipped.
+    - Every completion of the day stores the same pre-day state, so undoing any of them restores it exactly.
+  - **Milestones** are awarded when the streak changes to a configured value. `on conflict do nothing` keeps them once per run, and the ledger `ref_id` is the milestone's id.
+  - **`level_for(lifetime)`** is the SQL twin of `lib/points/levels.ts`. Clients can call it; #70 adds the parity test.
+  - **Two-session checks, run against the local stack.** All three passed, with no deadlock.
+    1. Two simultaneous completions of a target-2 habit got occurrences 1 and 2, and the balance equalled the ledger.
+    2. `complete_habit` against a habit edit at the day's first call: the award used the pre-edit (snapshotted) difficulty.
+    3. `complete_habit` against `reorder_habits`.
+  - **#28** is closed by the end-to-end flip test: complete at UTC-12, switch to UTC+14, complete "tomorrow". The streak stays at 1.
