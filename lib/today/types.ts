@@ -10,8 +10,10 @@ const completionSchema = z.object({
   id: z.string(),
   occurrence: z.number().int(),
   points_awarded: z.number().int(),
-  completed_at: z.string(),
-  undoable_until: z.string(),
+  // Postgres sends microseconds and an offset; reject anything Date.parse
+  // might not read, rather than silently hiding Undo on NaN.
+  completed_at: z.iso.datetime({ offset: true }),
+  undoable_until: z.iso.datetime({ offset: true }),
 });
 
 const todayHabitSchema = z.object({

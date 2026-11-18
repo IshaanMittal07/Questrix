@@ -16,6 +16,15 @@ export function timezoneCooldownUntil(
   // Round up to the minute, as the server's hint does, so retrying then works.
   const ms = until.getTime();
   const rounded = new Date(Math.ceil(ms / 60_000) * 60_000);
+  try {
+    return format(rounded, timezone);
+  } catch {
+    // An unknown zone (the DB validates it, so this shouldn't happen).
+    return null;
+  }
+}
+
+function format(date: Date, timezone: string) {
   return new Intl.DateTimeFormat("en", {
     timeZone: timezone,
     weekday: "short",
@@ -24,5 +33,5 @@ export function timezoneCooldownUntil(
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
-  }).format(rounded);
+  }).format(date);
 }

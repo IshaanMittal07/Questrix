@@ -12,7 +12,7 @@ import {
   type Today,
   type UndoEvent,
 } from "@/lib/today/types";
-import { habitIdSchema } from "@/lib/validation/habit";
+import { habitIdSchema, uuidSchema } from "@/lib/validation/habit";
 
 /**
  * Complete and undo for the Today screen. The engine RPCs do all the work
@@ -32,8 +32,12 @@ export type TodayErrorCode =
   | "not_onboarded"
   | "failed";
 
+/**
+ * `event` is null when the write committed but its response couldn't be
+ * read; `today` is null when the fresh snapshot couldn't be loaded.
+ */
 export type TodayResult<E> =
-  | { ok: true; event: E; today: Today | null }
+  | { ok: true; event: E | null; today: Today | null }
   | { ok: false; code: TodayErrorCode; error: string };
 
 const fail = (code: TodayErrorCode, error: string) =>
@@ -86,12 +90,11 @@ async function run<E>(
   if (error) return fromDb(error, errors, missing);
 
   const event = schema.safeParse(data);
-  // The write committed; only the event is unreadable. The fresh snapshot
-  // below still shows the right state.
   const loaded = await loadToday(s.supabase);
   const today = loaded.ok ? loaded.today : null;
-  if (!event.success) return fail("failed", "Saved, but couldn't refresh.");
-  return { ok: true, event: event.data as E, today };
+  // The write committed even if its response is unreadable: report success,
+  // so the screen keeps the completion instead of inviting a second tap.
+  return { ok: true, event: event.success ? (event.data as E) : null, today };
 }
 
 export async function completeHabit(
@@ -111,7 +114,7 @@ export async function completeHabit(
 export async function undoCompletion(
   completionId: unknown,
 ): Promise<TodayResult<UndoEvent>> {
-  const id = habitIdSchema.safeParse(completionId);
+  const id = uuidSchema.safeParse(completionId);
   if (!id.success) return fail("not_found", "That completion doesn't exist.");
   return run(
     "undo_completion",

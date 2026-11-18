@@ -32,4 +32,9 @@ describe("TimezoneForm cooldown note", () => {
       screen.getByRole("combobox", { name: "Timezone" }),
     ).not.toHaveAttribute("aria-describedby");
   });
+
+  it("disables Save during the cooldown", () => {
+    render(<TimezoneForm current="UTC" lockedUntil="Wed, Nov 25, 16:00" />);
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
 });

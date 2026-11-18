@@ -390,6 +390,5 @@ html[data-splash="seen"] .qx-splash {
   }
   .qx-float {
     animation: qx-fade-in 200ms ease-out forwards !important;
-    animation-duration: 200ms !important;
   }
 }
