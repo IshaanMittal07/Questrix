@@ -232,7 +232,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Moving west** is covered by plan §6.2 rule 0. The user can still collect points for the previous day's unused occurrences, but that is bounded to one day per cooldown too.
 - **D4. `economy_config`** is `key text PK, value jsonb`. It's read through the internal `economy_value(key)`, which raises if the key is missing. Signed-in users can read the table, but nobody can write it from a client. ECONOMY.md documents every key.
 - **D5. Lock order.**
-  - `complete_habit`, `undo_completion` and, later, `purchase_item` lock the profile row `for no key update`, then call `ensure_daily_schedule`, then lock the habit row `for share` (see below).
+  - `complete_habit` and, later, `purchase_item` lock the profile row `for no key update`, then call `ensure_daily_schedule`, then lock the habit row `for share` (see below). `undo_completion` locks the profile, then the completion row `for update`, and nothing else (see #69).
     - They must not lock the `daily_schedule` row at SHARE or above before the habit row. A habit edit holds the habit row, then waits on the day row in `snapshot_add_habit`. Read the day row unlocked: apart from append-only snapshot entries, it doesn't change.
     - Plan §6 says `for update`. That would deadlock: inserting a `daily_schedule` row checks its foreign key by taking `FOR KEY SHARE` on `profiles`, which conflicts with `FOR UPDATE`.
     - `FOR NO KEY UPDATE` still serialises engine calls against each other and against client profile updates, but it doesn't block foreign-key checks.
@@ -241,7 +241,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Only single-row paths call `ensure_daily_schedule`.** That means insert, unarchive, archive and a `days_of_week` change. `reorder_habits` never calls it, because order doesn't affect schedules. A multi-row statement that called it after locking one habit row could wait on another row that `complete_habit` holds `for share`, while `complete_habit` waits on the uncommitted `daily_schedule` row.
   - **Username changes take `FOR UPDATE`.** Any profile UPDATE that sets the unique `username` takes `FOR UPDATE`, which blocks foreign-key checks; onboarding sets `username` and `timezone` together. So the timezone snapshot (D3) is skipped while `onboarded_at` is null.
   - **Deadlocks are retryable.** The app's actions map a `40P01` deadlock to "Try again", in `lib/supabase/errors.ts`.
-  - **`complete_habit` and `undo_completion` snapshot before locking the habit row.** The order is profile, then `ensure_daily_schedule`, then habit `for share`. `ensure` only takes `KEY SHARE` on habit rows, which never conflicts, so it never waits while holding a habit lock that a habit UPDATE needs.
+  - **`complete_habit` snapshots before locking the habit row.** The order is profile, then `ensure_daily_schedule`, then habit `for share`. `ensure` only takes `KEY SHARE` on habit rows, which never conflicts, so it never waits while holding a habit lock that a habit UPDATE needs.
   - **Multi-row client updates.** A client can still send a multi-row `UPDATE habits` (RLS limits it to its own rows). That can deadlock with its own `complete_habit`. It's self-only and retryable, so it's accepted.
     - The same goes for a direct single-row archive (row lock, then `habits_lock`) racing that user's own reorder (`habits_lock` first).
   - **Username and timezone together.** After onboarding, changing both in one statement is refused (`QX002`, distinct from onboarding's "unknown timezone" `22023`). The username change would take `FOR UPDATE` on the profile while the snapshot waits on a concurrent day row.
@@ -323,7 +323,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     | `P0002` | habit not found, or not yours |
     | `28000` | not signed in                 |
 
-    Undo's codes are added in #69.
+    Undo's codes are listed under `undo_completion` (#69) below.
 
   - **Order.**
     1. Profile `for no key update`.
@@ -336,8 +336,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Streak rules (plan §6.2).**
     - The streak changes on the day's first completion, tracked by `daily_progress.counted_for_streak`, so an undo that empties the day lets the next completion count again.
     - Rules 0 and 1 share one branch: a day on or before `last_streak_date` changes nothing.
-    - A gap longer than `streak_lookback_days` breaks the streak even if every day in it was a rest day (for example, every habit archived for a holiday). Tests pin this. Changing it means changing the gap check before `streak_missed_days`, and the matching per-habit check.
-    - A gap longer than `streak_lookback_days` breaks the streak without spending freezes.
+    - A gap longer than `streak_lookback_days` breaks the streak without spending freezes, even if every day in it was a rest day (for example, every habit archived for a holiday). Tests pin this. Changing it means changing the gap check before `streak_missed_days`, and the matching per-habit check.
     - A missing snapshot row is a missed day (D2), through `streak_missed_days`.
   - **Points.** The multiplier is rounded to 2 dp before `floor(base × multiplier)`, so the stored value reproduces the award (formula CHECK).
   - **Per-habit streak.**
@@ -362,3 +361,18 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - The same rule applies to `habit_streaks` (`local_date = last_date`).
     - A null `habit_current_before` means no streak row existed before, so delete the row.
     - Emptying a day sets `counted_for_streak = false`, so the next completion records the restored state. A test pins this overwrite path.
+- **`undo_completion` (#69).**
+  - **Codes (D9),** in addition to `complete_habit`'s:
+
+    | Code    | Meaning                                               |
+    | ------- | ----------------------------------------------------- |
+    | `P0002` | completion not found, not yours, or already undone    |
+    | `QX104` | the undo window (`undo_window_minutes`) has passed    |
+    | `QX105` | not from the user's current local day                 |
+    | `QX106` | the balance can't cover the points plus any milestone |
+
+  - **Order.** The profile `for no key update`, then the completion `for update`. There's no `ensure_daily_schedule` and no habit lock, a deviation from D5's original list. Undo never reads or writes the snapshot, and habit edits never touch completions, `habit_streaks` or `daily_progress`, so there's nothing to order against. The completion row lock only meets a cascade from deleting the habit or profile. A profile delete takes the profile row first. A `service_role` habit delete has no profile lock, but it only waits on the completion, and undo holds nothing it needs.
+  - **The checks run in this order:** ownership (`P0002`), the day (`QX105`), the window (`QX104`, inclusive at exactly 15 minutes), then the balance (`QX106`). The day is checked first, so a completion at 23:55 undone at 00:05 says "not today".
+  - **M1 is met.** Profile streak state is restored only when the undo empties the day and the day is `last_streak_date`. `habit_streaks` are restored only when the day drops below its target and the day is `last_date`. A null before-state deletes the streak row. pgTAP simulates a move west with the time seam: undoing day D after D+1 counted leaves the streak and the habit streak alone.
+  - **Milestones** awarded on the emptied day are revoked as D8 describes. The balance check covers them, so "complete, spend, undo" can't go negative even with a milestone in play.
+  - **`lifetime_points` decreases by the same amount as the balance,** which keeps the ledger invariant (`completion + streak_milestone + undo = lifetime`).
