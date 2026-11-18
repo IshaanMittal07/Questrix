@@ -2,7 +2,7 @@
 -- window, the previous-day and spent-balance guards, milestone revocation.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(58);
+select plan(103);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -68,20 +68,44 @@ create function pg_temp.balance_ok(p_uid uuid) returns boolean language sql as $
           where user_id = p_uid and reason in ('completion', 'streak_milestone', 'undo')) $$;
 
 -- U1 restore and reuse · U2 milestones · U3 freezes · U4 guards ·
--- U5 a stranger · U6 a day that's no longer the latest · U7 the wrapper.
+-- U5 a stranger · U6 a day that's no longer the latest · U7 the wrapper ·
+-- U8 a milestone farming loop · U9 a freeze farming loop ·
+-- V1 a reset day · V2 a non-last occurrence with a prior habit streak ·
+-- V3 two habits on a milestone day · V4 the exact balance ·
+-- V5 undoing D then D+1 across midnight (M1) · V6 a stale sibling habit state.
+create function pg_temp.mine(p_uid uuid) returns boolean language sql as $$
+  select left(p_uid::text, 7) in ('2000000', '2100000') $$;
 insert into auth.users (id, email)
 select ('2000000' || g || '-0000-0000-0000-000000000000')::uuid, 'undo' || g || '@example.com'
-from generate_series(1, 7) as g;
+from generate_series(1, 9) as g
+union all
+select ('2100000' || g || '-0000-0000-0000-000000000000')::uuid, 'undov' || g || '@example.com'
+from generate_series(1, 6) as g;
 insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at)
 select ('b' || g || '000000-0000-0000-0000-000000000001')::uuid,
        ('2000000' || g || '-0000-0000-0000-000000000000')::uuid,
        'Daily', 'mind', 'medium', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'
-from generate_series(1, 7) as g;
+from generate_series(1, 9) as g;
+insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at)
+select ('c' || g || '000000-0000-0000-0000-000000000001')::uuid,
+       ('2100000' || g || '-0000-0000-0000-000000000000')::uuid,
+       'Daily', 'mind', 'medium', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'
+from generate_series(1, 6) as g;
 insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at) values
   ('b1000000-0000-0000-0000-000000000003', '20000001-0000-0000-0000-000000000000',
-   'Water', 'nutrition', 'easy', '{0,1,2,3,4,5,6}', 3, now() - interval '30 days');
-update public.profiles set onboarded_at = now() - interval '30 days' where id::text like '2000000%';
-update public.profiles set streak_freezes = 1 where id = '20000003-0000-0000-0000-000000000000';
+   'Water', 'nutrition', 'easy', '{0,1,2,3,4,5,6}', 3, now() - interval '30 days'),
+  -- V2: a target-3 habit (its target-1 habit is never completed).
+  ('c2000000-0000-0000-0000-000000000003', '21000002-0000-0000-0000-000000000000',
+   'Water', 'nutrition', 'easy', '{0,1,2,3,4,5,6}', 3, now() - interval '30 days'),
+  -- V3: a second habit.
+  ('c3000000-0000-0000-0000-000000000002', '21000003-0000-0000-0000-000000000000',
+   'Read', 'mind', 'hard', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'),
+  -- V6: target 2.
+  ('c6000000-0000-0000-0000-000000000002', '21000006-0000-0000-0000-000000000000',
+   'Stretch', 'fitness', 'easy', '{0,1,2,3,4,5,6}', 2, now() - interval '30 days');
+update public.profiles set onboarded_at = now() - interval '30 days' where pg_temp.mine(id);
+update public.profiles set streak_freezes = 1
+ where id in ('20000003-0000-0000-0000-000000000000', '20000009-0000-0000-0000-000000000000');
 
 -- ── Privileges and structure ────────────────────────────────────────────────
 select function_privs_are('public', 'undo_completion', array['uuid'], 'authenticated', array['EXECUTE'],
@@ -207,6 +231,8 @@ select throws_ok($$select pg_temp.undo('20000004-0000-0000-0000-000000000000', '
 select ok(exists (select 1 from public.habit_completions where id = pg_temp.c('u4c'))
           and pg_temp.st('20000004-0000-0000-0000-000000000000') = pg_temp.kept('u4.spent'),
   'and changes nothing');
+select throws_ok($$select pg_temp.undo('20000004-0000-0000-0000-000000000000', 'u4c', 4, 16)$$,
+  'QX104', null, 'the window is checked before the balance');
 
 -- ── U2: milestones are revoked with the day ─────────────────────────────────
 select pg_temp.done('u2d1', '20000002-0000-0000-0000-000000000000', 'b2000000-0000-0000-0000-000000000001', 1);
@@ -238,6 +264,24 @@ select ok(exists (select 1 from public.points_ledger m
 select ok((select j -> 'milestones_revoked' = '[3]'::jsonb and (j ->> 'milestone_points_removed')::int = 25
            from r2),
   'the JSON names the revoked milestone and its points');
+-- The exact JSON shape: every key, its type, integers as integers.
+select is((select array_agg(k || ':' || jsonb_typeof(j -> k) order by k) from r2, jsonb_object_keys(j) as k),
+  array['current_streak:number', 'habit_id:string', 'habit_streak:number', 'level:number',
+        'lifetime_points:number', 'local_date:string', 'milestone_points_removed:number',
+        'milestones_revoked:array', 'new_balance:number', 'points_removed:number', 'undone_id:string'],
+  'the JSON has exactly these keys, with these types');
+select is((select array_agg(k || ':' || jsonb_typeof(j -> k) order by k) from r1, jsonb_object_keys(j) as k),
+  (select array_agg(k || ':' || jsonb_typeof(j -> k) order by k) from r2, jsonb_object_keys(j) as k),
+  'the same keys and types when nothing was revoked');
+select ok((select jsonb_typeof(j -> 'milestones_revoked' -> 0) = 'number'
+                  and (j ->> 'habit_id')::uuid = 'b2000000-0000-0000-0000-000000000001'
+                  and j ->> 'local_date' = to_char(pg_temp.day(3), 'YYYY-MM-DD')
+                  and (j ->> 'undone_id') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                  and (select bool_and(j ->> k ~ '^-?[0-9]+$')
+                       from unnest(array['current_streak', 'habit_streak', 'level', 'lifetime_points',
+                                         'milestone_points_removed', 'new_balance', 'points_removed']) as k)
+           from r2),
+  'milestones are numbers, the habit and day are the undone ones, and the numbers are integers');
 select is((pg_temp.done('u2d3b', '20000002-0000-0000-0000-000000000000', 'b2000000-0000-0000-0000-000000000001', 3, 3)
            ->> 'milestone')::int, 3,
   'completing again re-awards the milestone');
@@ -262,21 +306,22 @@ select is(pg_temp.hst('b3000000-0000-0000-0000-000000000001'), pg_temp.kept('u3.
 
 -- ── U6: a day that is no longer the latest counted day (M1) ─────────────────
 -- Day 1 at 23:50, day 2 at 00:01; then the time seam puts "now" back on
--- day 1, as a move west would, and day 1's completion is undone.
+-- day 1, as a move west would, and day 1's completion is undone. Day 2's
+-- streak was built on day 1, so emptying day 1 is refused (QX108).
 select pg_temp.done('u6d1', '20000006-0000-0000-0000-000000000000', 'b6000000-0000-0000-0000-000000000001', 1, 710);
 select pg_temp.done('u6d2', '20000006-0000-0000-0000-000000000000', 'b6000000-0000-0000-0000-000000000001', 1, 721);
 select is((select current_streak from public.profiles where id = '20000006-0000-0000-0000-000000000000'), 2,
   '(two days counted)');
+select pg_temp.keep('u6.st', pg_temp.st('20000006-0000-0000-0000-000000000000'));
 select pg_temp.keep('u6.h', pg_temp.hst('b6000000-0000-0000-0000-000000000001'));
-select pg_temp.undo('20000006-0000-0000-0000-000000000000', 'u6d1', 1, 715);
-select ok((select current_streak = 2 and last_streak_date = pg_temp.day(2) and longest_streak = 2
-           from public.profiles where id = '20000006-0000-0000-0000-000000000000'),
-  'undoing an earlier day doesn''t restore its stale before-state over a later day');
-select is(pg_temp.hst('b6000000-0000-0000-0000-000000000001'), pg_temp.kept('u6.h'),
-  'nor the per-habit streak');
-select is((select counted_for_streak from public.daily_progress
-           where user_id = '20000006-0000-0000-0000-000000000000' and local_date = pg_temp.day(1)), false,
-  'the emptied earlier day is no longer counted');
+select throws_ok($$select pg_temp.undo('20000006-0000-0000-0000-000000000000', 'u6d1', 1, 715)$$,
+  'QX108', 'A later day already counts on this one',
+  'emptying a day a later counted day was built on is refused');
+select is(pg_temp.st('20000006-0000-0000-0000-000000000000'), pg_temp.kept('u6.st'),
+  'and the profile is unchanged');
+select ok(pg_temp.hst('b6000000-0000-0000-0000-000000000001') = pg_temp.kept('u6.h')
+          and exists (select 1 from public.habit_completions where id = pg_temp.c('u6d1')),
+  'as are the habit streak and the completion');
 
 -- ── U7: the client wrapper uses the JWT and now() ───────────────────────────
 select pg_temp.as_user('20000007-0000-0000-0000-000000000000');
@@ -298,19 +343,244 @@ select throws_ok($$select public.undo_completion(gen_random_uuid())$$,
   '42501', null, 'service_role calling undo_completion is refused');
 select pg_temp.as_postgres();
 
+-- ── U8: complete → undo → complete can't farm points or milestones ─────────
+select pg_temp.done('u8d1', '20000008-0000-0000-0000-000000000000', 'b8000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('u8d2', '20000008-0000-0000-0000-000000000000', 'b8000000-0000-0000-0000-000000000001', 2);
+select pg_temp.keep('u8.pre3', pg_temp.st('20000008-0000-0000-0000-000000000000'));
+select pg_temp.done('u8d3', '20000008-0000-0000-0000-000000000000', 'b8000000-0000-0000-0000-000000000001', 3);
+select pg_temp.keep('u8.post3', pg_temp.st('20000008-0000-0000-0000-000000000000'));
+select pg_temp.keep('u8.hpost3', pg_temp.hst('b8000000-0000-0000-0000-000000000001'));
+create temp table u8first as select j from done_ids where n = 'u8d3';
+do $$
+begin
+  for i in 1..3 loop
+    perform pg_temp.undo('20000008-0000-0000-0000-000000000000', 'u8d3', 3, 2 * i - 1);
+    perform pg_temp.done('u8d3', '20000008-0000-0000-0000-000000000000',
+                         'b8000000-0000-0000-0000-000000000001', 3, 2 * i);
+  end loop;
+end $$;
+select is(pg_temp.st('20000008-0000-0000-0000-000000000000'), pg_temp.kept('u8.post3'),
+  'three undo/redo loops on a milestone day leave balance, lifetime and streak as one completion did');
+select is(pg_temp.hst('b8000000-0000-0000-0000-000000000001'), pg_temp.kept('u8.hpost3'),
+  'and the habit streak');
+select is((select (d.j ->> 'points_awarded')::int || '/' || (d.j ->> 'milestone') from done_ids d where d.n = 'u8d3'),
+          (select (f.j ->> 'points_awarded')::int || '/' || (f.j ->> 'milestone') from u8first f),
+  'a redo earns the same points and the same milestone as the first completion');
+select is((select count(*)::int from public.streak_milestones_awarded
+           where user_id = '20000008-0000-0000-0000-000000000000'), 1,
+  'one milestone row, not one per loop');
+select is((select count(*)::int from public.points_ledger
+           where user_id = '20000008-0000-0000-0000-000000000000' and reason = 'undo'), 6,
+  'each undo books one entry for the completion and one for the milestone');
+select ok(not exists (select 1 from public.points_ledger
+                      where user_id = '20000008-0000-0000-0000-000000000000'
+                      group by reason, ref_id having count(*) > 1),
+  'no (reason, ref) pair repeats across the loops');
+select set_config('qx.ref', (select ref_id::text from public.points_ledger
+                             where user_id = '20000008-0000-0000-0000-000000000000' and reason = 'undo'
+                             order by id limit 1), true);
+select throws_ok($$insert into public.points_ledger (user_id, delta, reason, ref_id)
+                   values ('20000008-0000-0000-0000-000000000000', -1, 'undo', current_setting('qx.ref')::uuid)$$,
+  '23505', null, 'a second undo entry for the same completion is refused by the ledger');
+select pg_temp.undo('20000008-0000-0000-0000-000000000000', 'u8d3', 3, 7);
+select is(pg_temp.st('20000008-0000-0000-0000-000000000000'), pg_temp.kept('u8.pre3'),
+  'a final undo restores the state before the milestone day exactly');
+
+-- ── U9: undo/redo on a freeze day can't gain freezes ────────────────────────
+select pg_temp.done('u9d1', '20000009-0000-0000-0000-000000000000', 'b9000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('u9d2', '20000009-0000-0000-0000-000000000000', 'b9000000-0000-0000-0000-000000000001', 2);
+select pg_temp.keep('u9.pre4', pg_temp.st('20000009-0000-0000-0000-000000000000'));
+select pg_temp.keep('u9.hpre4', pg_temp.hst('b9000000-0000-0000-0000-000000000001'));
+select pg_temp.done('u9d4', '20000009-0000-0000-0000-000000000000', 'b9000000-0000-0000-0000-000000000001', 4);
+select pg_temp.keep('u9.post4', pg_temp.st('20000009-0000-0000-0000-000000000000'));
+do $$
+begin
+  for i in 1..3 loop
+    perform pg_temp.undo('20000009-0000-0000-0000-000000000000', 'u9d4', 4, 2 * i - 1);
+    perform pg_temp.done('u9d4', '20000009-0000-0000-0000-000000000000',
+                         'b9000000-0000-0000-0000-000000000001', 4, 2 * i);
+  end loop;
+end $$;
+select ok((select streak_freezes = 0 and current_streak = 3 and longest_streak = 3 from public.profiles
+           where id = '20000009-0000-0000-0000-000000000000'),
+  'each redo spends the returned freeze again: no freeze or streak gain');
+select is(pg_temp.st('20000009-0000-0000-0000-000000000000'), pg_temp.kept('u9.post4'),
+  'the loops leave the state exactly as one completion did');
+select pg_temp.undo('20000009-0000-0000-0000-000000000000', 'u9d4', 4, 7);
+select is(pg_temp.st('20000009-0000-0000-0000-000000000000'), pg_temp.kept('u9.pre4'),
+  'a final undo gives back exactly one freeze');
+select is(pg_temp.hst('b9000000-0000-0000-0000-000000000001'), pg_temp.kept('u9.hpre4'),
+  'and the habit streak');
+
+-- ── V1: undoing a day that reset the streak ─────────────────────────────────
+select pg_temp.done('v1d1', '21000001-0000-0000-0000-000000000000', 'c1000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('v1d2', '21000001-0000-0000-0000-000000000000', 'c1000000-0000-0000-0000-000000000001', 2);
+select pg_temp.keep('v1.pre5', pg_temp.st('21000001-0000-0000-0000-000000000000'));
+select pg_temp.keep('v1.hpre5', pg_temp.hst('c1000000-0000-0000-0000-000000000001'));
+select pg_temp.done('v1d5', '21000001-0000-0000-0000-000000000000', 'c1000000-0000-0000-0000-000000000001', 5);
+select ok((select current_streak = 1 and longest_streak = 2 and streak_run_started = pg_temp.day(5)
+           from public.profiles where id = '21000001-0000-0000-0000-000000000000'),
+  '(day 5, after two missed days and no freeze, resets the streak)');
+create temp table rv1 as
+select pg_temp.undo('21000001-0000-0000-0000-000000000000', 'v1d5', 5, 1) as j;
+select is(pg_temp.st('21000001-0000-0000-0000-000000000000'), pg_temp.kept('v1.pre5'),
+  'undoing a reset day restores the old run (streak, last date, run start) exactly');
+select is(pg_temp.hst('c1000000-0000-0000-0000-000000000001'), pg_temp.kept('v1.hpre5'),
+  'and the old habit streak');
+select is((select (j ->> 'current_streak')::int from rv1), 2, 'the JSON reports the restored streak');
+select pg_temp.done('v1d5b', '21000001-0000-0000-0000-000000000000', 'c1000000-0000-0000-0000-000000000001', 5, 2);
+select ok((select current_streak = 1 and longest_streak = 2 and streak_run_started = pg_temp.day(5)
+           from public.profiles where id = '21000001-0000-0000-0000-000000000000'),
+  'redoing it resets the streak again');
+
+-- ── V2: target 3, a non-last occurrence undone over a prior habit streak ────
+select pg_temp.done('v2a' || i, '21000002-0000-0000-0000-000000000000', 'c2000000-0000-0000-0000-000000000003', 1, i)
+from generate_series(1, 3) as i;
+select pg_temp.keep('v2.post1', pg_temp.st('21000002-0000-0000-0000-000000000000'));
+select pg_temp.keep('v2.hpost1', pg_temp.hst('c2000000-0000-0000-0000-000000000003'));
+select pg_temp.done('v2b' || i, '21000002-0000-0000-0000-000000000000', 'c2000000-0000-0000-0000-000000000003', 2, i)
+from generate_series(1, 3) as i;
+select pg_temp.keep('v2.hpost2', pg_temp.hst('c2000000-0000-0000-0000-000000000003'));
+select is((select current from public.habit_streaks where habit_id = 'c2000000-0000-0000-0000-000000000003'), 2,
+  '(two days at target: habit streak 2)');
+create temp table rv2 as
+select pg_temp.undo('21000002-0000-0000-0000-000000000000', 'v2b1', 2, 4) as j;
+select is(pg_temp.hst('c2000000-0000-0000-0000-000000000003'), pg_temp.kept('v2.hpost1'),
+  'undoing occurrence 1 of 3 after the target restores the previous day''s habit streak exactly');
+select is((select (j ->> 'habit_streak')::int from rv2), 1, 'the JSON reports the restored habit streak');
+select ok((select current_streak = 2 and last_streak_date = pg_temp.day(2) from public.profiles
+           where id = '21000002-0000-0000-0000-000000000000'),
+  'the day still counts for the global streak');
+select is((pg_temp.done('v2b1b', '21000002-0000-0000-0000-000000000000', 'c2000000-0000-0000-0000-000000000003', 2, 5)
+           ->> 'habit_streak')::int, 2,
+  'reaching the target again advances the habit streak to 2, once');
+select is(pg_temp.hst('c2000000-0000-0000-0000-000000000003'), pg_temp.kept('v2.hpost2'),
+  '(exactly as before the undo)');
+select pg_temp.undo('21000002-0000-0000-0000-000000000000', 'v2b2', 2, 6);
+select is(pg_temp.hst('c2000000-0000-0000-0000-000000000003'), pg_temp.kept('v2.hpost1'),
+  'undoing the middle occurrence restores it too');
+select pg_temp.undo('21000002-0000-0000-0000-000000000000', 'v2b3', 2, 7);
+select is(pg_temp.hst('c2000000-0000-0000-0000-000000000003'), pg_temp.kept('v2.hpost1'),
+  'a further undo below the target leaves the restored state alone');
+select pg_temp.undo('21000002-0000-0000-0000-000000000000', 'v2b1b', 2, 8);
+select is(pg_temp.st('21000002-0000-0000-0000-000000000000'), pg_temp.kept('v2.post1'),
+  'emptying the day restores the profile to the previous day''s end state');
+
+-- ── V3: two habits on a milestone day ───────────────────────────────────────
+select pg_temp.done('v3d1', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('v3d2', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000001', 2);
+select pg_temp.keep('v3.pre3', pg_temp.st('21000003-0000-0000-0000-000000000000'));
+select is((pg_temp.done('v3a', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000001', 3)
+           ->> 'milestone')::int, 3,
+  '(the day''s first completion earns the 3-day milestone)');
+select pg_temp.done('v3b', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000002', 3, 1);
+create temp table rv3a as
+select pg_temp.undo('21000003-0000-0000-0000-000000000000', 'v3a', 3, 2) as j;
+select ok((select j -> 'milestones_revoked' = '[]'::jsonb and (j ->> 'milestone_points_removed')::int = 0
+                  and (j ->> 'current_streak')::int = 3
+           from rv3a)
+          and (select count(*) = 1 from public.streak_milestones_awarded
+               where user_id = '21000003-0000-0000-0000-000000000000'),
+  'undoing the milestone''s own completion keeps the milestone while another completion holds the day');
+create temp table rv3b as
+select pg_temp.undo('21000003-0000-0000-0000-000000000000', 'v3b', 3, 3) as j;
+select ok((select j -> 'milestones_revoked' = '[3]'::jsonb and (j ->> 'milestone_points_removed')::int = 25
+           from rv3b),
+  'undoing the last completion revokes it');
+select is(pg_temp.st('21000003-0000-0000-0000-000000000000'), pg_temp.kept('v3.pre3'),
+  'and restores the profile exactly');
+
+-- ── V4: a balance exactly covering points and milestone is enough ──────────
+select pg_temp.done('v4d1', '21000004-0000-0000-0000-000000000000', 'c4000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('v4d2', '21000004-0000-0000-0000-000000000000', 'c4000000-0000-0000-0000-000000000001', 2);
+select pg_temp.done('v4d3', '21000004-0000-0000-0000-000000000000', 'c4000000-0000-0000-0000-000000000001', 3);
+select pg_temp.spend('21000004-0000-0000-0000-000000000000',
+  pg_temp.balance('21000004-0000-0000-0000-000000000000')
+  - ((select j ->> 'points_awarded' from done_ids where n = 'v4d3')::int + 25));
+select is((pg_temp.undo('21000004-0000-0000-0000-000000000000', 'v4d3', 3, 1) ->> 'new_balance')::int, 0,
+  'a balance of exactly the points plus the milestone can be undone, to zero');
+
+-- ── V5: undoing D, then D+1, across midnight (M1) ───────────────────────────
+-- D3 at 23:50 earns the 3-day milestone, D4 at 00:01 counts. The time seam
+-- puts "now" back on D3 (a move west): undoing D3's completion is refused,
+-- because D4 was built on it. D4's own undo at 00:05 then restores D3's end.
+select pg_temp.done('v5d1', '21000005-0000-0000-0000-000000000000', 'c5000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('v5d2', '21000005-0000-0000-0000-000000000000', 'c5000000-0000-0000-0000-000000000001', 2);
+select pg_temp.done('v5d3', '21000005-0000-0000-0000-000000000000', 'c5000000-0000-0000-0000-000000000001', 3, 710);
+select pg_temp.keep('v5.pre4', pg_temp.st('21000005-0000-0000-0000-000000000000'));
+select pg_temp.keep('v5.hpre4', pg_temp.hst('c5000000-0000-0000-0000-000000000001'));
+select pg_temp.done('v5d4', '21000005-0000-0000-0000-000000000000', 'c5000000-0000-0000-0000-000000000001', 3, 721);
+select throws_ok($$select pg_temp.undo('21000005-0000-0000-0000-000000000000', 'v5d3', 3, 715)$$,
+  'QX108', null, 'undoing D after D+1 counted on it is refused (M1)');
+select pg_temp.undo('21000005-0000-0000-0000-000000000000', 'v5d4', 3, 725);
+select is(pg_temp.st('21000005-0000-0000-0000-000000000000'), pg_temp.kept('v5.pre4'),
+  'undoing D+1 restores D''s end state exactly, milestone included');
+select is(pg_temp.hst('c5000000-0000-0000-0000-000000000001'), pg_temp.kept('v5.hpre4'),
+  'and the habit streak');
+select ok(not exists (
+  select 1 from public.streak_milestones_awarded m
+  where m.user_id = '21000005-0000-0000-0000-000000000000'
+    and not exists (select 1 from public.habit_completions c
+                    where c.user_id = m.user_id and c.local_date = m.awarded_on)),
+  'no milestone survives on a day with no completion');
+select is((pg_temp.done('v5d4b', '21000005-0000-0000-0000-000000000000', 'c5000000-0000-0000-0000-000000000001', 3, 726)
+           ->> 'current_streak')::int, 4,
+  'redoing D+1 continues the streak from D, which still has its completion');
+
+-- ── V3 again: a per-habit streak a later day built on (QX108) ───────────────
+-- Day 10 at 23:50 completes both habits; day 11 at 00:01 completes "Read"
+-- again. Back on day 10, undoing day 10's "Read" doesn't empty the day, but
+-- it would drop "Read" below target under day 11's habit streak.
+select pg_temp.done('v3r10', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000002', 10, 710);
+select pg_temp.done('v3d10', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000001', 10, 711);
+select pg_temp.done('v3r11', '21000003-0000-0000-0000-000000000000', 'c3000000-0000-0000-0000-000000000002', 10, 721);
+select throws_ok($$select pg_temp.undo('21000003-0000-0000-0000-000000000000', 'v3r10', 10, 715)$$,
+  'QX108', 'A later day already counts on this one',
+  'dropping a day below target under a later day''s habit streak is refused');
+
+-- ── V6: a sibling completion's saved habit state, made stale by an undo ─────
+-- Target 2. D1 reaches it at 23:45; D2's first completion at 00:01 saves
+-- (1, 1, D1). Back on D1, an undo drops D1 below target and deletes the
+-- streak; D2 then reaches the target afresh, and D2's first completion is
+-- undone. Neither day reached the target, so no habit streak may remain.
+select pg_temp.done('v6a1', '21000006-0000-0000-0000-000000000000', 'c6000000-0000-0000-0000-000000000002', 1, 700);
+select pg_temp.done('v6a2', '21000006-0000-0000-0000-000000000000', 'c6000000-0000-0000-0000-000000000002', 1, 705);
+select pg_temp.done('v6b1', '21000006-0000-0000-0000-000000000000', 'c6000000-0000-0000-0000-000000000002', 1, 721);
+select pg_temp.undo('21000006-0000-0000-0000-000000000000', 'v6a2', 1, 715);
+select is(pg_temp.hst('c6000000-0000-0000-0000-000000000002'), 'none',
+  '(undoing D1 below its target deletes the habit streak)');
+select pg_temp.done('v6b2', '21000006-0000-0000-0000-000000000000', 'c6000000-0000-0000-0000-000000000002', 1, 722);
+select pg_temp.undo('21000006-0000-0000-0000-000000000000', 'v6b1', 1, 723);
+select is(pg_temp.hst('c6000000-0000-0000-0000-000000000002'), 'none',
+  'undoing D2''s first completion doesn''t restore a streak for a day that no longer reached its target');
+
 -- ── Invariants ──────────────────────────────────────────────────────────────
 select ok(bool_and(pg_temp.balance_ok(id)), 'every user''s balance and lifetime match the ledger')
-from public.profiles where id::text like '2000000%';
+from public.profiles where pg_temp.mine(id);
 select ok(not exists (
   select 1 from public.daily_progress d
-  where d.user_id::text like '2000000%'
+  where pg_temp.mine(d.user_id)
     and d.completed_count <> (select count(*) from public.habit_completions c
                               where c.user_id = d.user_id and c.local_date = d.local_date)),
   'every day''s completed_count matches its completions');
 select ok(not exists (
   select 1 from public.daily_progress d
-  where d.user_id::text like '2000000%' and d.counted_for_streak and d.completed_count = 0),
+  where pg_temp.mine(d.user_id) and d.counted_for_streak and d.completed_count = 0),
   'no empty day is still counted');
+select ok(not exists (
+  select 1 from public.profiles p
+  where pg_temp.mine(p.id) and p.last_streak_date is not null
+    and not exists (select 1 from public.habit_completions c
+                    where c.user_id = p.id and c.local_date = p.last_streak_date)),
+  'every streak ends on a day with a completion');
+select ok(not exists (
+  select 1 from public.habit_streaks hs
+  join public.daily_schedule_habits sh
+    on sh.user_id = hs.user_id and sh.habit_id = hs.habit_id and sh.local_date = hs.last_date
+  where pg_temp.mine(hs.user_id)
+    and (select count(*) from public.habit_completions c
+         where c.habit_id = hs.habit_id and c.local_date = hs.last_date) < sh.target_per_day),
+  'every habit streak ends on a day that reached its target');
 select lives_ok($$set constraints all immediate$$, 'deferred FKs hold');
 select * from finish();
 rollback;
