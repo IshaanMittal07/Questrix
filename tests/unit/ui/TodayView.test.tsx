@@ -737,4 +737,46 @@ describe("TodayView", () => {
       expect(undoCompletion).toHaveBeenCalledWith("c1");
     });
   });
+
+  describe("offline", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("says you're offline without calling the action", async () => {
+      vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+      const user = userEvent.setup();
+      renderView(day());
+      await user.click(
+        screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "You're offline",
+      );
+      expect(completeHabit).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+      expect(
+        await screen.findByRole("button", {
+          name: "Complete Read, 0 of 1 done",
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("turns a failed request into a message and reverts", async () => {
+      completeHabit.mockRejectedValue(new TypeError("Failed to fetch"));
+      const user = userEvent.setup();
+      renderView(day());
+      await user.click(
+        screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Couldn't reach the server. Try again.",
+      );
+      expect(
+        await screen.findByRole("button", {
+          name: "Complete Read, 0 of 1 done",
+        }),
+      ).toBeInTheDocument();
+    });
+  });
 });

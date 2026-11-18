@@ -1,12 +1,12 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * A coarse shared clock for undo deadlines. The server render (and
+ * A shared 1-second clock for undo deadlines. The server render (and
  * hydration) sees 0, so every undoable_until counts as still open there,
  * and the client corrects it right after. The server re-checks the window
  * anyway (QX104), so this only hides buttons that would be refused.
  */
-const TICK_MS = 5_000;
+const TICK_MS = 1_000;
 
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | null = null;
