@@ -2,7 +2,7 @@
 -- at_risk (D7) and the SQL side of the level parity test.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(78);
+select plan(79);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -532,6 +532,20 @@ select throws_ok($$select public.undo_completion_at('30000007-0000-0000-0000-000
                    (select id from public.habit_completions where user_id = '30000007-0000-0000-0000-000000000000'
                     and local_date = pg_temp.day(5)), pg_temp.t(5, 721))$$,
   'QX105', null, '(and undo indeed refuses it a minute after midnight)');
+
+-- Atlantic/Azores, 2026-10-25: clocks go back from 01:00 to 00:00, so
+-- midnight happens twice. The date changes at the first (00:00Z).
+insert into auth.users (id, email) values ('32000001-0000-0000-0000-000000000000', 'azores@example.com');
+insert into public.habits (id, user_id, title, category, created_at) values
+  ('e9000000-0000-0000-0000-000000000001', '32000001-0000-0000-0000-000000000000', 'Daily', 'mind', '2026-10-01 12:00+00');
+update public.profiles set timezone = 'Atlantic/Azores' where id = '32000001-0000-0000-0000-000000000000';
+update public.profiles set onboarded_at = '2026-10-01 12:00+00' where id = '32000001-0000-0000-0000-000000000000';
+select public.complete_habit_at('32000001-0000-0000-0000-000000000000', 'e9000000-0000-0000-0000-000000000001',
+                                '2026-10-24 23:55+00');
+select is((public.get_today_at('32000001-0000-0000-0000-000000000000', '2026-10-24 23:56+00')
+           -> 'habits' -> 0 -> 'completions' -> 0 ->> 'undoable_until')::timestamptz,
+  '2026-10-25 00:00+00'::timestamptz,
+  'where midnight happens twice, the undo deadline is the first one, when the date changes');
 
 -- ── The client wrapper ──────────────────────────────────────────────────────
 select pg_temp.as_user('30000007-0000-0000-0000-000000000000');

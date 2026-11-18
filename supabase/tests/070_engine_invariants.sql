@@ -2,7 +2,7 @@
 -- complete / undo / spend / time steps, checked after every step (plan §10).
 --
 -- The seed fixes every choice (candidate rows are ordered before a random
--- pick, so the heap order can't shift it); the calendar dates move with now(), so the
+-- pick on unique, seed-determined columns, so the heap order can't shift it); the calendar dates move with now(), so the
 -- weekday-scheduled habit lands on different days from run to run. That's
 -- deliberate: the invariants must hold for any schedule.
 --
@@ -209,7 +209,7 @@ begin
       select x.id into v_completion from (
         select c.id from public.habit_completions c
         where c.user_id = v_uid and c.completed_at >= v_now - interval '20 minutes'
-        order by c.completed_at, c.id) x
+        order by c.completed_at, c.habit_id, c.local_date, c.occurrence) x
       order by random() limit 1;
       if found then
         begin
