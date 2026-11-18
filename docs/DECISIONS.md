@@ -331,20 +331,34 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     3. Habit `for share` (D5).
     4. Read the snapshot entry; this is the "scheduled today" check, and it supplies the difficulty and target.
     5. Take the lowest free occurrence.
-    6. Run the streak rules, then compute points, then write the completion, the ledger, `daily_progress`, the habit streak, any milestone and the profile.
+    6. Run the streak rules (recording the day's before-state), then compute points, then write the completion, the habit streak, the ledger, `daily_progress`, any milestone and the profile.
+  - **Accepted deadlock window.** A completion's first snapshot of a day can be uncommitted when a concurrent edit of the same habit takes its row lock; each then waits on the other. Postgres aborts one, and the actions show "Try again" (`40P01`). Taking the habit row first would reintroduce the multi-row cycle (D5). It needs the day's first engine call and an edit of that habit at the same moment.
   - **Streak rules (plan §6.2).**
     - The streak changes on the day's first completion, tracked by `daily_progress.counted_for_streak`, so an undo that empties the day lets the next completion count again.
-    - Rule 0 also covers `D = last_streak_date`.
+    - Rules 0 and 1 share one branch: a day on or before `last_streak_date` changes nothing.
+    - A gap longer than `streak_lookback_days` breaks the streak even if every day in it was a rest day (for example, every habit archived for a holiday). Tests pin this. Changing it means changing the gap check before `streak_missed_days`, and the matching per-habit check.
     - A gap longer than `streak_lookback_days` breaks the streak without spending freezes.
     - A missing snapshot row is a missed day (D2), through `streak_missed_days`.
   - **Points.** The multiplier is rounded to 2 dp before `floor(base × multiplier)`, so the stored value reproduces the award (formula CHECK).
   - **Per-habit streak.**
     - It advances when the day's count first reaches the snapshotted target. A day in the habit's snapshot without that, or a missing day, is a miss (`habit_missed_days`). Days the habit wasn't scheduled are skipped.
     - Every completion of the day stores the same pre-day state, so undoing any of them restores it exactly.
-  - **Milestones** are awarded when the streak changes to a configured value. `on conflict do nothing` keeps them once per run, and the ledger `ref_id` is the milestone's id.
+    - **Deviation from plan §6.2:** like the global streak, a per-habit gap longer than the lookback resets the habit's streak, even if the habit wasn't scheduled in between (for example, archived for over a week). Fail closed.
+  - **Milestones** are awarded when the streak is set this call (first ever, increment, freeze or reset) to a configured value. Rules 0 and 1 never award. `on conflict do nothing` keeps them once per run, and the ledger `ref_id` is the milestone's id.
   - **`level_for(lifetime)`** is the SQL twin of `lib/points/levels.ts`. Clients can call it; #70 adds the parity test.
   - **Two-session checks, run against the local stack.** All three passed, with no deadlock.
     1. Two simultaneous completions of a target-2 habit got occurrences 1 and 2, and the balance equalled the ledger.
     2. `complete_habit` against a habit edit at the day's first call: the award used the pre-edit (snapshotted) difficulty.
     3. `complete_habit` against `reorder_habits`.
   - **#28** is closed by the end-to-end flip test: complete at UTC-12, switch to UTC+14, complete "tomorrow". The streak stays at 1.
+  - **Review fixes (round 1).**
+    - The function-wide `unique_violation` handler is gone. The occurrence insert uses `on conflict on constraint habit_completions_occurrence_unique do nothing` and raises `QX103`, so other unique errors surface.
+    - The milestone check uses an explicit "streak set" flag.
+    - `streak_missed_days` and `habit_missed_days` are SECURITY INVOKER.
+    - A missing run date is defended with `coalesce`.
+    - A missing profile says "Profile not found".
+  - **Requirements for `undo_completion` (#69), from the security audit (M1).**
+    - Restore the profile's streak state only when the completion's day is the profile's `last_streak_date` and it's the last remaining completion of that day. Earlier days' before-states are stale once a later day has counted: undoing D then D+1 across midnight would otherwise leave a streak with no completion on D.
+    - The same rule applies to `habit_streaks` (`local_date = last_date`).
+    - A null `habit_current_before` means no streak row existed before, so delete the row.
+    - Emptying a day sets `counted_for_streak = false`, so the next completion records the restored state. A test pins this overwrite path.
