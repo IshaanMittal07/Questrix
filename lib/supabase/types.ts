@@ -779,6 +779,11 @@ export type Database = {
         Returns: number;
       };
       unarchive_habit: { Args: { p_habit_id: string }; Returns: undefined };
+      undo_completion: { Args: { p_completion_id: string }; Returns: Json };
+      undo_completion_at: {
+        Args: { p_completion_id: string; p_now: string; p_uid: string };
+        Returns: Json;
+      };
       username_available: { Args: { p_username: string }; Returns: boolean };
     };
     Enums: {
