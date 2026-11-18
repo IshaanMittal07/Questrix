@@ -336,7 +336,8 @@ begin
               hint = 'Try again on or after '
                 || to_char(date_trunc('minute',
                              (old.timezone_changed_at + make_interval(days => v_cooldown)
-                              + interval '59 seconds') at time zone old.timezone),
+                              + interval '1 minute' - interval '1 microsecond')
+                             at time zone old.timezone),
                            'YYYY-MM-DD HH24:MI')
                 || ' (' || old.timezone || ').';
     end if;

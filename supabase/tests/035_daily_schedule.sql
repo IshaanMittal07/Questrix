@@ -1,7 +1,7 @@
 -- Phase 4 (#67): daily schedule snapshots and the timezone-change limit.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(110);
+select plan(111);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -638,7 +638,7 @@ select pg_temp.as_postgres();
 
 -- The cooldown hint is in the user's timezone, with a time.
 -- Dave is in Asia/Tokyo (UTC+9) from an earlier test.
-update public.profiles set timezone_changed_at = now() - interval '1 day'
+update public.profiles set timezone_changed_at = date_trunc('minute', now()) - interval '1 day' + interval '30.5 seconds'
   where id = '44444444-4444-4444-4444-444444444444';
 select pg_temp.as_user('44444444-4444-4444-4444-444444444444');
 select throws_like($$update public.profiles set timezone = 'Europe/Berlin'
@@ -660,8 +660,9 @@ begin
   return v;
 end $f$;
 select is(pg_temp.tz_hint(),
+  -- Changed at hh:mm:30.5, so allowed from the next whole minute.
   'Try again on or after '
-    || to_char(date_trunc('minute', (now() + interval '6 days' + interval '59 seconds') at time zone 'Asia/Tokyo'),
+    || to_char((date_trunc('minute', now()) + interval '6 days' + interval '1 minute') at time zone 'Asia/Tokyo',
                'YYYY-MM-DD HH24:MI') || ' (Asia/Tokyo).',
   'the hint shows the local time (Tokyo, UTC+9) when the change is allowed');
 
@@ -689,8 +690,10 @@ insert into public.habits (id, user_id, title, category, days_of_week, created_a
    '{0,1,2,3,4,5,6}', now() - interval '5 days'),
   ('c5c5c5c5-0000-0000-0000-00000000000c', 'd5d5d5d5-0000-0000-0000-000000000005', 'C', 'mind',
    array[extract(dow from public.local_date_in('Etc/GMT+12', now()) - 2)::smallint], now() - interval '5 days');
+-- The profile counted yesterday; B (scheduled today) is pending, so the
+-- global rule doesn't fire.
 update public.profiles set onboarded_at = now() - interval '5 days', timezone = 'Etc/GMT+12',
-                           last_streak_date = public.local_date_in('Etc/GMT+12', now())
+                           last_streak_date = public.local_date_in('Etc/GMT+12', now()) - 1
   where id = 'd5d5d5d5-0000-0000-0000-000000000005';
 insert into public.habit_streaks (habit_id, user_id, current, longest, last_date) values
   ('c5c5c5c5-0000-0000-0000-00000000000a', 'd5d5d5d5-0000-0000-0000-000000000005', 2, 2,
@@ -703,6 +706,8 @@ select pg_temp.as_user('d5d5d5d5-0000-0000-0000-000000000005');
 update public.profiles set timezone = 'Pacific/Kiritimati'
   where id = 'd5d5d5d5-0000-0000-0000-000000000005';
 select pg_temp.as_postgres();
+select is((select last_streak_date from public.profiles where id = 'd5d5d5d5-0000-0000-0000-000000000005'),
+  public.local_date_in('Etc/GMT+12', now()) - 1, '(the global rule didn''t fire: a habit was pending)');
 select is((select last_date from public.habit_streaks where habit_id = 'c5c5c5c5-0000-0000-0000-00000000000a'),
   public.local_date_in('Pacific/Kiritimati', now()), 'a habit counted today moves east');
 select is((select last_date from public.habit_streaks where habit_id = 'c5c5c5c5-0000-0000-0000-00000000000b'),
