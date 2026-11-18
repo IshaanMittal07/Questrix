@@ -214,11 +214,17 @@ export function TodayView({
   useEffect(() => {
     let last = -Infinity;
     const check = () => {
+      // A hidden tab catches up on visibilitychange instead.
+      if (document.visibilityState !== "visible") return;
       const n = localNow(timezone);
       if (!n) return;
+      // Only when the device is ahead of the snapshot. YYYY-MM-DD sorts as a
+      // date; a device clock that runs slow must not refresh every minute.
       const behind =
-        n.date !== shownDate ||
-        (shownHour < AT_RISK_HOUR && n.hour >= AT_RISK_HOUR);
+        n.date > shownDate ||
+        (n.date === shownDate &&
+          shownHour < AT_RISK_HOUR &&
+          n.hour >= AT_RISK_HOUR);
       if (behind && Date.now() - last >= REFRESH_EVERY_MS) {
         last = Date.now();
         router.refresh();
