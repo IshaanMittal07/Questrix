@@ -43,6 +43,7 @@ export type Database = {
           longest_streak_before: number | null;
           streak_before: number | null;
           streak_freezes_before: number | null;
+          streak_freezes_used: number;
           streak_run_started_before: string | null;
           user_id: string;
         };
@@ -55,6 +56,7 @@ export type Database = {
           longest_streak_before?: number | null;
           streak_before?: number | null;
           streak_freezes_before?: number | null;
+          streak_freezes_used?: number;
           streak_run_started_before?: string | null;
           user_id: string;
         };
@@ -66,6 +68,7 @@ export type Database = {
           longest_streak_before?: number | null;
           streak_before?: number | null;
           streak_freezes_before?: number | null;
+          streak_freezes_used?: number;
           streak_run_started_before?: string | null;
           user_id?: string;
         };
