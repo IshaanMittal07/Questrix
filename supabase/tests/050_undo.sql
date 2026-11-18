@@ -2,7 +2,7 @@
 -- window, the previous-day and spent-balance guards, milestone revocation.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(103);
+select plan(112);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -72,9 +72,15 @@ create function pg_temp.balance_ok(p_uid uuid) returns boolean language sql as $
 -- U8 a milestone farming loop · U9 a freeze farming loop ·
 -- V1 a reset day · V2 a non-last occurrence with a prior habit streak ·
 -- V3 two habits on a milestone day · V4 the exact balance ·
--- V5 undoing D then D+1 across midnight (M1) · V6 a stale sibling habit state.
+-- V5 undoing D then D+1 across midnight (M1) · V6 a stale sibling habit state ·
+-- W1/W2 over-strict QX108 pins · W3 a relived day between two D+1
+-- completions (audit L1) · W4 a freeze gained after the count.
+--
+-- A move west is simulated with the time seam: "now" runs backwards to the
+-- previous local day. profiles.timezone never changes (its trigger uses
+-- now()), but the engine sees exactly what a relived day looks like.
 create function pg_temp.mine(p_uid uuid) returns boolean language sql as $$
-  select left(p_uid::text, 7) in ('2000000', '2100000') $$;
+  select left(p_uid::text, 7) in ('2000000', '2100000', '2200000') $$;
 insert into auth.users (id, email)
 select ('2000000' || g || '-0000-0000-0000-000000000000')::uuid, 'undo' || g || '@example.com'
 from generate_series(1, 9) as g
@@ -103,7 +109,17 @@ insert into public.habits (id, user_id, title, category, difficulty, days_of_wee
   -- V6: target 2.
   ('c6000000-0000-0000-0000-000000000002', '21000006-0000-0000-0000-000000000000',
    'Stretch', 'fitness', 'easy', '{0,1,2,3,4,5,6}', 2, now() - interval '30 days');
+insert into auth.users (id, email)
+select ('2200000' || g || '-0000-0000-0000-000000000000')::uuid, 'undow' || g || '@example.com'
+from generate_series(1, 4) as g;
+insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at) values
+  ('d1000000-0000-0000-0000-000000000001', '22000001-0000-0000-0000-000000000000', 'A', 'mind', 'medium', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'),
+  ('d2000000-0000-0000-0000-000000000001', '22000002-0000-0000-0000-000000000000', 'A', 'mind', 'medium', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'),
+  ('d2000000-0000-0000-0000-000000000002', '22000002-0000-0000-0000-000000000000', 'B', 'mind', 'medium', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'),
+  ('d3000000-0000-0000-0000-000000000002', '22000003-0000-0000-0000-000000000000', 'H', 'mind', 'medium', '{0,1,2,3,4,5,6}', 2, now() - interval '30 days'),
+  ('d4000000-0000-0000-0000-000000000001', '22000004-0000-0000-0000-000000000000', 'A', 'mind', 'medium', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days');
 update public.profiles set onboarded_at = now() - interval '30 days' where pg_temp.mine(id);
+update public.profiles set streak_freezes = 1 where id = '22000004-0000-0000-0000-000000000000';
 update public.profiles set streak_freezes = 1
  where id in ('20000003-0000-0000-0000-000000000000', '20000009-0000-0000-0000-000000000000');
 
@@ -214,6 +230,8 @@ select throws_ok($$select pg_temp.undo('20000004-0000-0000-0000-000000000000', '
 select pg_temp.done('u4b', '20000004-0000-0000-0000-000000000000', 'b4000000-0000-0000-0000-000000000001', 2, 715);
 select throws_ok($$select pg_temp.undo('20000004-0000-0000-0000-000000000000', 'u4b', 2, 725)$$,
   'QX105', 'You can only undo today''s completions', 'a previous day''s completion is refused, even inside the window');
+select throws_ok($$select pg_temp.undo('20000004-0000-0000-0000-000000000000', 'u4b', 2, 760)$$,
+  'QX105', null, 'the day is checked before the window (QX105 before QX104)');
 select throws_ok($$select pg_temp.undo('20000005-0000-0000-0000-000000000000', 'u4b', 2, 716)$$,
   'P0002', 'Completion not found', 'another user''s completion is "not found"');
 select throws_ok($$select public.undo_completion_at('20000004-0000-0000-0000-000000000000', gen_random_uuid(), pg_temp.t(2, 716))$$,
@@ -322,6 +340,9 @@ select is(pg_temp.st('20000006-0000-0000-0000-000000000000'), pg_temp.kept('u6.s
 select ok(pg_temp.hst('b6000000-0000-0000-0000-000000000001') = pg_temp.kept('u6.h')
           and exists (select 1 from public.habit_completions where id = pg_temp.c('u6d1')),
   'as are the habit streak and the completion');
+select pg_temp.spend('20000006-0000-0000-0000-000000000000', pg_temp.balance('20000006-0000-0000-0000-000000000000'));
+select throws_ok($$select pg_temp.undo('20000006-0000-0000-0000-000000000000', 'u6d1', 1, 716)$$,
+  'QX108', null, 'QX108 is checked before the balance (QX106)');
 
 -- ── U7: the client wrapper uses the JWT and now() ───────────────────────────
 select pg_temp.as_user('20000007-0000-0000-0000-000000000000');
@@ -554,6 +575,60 @@ select pg_temp.undo('21000006-0000-0000-0000-000000000000', 'v6b1', 1, 723);
 select is(pg_temp.hst('c6000000-0000-0000-0000-000000000002'), 'none',
   'undoing D2''s first completion doesn''t restore a streak for a day that no longer reached its target');
 
+-- ── W1: the accepted over-strict case, profile (rule 0) ─────────────────────
+-- Day 2 counts at 00:01; back on day 1, a completion counts under rule 0
+-- (it changes nothing). Emptying day 1 would be harmless, but it isn't the
+-- latest counted day, so it's refused. Pinned so a change is deliberate.
+select pg_temp.done('w1d2', '22000001-0000-0000-0000-000000000000', 'd1000000-0000-0000-0000-000000000001', 1, 721);
+select pg_temp.done('w1d1', '22000001-0000-0000-0000-000000000000', 'd1000000-0000-0000-0000-000000000001', 1, 716);
+select throws_ok($$select pg_temp.undo('22000001-0000-0000-0000-000000000000', 'w1d1', 1, 718)$$,
+  'QX108', null, 'emptying a rule-0 day under a later counted day is refused (accepted over-strictness)');
+
+-- ── W2: the accepted over-strict case, per habit ────────────────────────────
+-- A reaches its target on day 2; back on day 1, B and then A are completed
+-- (A reaches its target without advancing). Undoing day 1's A leaves the
+-- day counted (B), but A's streak already ends on day 2: refused.
+select pg_temp.done('w2a2', '22000002-0000-0000-0000-000000000000', 'd2000000-0000-0000-0000-000000000001', 1, 721);
+select pg_temp.done('w2b1', '22000002-0000-0000-0000-000000000000', 'd2000000-0000-0000-0000-000000000002', 1, 716);
+select pg_temp.done('w2a1', '22000002-0000-0000-0000-000000000000', 'd2000000-0000-0000-0000-000000000001', 1, 717);
+select throws_ok($$select pg_temp.undo('22000002-0000-0000-0000-000000000000', 'w2a1', 1, 718)$$,
+  'QX108', null, 'dropping a day below target under a later habit streak is refused, even with no advance');
+
+-- ── W3: a relived day between two completions of D+1 (audit L1) ─────────────
+-- H (target 2) reaches its target on day -1; day 0 is missed. Day 2 00:50:
+-- one of two. Back on day 1 (a move west), two more: day 1 resets H's
+-- streak to 1. Day 2 00:00: the second of day 2 advances it to 2. Undoing
+-- day 2's first must restore the streak as day 1 left it, not the state
+-- that first completion saw before day 1 counted.
+select pg_temp.done('w3a', '22000003-0000-0000-0000-000000000000', 'd3000000-0000-0000-0000-000000000002', -1);
+select pg_temp.done('w3b', '22000003-0000-0000-0000-000000000000', 'd3000000-0000-0000-0000-000000000002', -1, 1);
+select pg_temp.done('w3x1', '22000003-0000-0000-0000-000000000000', 'd3000000-0000-0000-0000-000000000002', 1, 770);
+select pg_temp.done('w3c', '22000003-0000-0000-0000-000000000000', 'd3000000-0000-0000-0000-000000000002', 1, 710);
+select pg_temp.done('w3d', '22000003-0000-0000-0000-000000000000', 'd3000000-0000-0000-0000-000000000002', 1, 711);
+select pg_temp.keep('w3.h', pg_temp.hst('d3000000-0000-0000-0000-000000000002'));
+select pg_temp.done('w3x2', '22000003-0000-0000-0000-000000000000', 'd3000000-0000-0000-0000-000000000002', 1, 720);
+select pg_temp.undo('22000003-0000-0000-0000-000000000000', 'w3x1', 1, 722);
+select is(pg_temp.hst('d3000000-0000-0000-0000-000000000002'), pg_temp.kept('w3.h'),
+  'undo restores the habit streak as the relived day left it, not a stale earlier state');
+
+-- ── W4: a freeze gained after the count survives the undo ───────────────────
+select pg_temp.done('w4d1', '22000004-0000-0000-0000-000000000000', 'd4000000-0000-0000-0000-000000000001', 1);
+select pg_temp.done('w4d2', '22000004-0000-0000-0000-000000000000', 'd4000000-0000-0000-0000-000000000001', 2);
+select pg_temp.done('w4d4', '22000004-0000-0000-0000-000000000000', 'd4000000-0000-0000-0000-000000000001', 4);
+select is((select streak_freezes_used::int from public.daily_progress
+           where user_id = '22000004-0000-0000-0000-000000000000' and local_date = pg_temp.day(4)), 1,
+  'the day records the freeze it spent');
+-- Stands in for a Phase 6 freeze purchase between the count and the undo.
+update public.profiles set streak_freezes = 1 where id = '22000004-0000-0000-0000-000000000000';
+select pg_temp.undo('22000004-0000-0000-0000-000000000000', 'w4d4', 4, 1);
+select is((select streak_freezes from public.profiles where id = '22000004-0000-0000-0000-000000000000'), 2,
+  'undo gives the spent freeze back on top of the one gained since');
+
+-- ── Lifetime points can't go negative ───────────────────────────────────────
+select col_has_check('public', 'profiles', 'lifetime_points', 'lifetime_points has a CHECK');
+select throws_ok($$update public.profiles set lifetime_points = -1 where id = '22000004-0000-0000-0000-000000000000'$$,
+  '23514', null, 'a negative lifetime is refused');
+
 -- ── Invariants ──────────────────────────────────────────────────────────────
 select ok(bool_and(pg_temp.balance_ok(id)), 'every user''s balance and lifetime match the ledger')
 from public.profiles where pg_temp.mine(id);
@@ -567,6 +642,8 @@ select ok(not exists (
   select 1 from public.daily_progress d
   where pg_temp.mine(d.user_id) and d.counted_for_streak and d.completed_count = 0),
   'no empty day is still counted');
+-- (Moving east legitimately ends a streak on a new today with no completion,
+-- #28; these users never move east.)
 select ok(not exists (
   select 1 from public.profiles p
   where pg_temp.mine(p.id) and p.last_streak_date is not null
@@ -575,11 +652,12 @@ select ok(not exists (
   'every streak ends on a day with a completion');
 select ok(not exists (
   select 1 from public.habit_streaks hs
-  join public.daily_schedule_habits sh
+  left join public.daily_schedule_habits sh
     on sh.user_id = hs.user_id and sh.habit_id = hs.habit_id and sh.local_date = hs.last_date
   where pg_temp.mine(hs.user_id)
-    and (select count(*) from public.habit_completions c
-         where c.habit_id = hs.habit_id and c.local_date = hs.last_date) < sh.target_per_day),
+    and (sh.habit_id is null
+         or (select count(*) from public.habit_completions c
+             where c.habit_id = hs.habit_id and c.local_date = hs.last_date) < sh.target_per_day)),
   'every habit streak ends on a day that reached its target');
 select lives_ok($$set constraints all immediate$$, 'deferred FKs hold');
 select * from finish();
