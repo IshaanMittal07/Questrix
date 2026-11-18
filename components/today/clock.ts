@@ -7,12 +7,17 @@ import { useMemo, useSyncExternalStore } from "react";
  * open there, and the client corrects it right after. The server re-checks
  * the window anyway (QX104).
  */
+// The last time read in subscribe or a timeout. New stores (after every
+// tap) start from it, so only true hydration sees 0 and expired Undo
+// buttons don't flash for a frame.
+let lastNow = 0;
+
 export function useDeadlineClock(deadlines: string[]) {
   const key = deadlines.join(",");
   const store = useMemo(() => {
     const times = key ? key.split(",").map(Date.parse) : [];
-    // 0 until subscribed (as on the server), so render stays pure.
-    let current = 0;
+    // No Date.now() during render: start from the last known time.
+    let current = lastNow;
     return {
       getSnapshot: () => current,
       subscribe(onChange: () => void) {
@@ -23,7 +28,7 @@ export function useDeadlineClock(deadlines: string[]) {
           if (!Number.isFinite(next)) return;
           timer = setTimeout(
             () => {
-              current = Date.now();
+              current = lastNow = Date.now();
               onChange();
               arm();
             },
@@ -32,7 +37,7 @@ export function useDeadlineClock(deadlines: string[]) {
         };
         // Catch up on time that passed before subscribing (hydration); React
         // re-reads the snapshot after subscribing.
-        current = Date.now();
+        current = lastNow = Date.now();
         arm();
         return () => clearTimeout(timer);
       },

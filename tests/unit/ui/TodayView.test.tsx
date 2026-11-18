@@ -553,6 +553,38 @@ describe("TodayView", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("doesn't refresh when the device clock is behind the snapshot", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-18T23:58:00Z"));
+    renderView(
+      day({ local_date: "2026-11-19", local_hour: 0, timezone: "UTC" }),
+    );
+    await act(async () => vi.advanceTimersByTime(60_000));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("doesn't refresh while the page is hidden", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-19T08:00:00Z"));
+    const vis = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    renderView(
+      day({ local_date: "2026-11-18", local_hour: 23, timezone: "UTC" }),
+    );
+    await act(async () => vi.advanceTimersByTime(120_000));
+    expect(refresh).not.toHaveBeenCalled();
+    vis.mockReturnValue("visible");
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    vis.mockRestore();
+  });
+
   it("refreshes at 18:00 so the at-risk banner can appear", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-11-18T17:59:30Z"));
