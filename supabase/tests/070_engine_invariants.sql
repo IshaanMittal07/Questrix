@@ -1,7 +1,8 @@
 -- Phase 4 (#70): engine invariants under a randomized (seeded) sequence of
 -- complete / undo / spend / time steps, checked after every step (plan §10).
 --
--- The seed fixes every choice; the calendar dates move with now(), so the
+-- The seed fixes every choice (candidate rows are ordered before a random
+-- pick, so the heap order can't shift it); the calendar dates move with now(), so the
 -- weekday-scheduled habit lands on different days from run to run. That's
 -- deliberate: the invariants must hold for any schedule.
 --
@@ -68,6 +69,8 @@ create function pg_temp.violations() returns text[] language sql as $$
         on sh.user_id = c.user_id and sh.local_date = c.local_date and sh.habit_id = c.habit_id
       where pg_temp.mine(c.user_id) and c.occurrence not between 1 and sh.target_per_day)
     union all
+    -- Moving east (#28) legitimately ends a streak on a new today with no
+    -- completion; this walk never changes timezone. Exempt it if one does.
     select 'every streak ends on a day with a completion' where exists (
       select 1 from public.profiles p where pg_temp.mine(p.id) and p.last_streak_date is not null
         and not exists (select 1 from public.habit_completions c
@@ -129,7 +132,9 @@ create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_la
          <> case when p_last >= (p_c ->> 'local_date')::date then 0 else 1 end then 'current_streak'
     when (p_gt ->> 'freezes_needed')::int <> p_fb - p_fa or (p_gt ->> 'streak_freezes')::int <> p_fb
       then 'freezes_needed'
-    when (p_c ->> 'occurrence') = (p_c ->> 'target')
+    -- This completion reaches the target (occurrences are reused after an
+    -- undo, so the count decides, not the occurrence number).
+    when (p_listed ->> 'done')::int + 1 = (p_listed ->> 'target')::int
          and (p_c ->> 'habit_streak')::int - (p_listed ->> 'habit_streak')::int
              <> case when p_hlast >= (p_c ->> 'local_date')::date then 0 else 1 end then 'habit_streak'
   end $$;
@@ -201,8 +206,10 @@ begin
         end;
       end if;
     elsif r < 0.75 then
-      select c.id into v_completion from public.habit_completions c
-      where c.user_id = v_uid and c.completed_at >= v_now - interval '20 minutes'
+      select x.id into v_completion from (
+        select c.id from public.habit_completions c
+        where c.user_id = v_uid and c.completed_at >= v_now - interval '20 minutes'
+        order by c.completed_at, c.id) x
       order by random() limit 1;
       if found then
         begin
@@ -278,14 +285,20 @@ select ok(not (pg_temp.violations() && array['balance = ledger', 'streak state i
 -- The parity checker flags a get_today that overstates (or fails to add) a day.
 select ok(pg_temp.disagreement(
             '{"local_date": "2026-01-02", "current_streak": 3, "freezes_needed": 0, "streak_freezes": 0}',
-            '{"target": 1, "habit_streak": 0}',
+            '{"target": 1, "done": 0, "habit_streak": 0}',
             '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 3, "habit_streak": 1}',
             '2026-01-01', null, 0, 0) = 'current_streak'
           and pg_temp.disagreement(
             '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 0, "streak_freezes": 0}',
-            '{"target": 1, "habit_streak": 0}',
+            '{"target": 1, "done": 0, "habit_streak": 0}',
             '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 3, "habit_streak": 1}',
-            '2026-01-01', null, 0, 0) is null,
+            '2026-01-01', null, 0, 0) is null
+          -- A reused occurrence 1 that reaches a target of 2 is still checked.
+          and pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 0, "streak_freezes": 0}',
+            '{"target": 2, "done": 1, "habit_streak": 0}',
+            '{"local_date": "2026-01-02", "target": 2, "occurrence": 1, "current_streak": 3, "habit_streak": 5}',
+            '2026-01-01', null, 0, 0) = 'habit_streak',
   'the parity checker flags a wrong streak and passes a right one');
 
 select diag('stats: ' || (select string_agg(k || '=' || n, ', ' order by k) from stats));

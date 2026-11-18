@@ -11,7 +11,8 @@
 -- same rules (lookback, missed days, freezes) as complete_habit_at.
 --
 -- Error codes (D9): 28000 not signed in · P0002 profile not found ·
--- QX107 onboarding not finished.
+-- QX107 onboarding not finished. (P0002 also means a missing economy_config
+-- key: a server bug, never a client case.)
 
 /** Today for p_uid as of p_now. Internal: the time seam for tests (D6). */
 create function public.get_today_at(p_uid uuid, p_now timestamptz)
@@ -37,7 +38,11 @@ begin
   if p_uid is null then
     raise exception 'Not signed in' using errcode = '28000';
   end if;
-  select * into p from public.profiles where id = p_uid;
+  -- FOR SHARE: the response reads one consistent state (no engine call or
+  -- timezone change commits mid-way). It conflicts only with the engine's
+  -- FOR NO KEY UPDATE and profile updates, keeps profile-first order (D5),
+  -- and allows the FOR KEY SHARE that ensure_daily_schedule's inserts take.
+  select * into p from public.profiles where id = p_uid for share;
   if not found then
     raise exception 'Profile not found' using errcode = 'P0002';
   end if;
@@ -97,7 +102,7 @@ begin
       ) as habit
     from public.daily_schedule_habits sh
     join public.habits h on h.id = sh.habit_id and h.user_id = p_uid
-    left join public.habit_streaks hs on hs.habit_id = h.id
+    left join public.habit_streaks hs on hs.habit_id = h.id and hs.user_id = p_uid
     left join lateral (
       select count(*)::int as n,
              jsonb_agg(jsonb_build_object(
@@ -105,10 +110,13 @@ begin
                'occurrence', c.occurrence,
                'points_awarded', c.points_awarded,
                'completed_at', c.completed_at,
-               'undoable_until', c.completed_at + make_interval(mins => v_window)
+               -- Undo only works on today's completions (QX105), so the
+               -- deadline stops at the end of the local day.
+               'undoable_until', least(c.completed_at + make_interval(mins => v_window),
+                                       (v_today + 1)::timestamp at time zone p.timezone)
              ) order by c.occurrence) as items
       from public.habit_completions c
-      where c.habit_id = h.id and c.local_date = v_today
+      where c.habit_id = h.id and c.user_id = p_uid and c.local_date = v_today
     ) cc on true
     where sh.user_id = p_uid and sh.local_date = v_today and h.archived_at is null
   ) x;

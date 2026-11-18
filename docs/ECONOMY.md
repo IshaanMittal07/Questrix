@@ -18,18 +18,18 @@ The level is computed in SQL (`level_for`) and in TS (`lib/points/levels.ts`, fo
 
 Values are validated by `economy_config_value_valid`. Unknown keys are rejected. A missing key makes the engine raise, because that's a server bug.
 
-| Key                             | Default                             | Allowed                                | Used by                                 |
-| ------------------------------- | ----------------------------------- | -------------------------------------- | --------------------------------------- |
-| `base_points`                   | `{"easy":10,"medium":20,"hard":35}` | each a whole number, 1–1,000           | points                                  |
-| `multiplier_step`               | `0.01`                              | 0–0.1                                  | multiplier                              |
-| `multiplier_cap`                | `50`                                | whole number, 0–89                     | multiplier                              |
-| `milestones`                    | see above                           | `{}` or keys 1–9999 → 1–100,000 points | milestone bonuses                       |
-| `undo_window_minutes`           | `15`                                | whole number, 1–1,440                  | `undo_completion`, `get_today`          |
-| `streak_lookback_days`          | `7`                                 | whole number, 1–31                     | streaks: a longer gap always breaks     |
-| `streak_freezes_max`            | `2`                                 | whole number, 0–2                      | the cap when undo gives freezes back    |
-| `schedule_max_habits`           | `20`                                | whole number, 1–50                     | habits in one day's snapshot            |
-| `habit_create_limits`           | `{"per_day":30,"per_30_days":100}`  | 1–1,000 / 1–10,000                     | the habits trigger                      |
-| `timezone_change_cooldown_days` | `7`                                 | whole number, 0–365                    | timezone changes after onboarding (#28) |
+| Key                             | Default                             | Allowed                                      | Used by                                                                                  |
+| ------------------------------- | ----------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `base_points`                   | `{"easy":10,"medium":20,"hard":35}` | each a whole number, 1–1,000                 | points                                                                                   |
+| `multiplier_step`               | `0.01`                              | 0–0.1                                        | multiplier                                                                               |
+| `multiplier_cap`                | `50`                                | whole number, 0–89                           | multiplier                                                                               |
+| `milestones`                    | see above                           | `{}` or keys 1–9999 → whole 1–100,000 points | milestone bonuses                                                                        |
+| `undo_window_minutes`           | `15`                                | whole number, 1–1,440                        | `undo_completion`, `get_today`                                                           |
+| `streak_lookback_days`          | `7`                                 | whole number, 1–31                           | streaks: a longer gap always breaks                                                      |
+| `streak_freezes_max`            | `2`                                 | whole number, 0–2                            | the cap when undo gives freezes back; Phase 6 `purchase_item` caps purchases with it too |
+| `schedule_max_habits`           | `20`                                | whole number, 1–50                           | habits in one day's snapshot                                                             |
+| `habit_create_limits`           | `{"per_day":30,"per_30_days":100}`  | whole numbers, 1–1,000 / 1–10,000            | the habits trigger                                                                       |
+| `timezone_change_cooldown_days` | `7`                                 | whole number, 0–365                          | timezone changes after onboarding (#28)                                                  |
 
 Two keys are also bounded by CHECK constraints, so raise the constraint before raising the key:
 
