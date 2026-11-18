@@ -115,21 +115,36 @@ async function reach<T>(
     return {
       ok: false,
       code: "unreachable",
-      error: offline ? OFFLINE : "Couldn't reach the server. Try again.",
+      // Not "try again": the write may have landed; the refresh will show it.
+      error: offline ? OFFLINE : "Couldn't confirm that saved. Checking…",
     };
   }
 }
 
-/** The calendar date now in `timezone`, as YYYY-MM-DD (like local_date). */
-function localDate(timezone: string) {
+/** The date (YYYY-MM-DD, like local_date) and hour now in `timezone`. */
+function localNow(timezone: string) {
   try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(
-      new Date(),
-    );
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date());
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    return {
+      date: `${get("year")}-${get("month")}-${get("day")}`,
+      hour: Number(get("hour")),
+    };
   } catch {
     return null;
   }
 }
+
+/** The hour get_today starts reporting at_risk (DECISIONS D7). */
+const AT_RISK_HOUR = 18;
+const REFRESH_EVERY_MS = 60_000;
 
 function vibrate() {
   try {
@@ -190,22 +205,29 @@ export function TodayView({
     [],
   );
 
-  // Roll over at local midnight: a PWA left open overnight must not keep
-  // showing yesterday. Checked each minute and whenever the app comes back.
-  const { local_date: shownDate, timezone } = base.today;
+  // Roll over at local midnight, and pick up at_risk at 18:00: a PWA left
+  // open must not keep showing an old snapshot. Checked each minute and
+  // whenever the app comes back. Throttled rather than once-only, so a
+  // device clock that runs fast, or a refresh that fails, is retried until
+  // the server's snapshot catches up.
+  const { local_date: shownDate, local_hour: shownHour, timezone } = base.today;
   useEffect(() => {
-    let refreshed = false;
+    let last = -Infinity;
     const check = () => {
-      const d = localDate(timezone);
-      if (!refreshed && d !== null && d !== shownDate) {
-        refreshed = true;
+      const n = localNow(timezone);
+      if (!n) return;
+      const behind =
+        n.date !== shownDate ||
+        (shownHour < AT_RISK_HOUR && n.hour >= AT_RISK_HOUR);
+      if (behind && Date.now() - last >= REFRESH_EVERY_MS) {
+        last = Date.now();
         router.refresh();
       }
     };
     const onVisible = () => {
       if (document.visibilityState === "visible") check();
     };
-    const timer = setInterval(check, 60_000);
+    const timer = setInterval(check, REFRESH_EVERY_MS);
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", check);
     return () => {
@@ -213,7 +235,7 @@ export function TodayView({
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", check);
     };
-  }, [shownDate, timezone, router]);
+  }, [shownDate, shownHour, timezone, router]);
 
   useEffect(() => {
     if (!confetti) return;
@@ -243,8 +265,11 @@ export function TodayView({
       addPending({ type: "complete", habitId: h.id });
       const res = await reach(() => completeHabit(h.id));
       if (!res.ok) {
-        // A double tap that raced the first one: nothing went wrong.
-        if (res.code !== "done") {
+        // A double tap that raced the first one (or a completion from
+        // another device): not an error, just say so politely.
+        if (res.code === "done") {
+          setStatus(`${h.title} is already done for today.`);
+        } else {
           setError(res.error);
           setStatus(`Couldn't complete ${h.title}.`);
         }

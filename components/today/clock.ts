@@ -11,7 +11,8 @@ export function useDeadlineClock(deadlines: string[]) {
   const key = deadlines.join(",");
   const store = useMemo(() => {
     const times = key ? key.split(",").map(Date.parse) : [];
-    let current = Date.now();
+    // 0 until subscribed (as on the server), so render stays pure.
+    let current = 0;
     return {
       getSnapshot: () => current,
       subscribe(onChange: () => void) {
