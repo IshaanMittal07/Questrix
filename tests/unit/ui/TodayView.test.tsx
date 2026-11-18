@@ -479,6 +479,7 @@ describe("TodayView", () => {
     );
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("alert")).toBeNull();
+    expect(live()).toHaveTextContent("Read is already done for today.");
   });
 
   it("keeps a saved completion whose event was unreadable", async () => {
@@ -525,19 +526,49 @@ describe("TodayView", () => {
   it("refreshes once the local date rolls over", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-11-18T23:59:30Z"));
-    renderView(day({ local_date: "2026-11-18", timezone: "UTC" }));
+    renderView(
+      day({ local_date: "2026-11-18", local_hour: 23, timezone: "UTC" }),
+    );
     expect(refresh).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTime(60_000));
     expect(refresh).toHaveBeenCalledTimes(1);
-    // Only once per shown day.
-    await act(async () => vi.advanceTimersByTime(120_000));
+    // A focus right after doesn't refresh again (throttled)...
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // ...but if the server still sent yesterday (device clock fast, or the
+    // refresh failed), it retries a minute later.
+    await act(async () => vi.advanceTimersByTime(60_000));
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops once the server's snapshot has caught up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-19T00:00:30Z"));
+    renderView(
+      day({ local_date: "2026-11-19", local_hour: 0, timezone: "UTC" }),
+    );
+    await act(async () => vi.advanceTimersByTime(180_000));
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("refreshes at 18:00 so the at-risk banner can appear", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-18T17:59:30Z"));
+    renderView(
+      day({ local_date: "2026-11-18", local_hour: 17, timezone: "UTC" }),
+    );
+    await act(async () => vi.advanceTimersByTime(60_000));
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes when the app comes back on a new day", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date("2026-11-19T08:00:00Z"));
-    renderView(day({ local_date: "2026-11-18", timezone: "UTC" }));
+    renderView(
+      day({ local_date: "2026-11-18", local_hour: 23, timezone: "UTC" }),
+    );
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
     });
@@ -900,7 +931,7 @@ describe("TodayView", () => {
         screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
       );
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Couldn't reach the server. Try again.",
+        "Couldn't confirm that saved. Checking…",
       );
       // The response may have been lost after the write committed.
       expect(refresh).toHaveBeenCalledTimes(1);
