@@ -87,6 +87,28 @@ function plural(n: number, word: string) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
+const OFFLINE = "You're offline. Reconnect to save your progress.";
+
+/** Calls a server action; a network failure becomes a refusal, never a throw. */
+async function reach<T>(
+  call: () => Promise<T>,
+): Promise<T | { ok: false; code: "offline"; error: string }> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { ok: false, code: "offline", error: OFFLINE };
+  }
+  try {
+    return await call();
+  } catch {
+    const offline =
+      typeof navigator !== "undefined" && navigator.onLine === false;
+    return {
+      ok: false,
+      code: "offline",
+      error: offline ? OFFLINE : "Couldn't reach the server. Try again.",
+    };
+  }
+}
+
 function vibrate() {
   try {
     // iOS Safari has no vibrate; that's fine (plan §8).
@@ -153,11 +175,11 @@ export function TodayView({
     vibrate();
     startTransition(async () => {
       addPending({ type: "complete", habitId: h.id });
-      const res = await completeHabit(h.id);
+      const res = await reach(() => completeHabit(h.id));
       if (!res.ok) {
         setError(res.error);
         setStatus(`Couldn't complete ${h.title}.`);
-        if (STALE.includes(res.code)) router.refresh();
+        if (STALE.includes(res.code as TodayErrorCode)) router.refresh();
         return;
       }
       const e = res.event;
@@ -183,11 +205,11 @@ export function TodayView({
     setError("");
     startTransition(async () => {
       addPending({ type: "undo", completionId: c.id });
-      const res = await undoCompletion(c.id);
+      const res = await reach(() => undoCompletion(c.id));
       if (!res.ok) {
         setError(res.error);
         setStatus(`Couldn't undo ${h.title}.`);
-        if (STALE.includes(res.code)) router.refresh();
+        if (STALE.includes(res.code as TodayErrorCode)) router.refresh();
         return;
       }
       const e = res.event;
