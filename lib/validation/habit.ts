@@ -166,7 +166,10 @@ export const habitUpdateSchema = habitFieldsSchema
  * z.uuid() checks RFC version bits: fine for gen_random_uuid() (v4), but test
  * fixtures must use real v4 ids.
  */
-export const habitIdSchema = z.uuid().transform((s) => s.toLowerCase());
+/** Any row id: a uuid, lower-cased so it matches Postgres's text form. */
+export const uuidSchema = z.uuid().transform((s) => s.toLowerCase());
+
+export const habitIdSchema = uuidSchema;
 
 /** Full active-list order for reorder_habits: unique ids, 1..20. */
 export const habitOrderSchema = z

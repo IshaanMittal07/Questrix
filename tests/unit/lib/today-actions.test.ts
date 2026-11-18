@@ -119,17 +119,15 @@ describe("completeHabit", () => {
     expect(res).toEqual({ ok: true, event: completeEvent, today: null });
   });
 
-  it("fails (but still refreshes) when the event is unreadable", async () => {
+  it("reports success with the fresh snapshot when the event is unreadable", async () => {
+    // The write committed; failing here would invite a second completion.
     results = [
       { data: { ...completeEvent, points_awarded: "12" } },
       { data: today },
     ];
     const res = await actions.completeHabit(ID);
-    expect(res).toEqual({
-      ok: false,
-      code: "failed",
-      error: "Saved, but couldn't refresh.",
-    });
+    expect(res).toMatchObject({ ok: true, event: null });
+    expect(res.ok && res.today).not.toBeNull();
     expect(calls.map((c) => c[0])).toEqual(["complete_habit", "get_today"]);
   });
 
@@ -198,12 +196,11 @@ describe("undoCompletion", () => {
     });
   });
 
-  it("fails when the event is unreadable", async () => {
+  it("reports success with the fresh snapshot when the event is unreadable", async () => {
     results = [{ data: { undone_id: "c1" } }, { data: today }];
-    expect(await actions.undoCompletion(ID)).toMatchObject({
-      ok: false,
-      code: "failed",
-    });
+    const res = await actions.undoCompletion(ID);
+    expect(res).toMatchObject({ ok: true, event: null });
+    expect(res.ok && res.today).not.toBeNull();
   });
 
   it.each([

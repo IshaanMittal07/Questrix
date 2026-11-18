@@ -448,15 +448,15 @@ describe("TodayView", () => {
     const user = userEvent.setup();
     completeHabit.mockResolvedValue({
       ok: false,
-      code: "done",
-      error: "Already done for today.",
+      code: "not_today",
+      error: "That habit isn't scheduled today.",
     });
     renderView(day());
     await user.click(
       screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
     );
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Already done for today.",
+      "That habit isn't scheduled today.",
     );
     expect(live()).toHaveTextContent("Couldn't complete Read.");
     expect(refresh).toHaveBeenCalledTimes(1);
@@ -466,7 +466,85 @@ describe("TodayView", () => {
     ).toBeInTheDocument();
   });
 
-  it.each(["not_found", "not_today", "done", "too_late"])(
+  it("treats a raced double tap (done) as benign: no alert, just a refresh", async () => {
+    const user = userEvent.setup();
+    completeHabit.mockResolvedValue({
+      ok: false,
+      code: "done",
+      error: "Already done for today.",
+    });
+    renderView(day());
+    await user.click(
+      screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+    );
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps a saved completion whose event was unreadable", async () => {
+    const user = userEvent.setup();
+    const next = day({
+      habits: [
+        habit("h1", "Read", { done: 1, completions: [completion("c9", 1)] }),
+      ],
+    });
+    completeHabit.mockResolvedValue({ ok: true, event: null, today: next });
+    renderView(day());
+    await user.click(
+      screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Read, done for today" }),
+    ).toBeInTheDocument();
+    expect(live()).toHaveTextContent("Read saved.");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows the points without a multiplier when there is no bonus", async () => {
+    const user = userEvent.setup();
+    completeHabit.mockResolvedValue({
+      ok: true,
+      event: event({ multiplier: 1, points_awarded: 20 }),
+      today: day(),
+    });
+    renderView(day());
+    await user.click(
+      screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+    );
+    expect(await screen.findByText("+20")).toBeInTheDocument();
+    expect(screen.queryByText(/×1\.00/)).toBeNull();
+  });
+
+  it("offers Restore when today's habits were archived (not at risk)", () => {
+    renderView(day({ habits: [], scheduled_count: 2 }));
+    expect(
+      screen.getByRole("link", { name: "Restore a habit" }),
+    ).toHaveAttribute("href", "/habits");
+  });
+
+  it("refreshes once the local date rolls over", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-18T23:59:30Z"));
+    renderView(day({ local_date: "2026-11-18", timezone: "UTC" }));
+    expect(refresh).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTime(60_000));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // Only once per shown day.
+    await act(async () => vi.advanceTimersByTime(120_000));
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes when the app comes back on a new day", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-11-19T08:00:00Z"));
+    renderView(day({ local_date: "2026-11-18", timezone: "UTC" }));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["not_found", "not_today", "too_late"])(
     "refreshes on stale code %s",
     async (code) => {
       const user = userEvent.setup();
@@ -735,7 +813,59 @@ describe("TodayView", () => {
       expect(screen.getByRole("button", { name: "Undo Read" })).toHaveFocus();
       await user.keyboard("{Enter}");
       expect(undoCompletion).toHaveBeenCalledWith("c1");
+      // Undo disappears; focus lands on the card, not <body>.
+      expect(
+        screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+      ).toHaveFocus();
     });
+
+    it("moves focus to the card when a focused Undo's window closes", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderView(
+        day({
+          habits: [
+            habit("h1", "Read", {
+              done: 1,
+              completions: [completion("c1", 1, { undoable_until: at(2_000) })],
+            }),
+          ],
+        }),
+      );
+      screen.getByRole("button", { name: "Undo Read" }).focus();
+      await act(async () => vi.advanceTimersByTime(3_000));
+      expect(screen.queryByRole("button", { name: "Undo Read" })).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Read, done for today" }),
+      ).toHaveFocus();
+    });
+  });
+
+  it("announces the streak and revoked milestones after an undo", async () => {
+    const user = userEvent.setup();
+    undoCompletion.mockResolvedValue({
+      ok: true,
+      event: undoEvent({
+        points_removed: 10,
+        milestones_revoked: [3],
+        milestone_points_removed: 25,
+      }),
+      today: day({ current_streak: 2 }),
+    });
+    renderView(
+      day({
+        habits: [
+          habit("h1", "Read", { done: 1, completions: [completion("c1", 1)] }),
+        ],
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Undo Read" }));
+    await vi.waitFor(() =>
+      expect(live()).toHaveTextContent(
+        "Undid Read. " +
+          MINUS +
+          "35 points. 3-day milestone removed. 2-day streak.",
+      ),
+    );
   });
 
   describe("offline", () => {
@@ -772,6 +902,8 @@ describe("TodayView", () => {
       expect(await screen.findByRole("alert")).toHaveTextContent(
         "Couldn't reach the server. Try again.",
       );
+      // The response may have been lost after the write committed.
+      expect(refresh).toHaveBeenCalledTimes(1);
       expect(
         await screen.findByRole("button", {
           name: "Complete Read, 0 of 1 done",

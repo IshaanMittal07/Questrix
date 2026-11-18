@@ -67,7 +67,10 @@ export function TimezoneForm({
         <Button variant="secondary" onClick={() => setValue(deviceTimezone())}>
           Use this device&apos;s timezone
         </Button>
-        <Button type="submit" disabled={pending || value === current}>
+        <Button
+          type="submit"
+          disabled={pending || value === current || lockedUntil !== null}
+        >
           {pending ? "Saving…" : "Save"}
         </Button>
       </div>

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   useEffect,
+  useLayoutEffect,
   useOptimistic,
   useRef,
   useState,
@@ -25,7 +26,7 @@ import {
 } from "@/lib/today/actions";
 import type { Today, TodayCompletion, TodayHabit } from "@/lib/today/types";
 
-import { useNow } from "./clock";
+import { useDeadlineClock } from "./clock";
 import { Confetti } from "./Confetti";
 
 type Pending =
@@ -78,8 +79,18 @@ export function undoable(
   return now === 0 || Date.parse(last.undoable_until) > now ? last : undefined;
 }
 
-// Refusals that mean the screen is out of date: fetch the real state.
-const STALE: TodayErrorCode[] = ["not_found", "not_today", "done", "too_late"];
+/** Refusals from the action, plus two the client adds around the call. */
+type ErrorCode = TodayErrorCode | "offline" | "unreachable";
+
+// The screen may be out of date: fetch the real state. "unreachable" too,
+// because a lost response can hide a write that committed.
+const STALE: ErrorCode[] = [
+  "not_found",
+  "not_today",
+  "done",
+  "too_late",
+  "unreachable",
+];
 
 type Float = { key: number; habitId: string; text: string };
 
@@ -92,7 +103,7 @@ const OFFLINE = "You're offline. Reconnect to save your progress.";
 /** Calls a server action; a network failure becomes a refusal, never a throw. */
 async function reach<T>(
   call: () => Promise<T>,
-): Promise<T | { ok: false; code: "offline"; error: string }> {
+): Promise<T | { ok: false; code: ErrorCode; error: string }> {
   if (typeof navigator !== "undefined" && navigator.onLine === false) {
     return { ok: false, code: "offline", error: OFFLINE };
   }
@@ -103,9 +114,20 @@ async function reach<T>(
       typeof navigator !== "undefined" && navigator.onLine === false;
     return {
       ok: false,
-      code: "offline",
+      code: "unreachable",
       error: offline ? OFFLINE : "Couldn't reach the server. Try again.",
     };
+  }
+}
+
+/** The calendar date now in `timezone`, as YYYY-MM-DD (like local_date). */
+function localDate(timezone: string) {
+  try {
+    return new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(
+      new Date(),
+    );
+  } catch {
+    return null;
   }
 }
 
@@ -133,7 +155,6 @@ export function TodayView({
 }) {
   const router = useRouter();
   const toast = useToast();
-  const now = useNow();
 
   // The latest snapshot: from the server render, or from the last action.
   // A new server render (navigation, refresh) replaces it.
@@ -142,12 +163,57 @@ export function TodayView({
     setBase({ from: fromServer, today: fromServer });
 
   const [today, addPending] = useOptimistic(base.today, applyPending);
+  const now = useDeadlineClock(
+    today.habits.flatMap((h) => {
+      const last = h.completions.at(-1);
+      return last && !last.id.startsWith(PENDING_PREFIX)
+        ? [last.undoable_until]
+        : [];
+    }),
+  );
   const [, startTransition] = useTransition();
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [floats, setFloats] = useState<Float[]>([]);
   const [confetti, setConfetti] = useState(0);
   const floatKey = useRef(0);
+
+  // With cacheComponents the route is hidden (Activity), not unmounted, when
+  // the user navigates away: don't bring back an old message or animation.
+  useLayoutEffect(
+    () => () => {
+      setError("");
+      setStatus("");
+      setFloats([]);
+      setConfetti(0);
+    },
+    [],
+  );
+
+  // Roll over at local midnight: a PWA left open overnight must not keep
+  // showing yesterday. Checked each minute and whenever the app comes back.
+  const { local_date: shownDate, timezone } = base.today;
+  useEffect(() => {
+    let refreshed = false;
+    const check = () => {
+      const d = localDate(timezone);
+      if (!refreshed && d !== null && d !== shownDate) {
+        refreshed = true;
+        router.refresh();
+      }
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    const timer = setInterval(check, 60_000);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", check);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", check);
+    };
+  }, [shownDate, timezone, router]);
 
   useEffect(() => {
     if (!confetti) return;
@@ -177,14 +243,26 @@ export function TodayView({
       addPending({ type: "complete", habitId: h.id });
       const res = await reach(() => completeHabit(h.id));
       if (!res.ok) {
-        setError(res.error);
-        setStatus(`Couldn't complete ${h.title}.`);
-        if (STALE.includes(res.code as TodayErrorCode)) router.refresh();
+        // A double tap that raced the first one: nothing went wrong.
+        if (res.code !== "done") {
+          setError(res.error);
+          setStatus(`Couldn't complete ${h.title}.`);
+        }
+        if (STALE.includes(res.code)) router.refresh();
         return;
       }
       const e = res.event;
-      const mult = Number(e.multiplier).toFixed(2);
-      showFloat(h.id, `+${e.points_awarded} ×${mult}`);
+      if (!e) {
+        setStatus(`${h.title} saved.`);
+        adopt(res.today);
+        return;
+      }
+      showFloat(
+        h.id,
+        e.multiplier > 1
+          ? `+${e.points_awarded} ×${e.multiplier.toFixed(2)}`
+          : `+${e.points_awarded}`,
+      );
       const streak = res.today?.current_streak ?? e.current_streak;
       let msg = `${h.title}: ${e.occurrence} of ${e.target} done. +${e.points_awarded} points. ${streak}-day streak.`;
       if (e.milestone !== null) {
@@ -209,12 +287,21 @@ export function TodayView({
       if (!res.ok) {
         setError(res.error);
         setStatus(`Couldn't undo ${h.title}.`);
-        if (STALE.includes(res.code as TodayErrorCode)) router.refresh();
+        if (STALE.includes(res.code)) router.refresh();
         return;
       }
       const e = res.event;
-      const lost = e.points_removed + e.milestone_points_removed;
-      setStatus(`Undid ${h.title}. −${plural(lost, "point")}.`);
+      let msg = `Undid ${h.title}.`;
+      if (e) {
+        const lost = e.points_removed + e.milestone_points_removed;
+        msg += ` −${plural(lost, "point")}.`;
+        const revoked = e.milestones_revoked ?? [];
+        if (revoked.length > 0) {
+          msg += ` ${revoked.map((m) => `${m}-day`).join(", ")} milestone removed.`;
+        }
+      }
+      if (res.today) msg += ` ${res.today.current_streak}-day streak.`;
+      setStatus(msg);
       adopt(res.today);
     });
   }
@@ -301,9 +388,16 @@ export function TodayView({
                 ? "Rest day: nothing is scheduled today."
                 : "Nothing left to show today."}
             </p>
-            <Button asChild variant="secondary">
-              <Link href="/habits/new">Add a habit</Link>
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="secondary">
+                <Link href="/habits/new">Add a habit</Link>
+              </Button>
+              {today.scheduled_count > 0 ? (
+                <Button asChild variant="secondary">
+                  <Link href="/habits">Restore a habit</Link>
+                </Button>
+              ) : null}
+            </div>
           </Card>
         )
       ) : (
@@ -382,9 +476,20 @@ function HabitCard({
   const done = h.done >= h.target;
   const progress = `${h.done} of ${h.target}`;
   const accent =
-    (h.color &&
-      (ACCENT_BORDER as Record<string, string | undefined>)[h.color]) ||
-    "border-l-white/10";
+    h.color && Object.hasOwn(ACCENT_BORDER, h.color)
+      ? ACCENT_BORDER[h.color as keyof typeof ACCENT_BORDER]
+      : "border-l-white/10";
+
+  // When Undo disappears (used, or its window closed) while focused, keep
+  // keyboard and screen-reader users on this card instead of <body>.
+  const mainRef = useRef<HTMLButtonElement>(null);
+  const undoFocused = useRef(false);
+  useEffect(() => {
+    if (undoTarget || !undoFocused.current) return;
+    undoFocused.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) mainRef.current?.focus();
+  }, [undoTarget]);
 
   return (
     <Card
@@ -396,6 +501,7 @@ function HabitCard({
       )}
     >
       <button
+        ref={mainRef}
         type="button"
         onClick={onComplete}
         aria-disabled={done || undefined}
@@ -457,7 +563,17 @@ function HabitCard({
           variant="ghost"
           className="mr-2 shrink-0"
           aria-label={`Undo ${h.title}`}
-          onClick={() => onUndo(undoTarget)}
+          onFocus={() => {
+            undoFocused.current = true;
+          }}
+          onBlur={(e) => {
+            // relatedTarget is null when the button is removed while focused.
+            if (e.relatedTarget) undoFocused.current = false;
+          }}
+          onClick={() => {
+            onUndo(undoTarget);
+            mainRef.current?.focus();
+          }}
         >
           Undo
         </Button>

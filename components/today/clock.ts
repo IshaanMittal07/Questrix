@@ -1,36 +1,41 @@
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
 /**
- * A shared 1-second clock for undo deadlines. The server render (and
- * hydration) sees 0, so every undoable_until counts as still open there,
- * and the client corrects it right after. The server re-checks the window
- * anyway (QX104), so this only hides buttons that would be refused.
+ * "Now" for undo deadlines, updated only when one of `deadlines` passes: one
+ * timeout to the next deadline, so an idle screen never re-renders. The
+ * server render (and hydration) sees 0, so every deadline counts as still
+ * open there, and the client corrects it right after. The server re-checks
+ * the window anyway (QX104).
  */
-const TICK_MS = 1_000;
-
-const listeners = new Set<() => void>();
-let timer: ReturnType<typeof setInterval> | null = null;
-
-function subscribe(onChange: () => void) {
-  listeners.add(onChange);
-  if (!timer) {
-    timer = setInterval(() => {
-      for (const l of listeners) l();
-    }, TICK_MS);
-  }
-  return () => {
-    listeners.delete(onChange);
-    if (listeners.size === 0 && timer) {
-      clearInterval(timer);
-      timer = null;
-    }
-  };
-}
-
-// Rounded so repeated reads within a tick return the same value.
-const snapshot = () => Math.floor(Date.now() / TICK_MS) * TICK_MS;
-const serverSnapshot = () => 0;
-
-export function useNow() {
-  return useSyncExternalStore(subscribe, snapshot, serverSnapshot);
+export function useDeadlineClock(deadlines: string[]) {
+  const key = deadlines.join(",");
+  const store = useMemo(() => {
+    const times = key ? key.split(",").map(Date.parse) : [];
+    let current = Date.now();
+    return {
+      getSnapshot: () => current,
+      subscribe(onChange: () => void) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const arm = () => {
+          const t = Date.now();
+          const next = Math.min(...times.filter((d) => d > t));
+          if (!Number.isFinite(next)) return;
+          timer = setTimeout(
+            () => {
+              current = Date.now();
+              onChange();
+              arm();
+            },
+            next - t + 1,
+          );
+        };
+        // Catch up on time that passed before subscribing (hydration); React
+        // re-reads the snapshot after subscribing.
+        current = Date.now();
+        arm();
+        return () => clearTimeout(timer);
+      },
+    };
+  }, [key]);
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, () => 0);
 }
