@@ -487,3 +487,20 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - Both functions are SECURITY DEFINER with an empty `search_path`, and no client role, not even `service_role`, can execute them. pg_cron runs them as `postgres`.
   - **D2 still holds:** pg_cron is used only for reminders, and daily snapshots stay lazy.
   - Setup, monitoring, pausing and the local and iPhone test path are in RUNBOOK, "Reminders and push notifications". Secrets are never in git or seeds.
+- **P10. The push client (#91).**
+  - **Service worker** (`public/sw.js`). `push` reads the JSON `{title, body, url, tag}`:
+    - Title and body are trimmed and cut by code point (120 and 300), shown only as notification text. Anything unreadable falls back to a generic reminder, because a push must show something (`userVisibleOnly`).
+    - A tag that isn't `habit-<id>` or `streak-saver` is replaced.
+    - `url` must be a same-origin path, using the `safeNextPath` rules: no control characters or backslashes, and resolving to our origin. Anything else opens `/today`.
+    - `notificationclick` focuses our open window and navigates it. If it can't (a tab opened before the worker activated isn't controlled, so `navigate()` rejects), it opens a new window.
+  - **Subscribe API** (`POST`/`DELETE /api/push/subscribe`).
+    - It's same-origin only (403) and signed-in only (401, from verified claims).
+    - Bodies are at most 4 KB (by Content-Length, then by bytes read). The body is validated with Zod: the P2 allowlist, printable ASCII, at most 1024 characters, and exact key sizes. The rules live in `lib/validation/push.ts`, shared with the sender.
+    - POST calls `save_push_subscription`; QX001 gives 429. DELETE deletes the caller's row by endpoint under RLS.
+    - Errors log only the code, never the endpoint or keys.
+  - **Enable notifications** (`components/push/EnableNotifications.tsx`).
+    - Permission is requested only inside the click handler, because iOS Safari requires a tap. Nothing is asked on mount.
+    - It reuses this device's subscription, replacing one made for another VAPID key (a rotation).
+    - On iPhone outside the installed app, it shows the install sheet instead, because push needs iOS 16.4+ in a Home Screen app.
+    - Without a public key it says notifications are unavailable.
+  - **Unsubscribing and signing out.** `unsubscribe()` deletes the server row first, while the session is valid, then always unsubscribes the browser, even if the server can't be reached. That way the device stops receiving either way, and a row left behind goes on the sender's next 404/410. Sign-out (`SignOutButton`) unsubscribes before posting `/auth/signout`, giving up after 3 s so it can't hang (P1).
