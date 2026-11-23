@@ -3,7 +3,7 @@
 -- count the day for the global streak. Real now(): the habit triggers use it.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(25);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -148,6 +148,26 @@ create temp table a7 as
 select ok(((select j from a7) ->> 'current_streak')::int = 1 and pg_temp.counted(6)
           and (pg_temp.prof(6)).last_streak_date = pg_temp.d(),
   'a new user''s first completion on onboarding day starts the streak at 1');
+
+-- ── A8: undo on a day a late joiner counted (no live streak) ───────────────
+-- A new user's first day: A and B both join late. A counts the day (a run
+-- at 1); undoing B must leave it counted, since A could count it alone.
+insert into auth.users (id, email) values (pg_temp.u(7), 'a7@example.com');
+update public.profiles set onboarded_at = now() where id = pg_temp.u(7);
+insert into public.habits (user_id, title, category) values (pg_temp.u(7), 'A', 'mind'), (pg_temp.u(7), 'B', 'mind');
+create function pg_temp.h7(t text) returns uuid language sql as $$
+  select id from public.habits where user_id = pg_temp.u(7) and title = t $$;
+create temp table a8 as
+  select 'A' as t, public.complete_habit_at(pg_temp.u(7), pg_temp.h7('A'), now()) as j
+  union all select 'B', public.complete_habit_at(pg_temp.u(7), pg_temp.h7('B'), now());
+select public.undo_completion_at(pg_temp.u(7), ((select j from a8 where t = 'B') ->> 'completion_id')::uuid, now());
+select ok((pg_temp.prof(7)).current_streak = 1 and (pg_temp.prof(7)).last_streak_date = pg_temp.d()
+          and pg_temp.counted(7),
+  'undoing one late completion keeps a day another late completion counted (review of PR #94)');
+select public.undo_completion_at(pg_temp.u(7), ((select j from a8 where t = 'A') ->> 'completion_id')::uuid, now());
+select ok((pg_temp.prof(7)).current_streak = 0 and (pg_temp.prof(7)).last_streak_date is null
+          and not pg_temp.counted(7) and pg_temp.balance_ok(7),
+  'undoing the last one restores the day');
 
 -- ── A6: structure ───────────────────────────────────────────────────────────
 select col_not_null('public', 'daily_schedule_habits', 'initial', 'initial is NOT NULL');

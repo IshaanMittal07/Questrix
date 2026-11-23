@@ -111,7 +111,7 @@ create function public.streak_as_of(p_uid uuid, p_streak int, p_last date, p_fre
 returns int
 language plpgsql
 stable
-security definer
+security invoker
 set search_path = ''
 as $$
 begin
@@ -584,8 +584,8 @@ $$;
 
 /**
  * #82: as in 20261117000400, except that the day's streak state is restored
- * once no completion of an initial habit remains on it. Late joiners'
- * completions may remain: they keep their points but never count the day.
+ * once no remaining completion could count it: with a live streak before
+ * the day, only an initial habit's; with none, any (then it must be empty).
  */
 create or replace function public.undo_completion_at(p_uid uuid, p_completion_id uuid, p_now timestamptz)
 returns jsonb
@@ -601,6 +601,7 @@ declare
   v_window int := (public.economy_value('undo_window_minutes'))::int;
   v_remaining int;
   v_restore_day boolean;
+  v_late_counts boolean;
   v_milestone_points int := 0;
   v_cost int;
   v_target smallint;
@@ -639,14 +640,19 @@ begin
   where user_id = p_uid and local_date = c.local_date;
   select count(*) - 1 into v_remaining from public.habit_completions
   where user_id = p_uid and local_date = c.local_date;
-  -- #82: the day was counted by a completion of an initial habit. Once no
-  -- such completion remains, restore it, even if late joiners' completions
-  -- are left: they never count a day on their own.
+  -- #82: restore the day once no remaining completion could count it. With
+  -- a live streak before the day, only initial habits' completions count
+  -- one; late joiners' completions may remain and keep their points. With
+  -- no live streak (judged from the day's saved before-state), any
+  -- completion counted it, so it takes an empty day, as before.
+  v_late_counts := public.streak_as_of(p_uid, d.streak_before, d.last_streak_date_before,
+                                       d.streak_freezes_before, c.local_date) = 0;
   v_restore_day := coalesce(d.counted_for_streak, false) and not exists (
     select 1 from public.habit_completions hc
     join public.daily_schedule_habits sh
       on sh.user_id = hc.user_id and sh.local_date = hc.local_date and sh.habit_id = hc.habit_id
-    where hc.user_id = p_uid and hc.local_date = c.local_date and hc.id <> c.id and sh.initial);
+    where hc.user_id = p_uid and hc.local_date = c.local_date and hc.id <> c.id
+      and (sh.initial or v_late_counts));
 
   -- Only the latest counted day can be emptied; fail closed otherwise.
   if v_restore_day and p.last_streak_date is distinct from c.local_date then
