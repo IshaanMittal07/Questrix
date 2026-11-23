@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { Button } from "@/components/ui/Button";
+import { EnableNotifications } from "@/components/push/EnableNotifications";
+import { SignOutButton } from "@/components/push/SignOutButton";
 import { Card } from "@/components/ui/Card";
 import { timezoneCooldownUntil } from "@/lib/profile/cooldown";
 import { getMyProfile } from "@/lib/profile/queries";
@@ -40,16 +41,21 @@ async function SettingsContent() {
       <Card>
         <TimezoneForm current={me.profile.timezone} lockedUntil={lockedUntil} />
       </Card>
+      <Card className="flex flex-col gap-3">
+        <div>
+          <h2 className="font-semibold">Notifications</h2>
+          <p className="text-muted text-sm">
+            Reminders for your habits on this device.
+          </p>
+        </div>
+        <EnableNotifications />
+      </Card>
       <Card className="flex items-center justify-between gap-4">
         <div>
           <p className="font-semibold">@{me.profile.username}</p>
           <p className="text-muted text-sm">Signed in</p>
         </div>
-        <form action="/auth/signout" method="post">
-          <Button type="submit" variant="secondary">
-            Sign out
-          </Button>
-        </form>
+        <SignOutButton />
       </Card>
     </>
   );

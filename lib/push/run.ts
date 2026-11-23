@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import type { AdminClient } from "@/lib/supabase/admin";
+import { PUSH_ENDPOINT, pushEndpointSchema } from "@/lib/validation/push";
 import { reminderMessage, streakSaverMessage } from "./copy";
 import { sendAll, type Job, type SendFn } from "./send";
 
@@ -24,17 +25,11 @@ export const SEND_BUDGET_MS = 40_000;
 export const WRITE_CHUNK = 100;
 
 /** The database's endpoint allowlist, re-checked before any request (P2). */
-export const ENDPOINT =
-  /^https:\/\/(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.push\.apple\.com|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.notify\.windows\.com)\//;
+export const ENDPOINT = PUSH_ENDPOINT;
 
 const subscriptionSchema = z.object({
   id: z.string(),
-  // As the database's CHECK: printable ASCII, at most 1024, allowlisted.
-  endpoint: z
-    .string()
-    .max(1024)
-    .regex(/^[!-~]+$/)
-    .regex(ENDPOINT),
+  endpoint: pushEndpointSchema,
   p256dh: z.string(),
   auth: z.string(),
 });
