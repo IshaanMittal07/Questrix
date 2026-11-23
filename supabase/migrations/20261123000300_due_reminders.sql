@@ -85,7 +85,9 @@ as $$
                       where rl.habit_id = c.habit_id and rl.local_date = c.local_date
                         and rl.reminder_time = c.t)
     order by c.user_id, c.habit_id, c.local_date, c.t
-    limit greatest(p_limit, 1)
+    -- At most PostgREST's max-rows (1000), or rows past it would be logged
+    -- but cut from the response.
+    limit least(greatest(coalesce(p_limit, 500), 1), 1000)
   ),
   logged as (
     insert into public.reminder_log (habit_id, local_date, reminder_time, user_id)
@@ -166,7 +168,12 @@ begin
                                    (v_lo at time zone p.timezone)::date]) as x(d)
         where ((x.d + time '20:00') at time zone p.timezone) > v_lo
           and ((x.d + time '20:00') at time zone p.timezone) <= v_hi
-          and (p.last_streak_date is null or p.last_streak_date < x.d))
+          and (p.last_streak_date is null or p.last_streak_date < x.d)
+          -- Already served today: skipped, so a run cut short by the time
+          -- budget is continued by the next one, not repeated (review of
+          -- PR #96).
+          and not exists (select 1 from public.streak_saver_log l
+                          where l.user_id = p.id and l.local_date = x.d))
     order by p.id
   loop
     -- A time budget well inside PostgREST's 8 s statement timeout: users

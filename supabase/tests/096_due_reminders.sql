@@ -417,7 +417,7 @@ select pg_temp.h(g, 2), pg_temp.u(g), 'Daily', 'mind', '2026-10-01' from generat
 select pg_temp.on();
 create temp table sv4 as select * from public.due_streak_savers('2026-12-03 06:00:20+00');
 select ok(not exists (select 1 from sv4 where user_id in (pg_temp.u(4), pg_temp.u(5), pg_temp.u(6))),
-  'push off, no device or not onboarded: no saver');
+  'push off, no device or not onboarded: no saver (not onboarded is also refused by get_today, QX107)');
 select ok(not exists (select 1 from public.streak_saver_log where user_id in (pg_temp.u(4), pg_temp.u(5), pg_temp.u(6))),
   '(and none logged)');
 select ok((select bool_and(jsonb_array_length(subscriptions) >= 1) from sv2),
