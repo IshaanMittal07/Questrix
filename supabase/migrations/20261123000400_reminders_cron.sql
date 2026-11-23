@@ -32,12 +32,19 @@ declare
   v_url text;
   v_secret text;
 begin
-  select s.decrypted_secret into v_url
+  -- Trimmed: a value pasted with a trailing newline would otherwise fail
+  -- every run quietly.
+  select btrim(s.decrypted_secret, E' \t\r\n') into v_url
   from vault.decrypted_secrets s where s.name = 'app_url';
-  select s.decrypted_secret into v_secret
+  select btrim(s.decrypted_secret, E' \t\r\n') into v_secret
   from vault.decrypted_secrets s where s.name = 'cron_secret';
-  -- The route refuses secrets under 32 characters (lib/http/bearer.ts).
-  if v_url is null or v_url !~* '^https?://' or v_secret is null or length(v_secret) < 32 then
+  -- https, or plain http only to this machine (local development): the
+  -- bearer secret must never cross a network in cleartext (review of #98).
+  -- The route refuses secrets under 32 characters (lib/http/bearer.ts; the
+  -- secret is ASCII, so characters and UTF-16 units agree).
+  if v_url is null
+     or v_url !~* '^(https://|http://(localhost|127\.0\.0\.1|\[::1\]|host\.docker\.internal)(:[0-9]+)?(/|$))'
+     or v_secret is null or length(v_secret) < 32 then
     return null;
   end if;
   return net.http_post(
@@ -52,7 +59,11 @@ begin
 end;
 $$;
 
-/** Delete reminder and streak-saver log rows older than 7 days. */
+/**
+ * Delete reminder and streak-saver log rows older than 7 days, and pg_cron's
+ * own run history for this user's jobs (the minute job adds 1,440 rows a
+ * day; Supabase recommends pruning it).
+ */
 create function public.cleanup_push_logs()
 returns void
 language sql
@@ -61,6 +72,7 @@ set search_path = ''
 as $$
   delete from public.reminder_log where sent_at < now() - interval '7 days';
   delete from public.streak_saver_log where sent_at < now() - interval '7 days';
+  delete from cron.job_run_details where end_time < now() - interval '7 days';
 $$;
 
 revoke all on function public.invoke_reminders() from public, anon, authenticated, service_role;
