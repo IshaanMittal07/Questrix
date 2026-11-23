@@ -31,6 +31,7 @@ const day = (completedAt: string, until: string) => ({
       difficulty: "easy",
       target: 1,
       done: 1,
+      joined_late: false,
       habit_streak: 1,
       completions: [
         {

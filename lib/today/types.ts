@@ -26,6 +26,9 @@ const todayHabitSchema = z.object({
   target: z.number().int(),
   done: z.number().int(),
   habit_streak: z.number().int(),
+  // #82: joined today after the day's first snapshot (added, unarchived or
+  // rescheduled); completing it doesn't count the day for the streak.
+  joined_late: z.boolean(),
   completions: z.array(completionSchema),
 });
 
