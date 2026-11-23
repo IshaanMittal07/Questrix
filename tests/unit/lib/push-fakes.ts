@@ -133,4 +133,5 @@ export const ZERO = {
   removed: 0,
   skipped: 0,
   malformed: 0,
+  truncated: false,
 };

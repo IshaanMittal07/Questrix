@@ -27,7 +27,14 @@ const ENV = {
   NEXT_PUBLIC_VAPID_PUBLIC_KEY: KEYS.publicKey,
   VAPID_PRIVATE_KEY: KEYS.privateKey,
 };
-const COUNTS = { sent: 0, failed: 0, removed: 0, skipped: 0, malformed: 0 };
+const COUNTS = {
+  sent: 0,
+  failed: 0,
+  removed: 0,
+  skipped: 0,
+  malformed: 0,
+  truncated: false,
+};
 const AUTHED = `Bearer ${ENV.CRON_SECRET}`;
 const req = (auth?: string) =>
   new Request("http://localhost:3000/api/cron/reminders", {
@@ -71,6 +78,7 @@ describe("POST /api/cron/reminders", () => {
       removed: 2,
       skipped: 4,
       malformed: 5,
+      truncated: true,
     });
     const res = await POST(req(AUTHED));
     expect(res.status).toBe(200);
@@ -80,9 +88,10 @@ describe("POST /api/cron/reminders", () => {
       removed: 2,
       skipped: 4,
       malformed: 5,
+      truncated: true,
     });
     expect(console.info).toHaveBeenCalledWith(
-      'reminders: {"sent":3,"failed":1,"removed":2,"skipped":4,"malformed":5}',
+      'reminders: {"sent":3,"failed":1,"removed":2,"skipped":4,"malformed":5,"truncated":true}',
     );
     expect(console.error).not.toHaveBeenCalled();
   });
@@ -140,7 +149,7 @@ describe("POST /api/cron/reminders", () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Reminders failed" });
     expect(console.error).toHaveBeenCalledWith(
-      'reminders: due_reminders (PGRST301), due_streak_savers (57014) failed {"sent":2,"failed":0,"removed":0,"skipped":0,"malformed":0}',
+      'reminders: due_reminders (PGRST301), due_streak_savers (57014) failed {"sent":2,"failed":0,"removed":0,"skipped":0,"malformed":0,"truncated":false}',
     );
   });
 
@@ -155,18 +164,45 @@ describe("POST /api/cron/reminders", () => {
     ]);
   });
 
-  it("flags a run where every push failed as a VAPID problem", async () => {
-    runReminders.mockResolvedValue({ ...COUNTS, failed: 7 });
-    const res = await POST(req(AUTHED));
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ...COUNTS, failed: 7 });
-    expect(console.error).toHaveBeenCalledWith(
-      "reminders: every push failed; check the VAPID keys",
+  it.each([5, 7, 500])(
+    "flags a run where all %i pushes failed as a VAPID problem",
+    async (failed) => {
+      runReminders.mockResolvedValue({ ...COUNTS, failed });
+      const res = await POST(req(AUTHED));
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ...COUNTS, failed });
+      expect(vi.mocked(console.error).mock.calls).toEqual([
+        [`reminders: all ${failed} pushes failed; check the VAPID keys`],
+      ]);
+    },
+  );
+
+  it("flags VAPID on the RunError path too, after the step line", async () => {
+    runReminders.mockRejectedValue(
+      new RunError(["due_reminders (57014)"], { ...COUNTS, failed: 5 }),
     );
+    const res = await POST(req(AUTHED));
+    expect(res.status).toBe(500);
+    expect(vi.mocked(console.error).mock.calls).toEqual([
+      [
+        `reminders: due_reminders (57014) failed ${JSON.stringify({ ...COUNTS, failed: 5 })}`,
+      ],
+      ["reminders: all 5 pushes failed; check the VAPID keys"],
+    ]);
+  });
+
+  it("doesn't flag VAPID on the RunError path below the threshold", async () => {
+    runReminders.mockRejectedValue(
+      new RunError(["due_reminders (57014)"], { ...COUNTS, failed: 4 }),
+    );
+    await POST(req(AUTHED));
+    expect(console.error).toHaveBeenCalledTimes(1);
   });
 
   it.each([
     ["nothing was due", COUNTS],
+    ["only 4 pushes failed (a blip)", { ...COUNTS, failed: 4 }],
+    ["only 1 push failed", { ...COUNTS, failed: 1 }],
     ["one push got through", { ...COUNTS, sent: 1, failed: 9 }],
     ["only removals", { ...COUNTS, removed: 3 }],
     ["only skips", { ...COUNTS, skipped: 3 }],

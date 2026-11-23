@@ -67,7 +67,6 @@ describe("readVapid", () => {
       env({ NEXT_PUBLIC_VAPID_PUBLIC_KEY: "dummy-vapid-key" }),
     ],
     ["a short private key", env({ VAPID_PRIVATE_KEY: "short" })],
-    ["a padded public key", env({ NEXT_PUBLIC_VAPID_PUBLIC_KEY: `${PUB}=` })],
     ["a padded private key", env({ VAPID_PRIVATE_KEY: `${PRIV}=` })],
     [
       "a public key with a standard-base64 character",
@@ -101,6 +100,25 @@ describe("readVapid", () => {
     "https://app.localhost",
   ])("refuses the local subject %s", (subject) => {
     expect(readVapid(env({ VAPID_SUBJECT: subject }))).toBeNull();
+  });
+
+  it("refuses a padded public key from a real pair, because web-push would refuse every send", async () => {
+    // The byte comparison would match, but getVapidHeaders (and so
+    // sendNotification) rejects "=" first. Accepting it here would turn a
+    // clear 500 into every push failing.
+    const webPush = await import("web-push");
+    expect(() =>
+      webPush.getVapidHeaders(
+        "https://fcm.googleapis.com",
+        SUBJECT,
+        `${PUB}=`,
+        PRIV,
+        "aes128gcm",
+      ),
+    ).toThrow(/without "="/);
+    expect(
+      readVapid(env({ NEXT_PUBLIC_VAPID_PUBLIC_KEY: `${PUB}=` })),
+    ).toBeNull();
   });
 
   it("accepts a subject whose host merely starts with localhost", () => {

@@ -22,22 +22,22 @@ describe("runReminders", () => {
       random: () => 0,
     });
     expect(out).toEqual({ ...ZERO, sent: 2, removed: 1 });
-    expect(calls.rpc[0]).toEqual([
-      "due_reminders",
-      { p_now: "2026-12-01T18:00:30.000Z", p_limit: PAGE },
+    expect(calls.rpc).toEqual([
+      ["due_streak_savers", { p_now: "2026-12-01T18:00:30.000Z" }],
+      ["due_reminders", { p_now: "2026-12-01T18:00:30.000Z", p_limit: PAGE }],
     ]);
-    // Page by page: the reminders page is recorded before the saver's sends.
+    // Savers first and recorded on their own, then the reminders page.
     expect(calls.writes.map((w) => [w.op, w.ids])).toEqual([
+      ["update", ["c"]],
       ["update", ["a"]],
       ["delete", ["b"]],
-      ["update", ["c"]],
     ]);
     expect(calls.writes.find((w) => w.op === "delete")?.select).toBe("id");
     const payloads = send.mock.calls.map((c) => JSON.parse(c[1]));
     expect(payloads.map((p) => p.tag)).toEqual([
-      "habit-h1",
-      "habit-h1",
       "streak-saver",
+      "habit-h1",
+      "habit-h1",
     ]);
   });
 
@@ -51,9 +51,10 @@ describe("runReminders", () => {
     expect(out.sent).toBe(PAGE + 1);
   });
 
-  it("sends a page and records it before fetching the next", async () => {
+  it("sends the savers, then each page, recording each before the next fetch", async () => {
     const full = Array.from({ length: PAGE }, (_, i) => reminder(`h${i}`));
     const { admin, calls } = fakeAdmin({
+      due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
       due_reminders: [{ data: full }, { data: [] }],
     });
     const send = vi.fn(async () => {
@@ -61,11 +62,13 @@ describe("runReminders", () => {
     });
     await runReminders({ admin, send });
     expect(calls.log).toEqual([
+      "rpc due_streak_savers",
+      "send",
+      "update",
       "rpc due_reminders",
       "send",
       "update",
       "rpc due_reminders",
-      "rpc due_streak_savers",
     ]);
   });
 
@@ -83,7 +86,7 @@ describe("runReminders", () => {
     });
   });
 
-  it("reports a due_reminders error, still runs the saver, and has a result", async () => {
+  it("reports a due_reminders error after the saver ran, with a result", async () => {
     const { admin, calls } = fakeAdmin({
       due_reminders: [{ error: { code: "PGRST301" } }],
       due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
@@ -97,12 +100,12 @@ describe("runReminders", () => {
     expect((err as RunError).steps).toEqual(["due_reminders (PGRST301)"]);
     expect((err as RunError).result).toEqual({ ...ZERO, sent: 1 });
     expect(calls.rpc.map(([n]) => n)).toEqual([
-      "due_reminders",
       "due_streak_savers",
+      "due_reminders",
     ]);
   });
 
-  it("still sends the collected reminders when the saver fails, then reports it", async () => {
+  it("still sends the reminders when the saver fails, then reports it", async () => {
     const { admin } = fakeAdmin({
       due_reminders: [{ data: [reminder("h1")] }],
       due_streak_savers: [{ error: { code: "57014" } }],

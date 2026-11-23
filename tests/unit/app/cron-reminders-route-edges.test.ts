@@ -43,7 +43,14 @@ const req = (auth?: string, method = "POST") =>
     headers: auth ? { authorization: auth } : {},
   });
 const AUTHED = `Bearer ${ENV.CRON_SECRET}`;
-const COUNTS = { sent: 0, failed: 0, removed: 0, skipped: 0, malformed: 0 };
+const COUNTS = {
+  sent: 0,
+  failed: 0,
+  removed: 0,
+  skipped: 0,
+  malformed: 0,
+  truncated: false,
+};
 
 type Rpc = { data?: unknown; error?: { code: string; message?: string } };
 function fakeAdmin(rpc: Record<string, Rpc>, writeError?: unknown) {
@@ -157,9 +164,32 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     );
     const res = await POST(req(AUTHED));
     expect(await res.json()).toEqual({ ...COUNTS, failed: 1 });
-    // ...and says what to check instead.
+    // One failure is a blip, not a VAPID problem.
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("warns about VAPID end to end when 5 devices all get 403", async () => {
+    const devices = Array.from({ length: 5 }, (_, i) => ({
+      id: `s${i}`,
+      endpoint: `${ENDPOINT}-${i}`,
+      p256dh: P256DH,
+      auth: AUTH,
+    }));
+    createAdminClient.mockReturnValue(
+      fakeAdmin({
+        due_reminders: { data: [{ ...dueRow, subscriptions: devices }] },
+      }),
+    );
+    sendNotification.mockRejectedValue(
+      Object.assign(new Error(`403 for ${ENDPOINT}`), {
+        statusCode: 403,
+        endpoint: ENDPOINT,
+      }),
+    );
+    const res = await POST(req(AUTHED));
+    expect(await res.json()).toEqual({ ...COUNTS, failed: 5 });
     expect(console.error).toHaveBeenCalledWith(
-      "reminders: every push failed; check the VAPID keys",
+      "reminders: all 5 pushes failed; check the VAPID keys",
     );
   });
 
@@ -217,7 +247,7 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Reminders failed" });
     expect(console.error).toHaveBeenCalledWith(
-      `reminders: record successes (42501), due_streak_savers (57014) failed ${JSON.stringify({ ...COUNTS, sent: 1 })}`,
+      `reminders: due_streak_savers (57014), record successes (42501) failed ${JSON.stringify({ ...COUNTS, sent: 1 })}`,
     );
   });
 
