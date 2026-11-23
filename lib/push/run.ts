@@ -7,8 +7,8 @@ import { sendAll, type Job, type SendFn } from "./send";
 
 /** Rows per due_reminders call; it pages by itself (DECISIONS P6). */
 export const PAGE = 100;
-/** Pages per run, at most. */
-export const MAX_PAGES = 10;
+/** Pages per run, at most; the fetch budget is the real limit. */
+export const MAX_PAGES = 30;
 /**
  * Fetch no new page (and skip the saver) after this long. A fetched row is
  * already logged, so only rows never fetched survive to the next minute's
@@ -63,6 +63,8 @@ export type RunResult = {
   skipped: number;
   /** Rows or devices dropped as malformed (already logged, so lost). */
   malformed: number;
+  /** The run stopped with reminders possibly still due (budget or cap). */
+  truncated: boolean;
 };
 
 export class RunError extends Error {
@@ -102,6 +104,7 @@ export async function runReminders(deps: {
     removed: 0,
     skipped: 0,
     malformed: 0,
+    truncated: false,
   };
   const failures: string[] = [];
 
@@ -152,14 +155,42 @@ export async function runReminders(deps: {
     }
   }
 
+  // Savers first: at most one row per user, and a 20:00 saver is due in only
+  // three overlapping runs, so it mustn't be what a busy minute cuts
+  // (reviews of PR #97).
+  const savers = await admin.rpc("due_streak_savers", { p_now: now });
+  if (savers.error) {
+    failures.push(`due_streak_savers (${savers.error.code})`);
+  } else {
+    const jobs: Job[] = [];
+    for (const raw of Array.isArray(savers.data) ? savers.data : []) {
+      const r = saverSchema.safeParse(raw);
+      if (r.success) {
+        jobs.push(
+          ...jobsFor(
+            r.data.subscriptions,
+            streakSaverMessage(r.data.streak, random),
+          ),
+        );
+      } else {
+        result.malformed += 1;
+      }
+    }
+    await deliver(jobs);
+  }
+
+  let more = true;
   for (let page = 0; page < MAX_PAGES; page++) {
-    if (page > 0 && clock() - start >= FETCH_BUDGET_MS) break;
+    // Page 0 too: a fetched row is logged, so fetching what can't be sent
+    // in time would lose it; left unfetched, the next minute's window has it.
+    if (clock() - start >= FETCH_BUDGET_MS) break;
     const { data, error } = await admin.rpc("due_reminders", {
       p_now: now,
       p_limit: PAGE,
     });
     if (error) {
       failures.push(`due_reminders (${error.code})`);
+      more = false;
       break;
     }
     const rows: unknown[] = Array.isArray(data) ? data : [];
@@ -177,33 +208,14 @@ export async function runReminders(deps: {
     }
     await deliver(jobs);
     // A short page isn't an error: an overlapping run may be sending the rest.
-    if (rows.length < PAGE) break;
-  }
-
-  // The saver is skipped once the fetch budget is spent: users left over
-  // are picked up by the next minute's overlapping window (P7).
-  if (clock() - start < FETCH_BUDGET_MS) {
-    const savers = await admin.rpc("due_streak_savers", { p_now: now });
-    if (savers.error) {
-      failures.push(`due_streak_savers (${savers.error.code})`);
-    } else {
-      const jobs: Job[] = [];
-      for (const raw of Array.isArray(savers.data) ? savers.data : []) {
-        const r = saverSchema.safeParse(raw);
-        if (r.success) {
-          jobs.push(
-            ...jobsFor(
-              r.data.subscriptions,
-              streakSaverMessage(r.data.streak, random),
-            ),
-          );
-        } else {
-          result.malformed += 1;
-        }
-      }
-      await deliver(jobs);
+    if (rows.length < PAGE) {
+      more = false;
+      break;
     }
   }
+  // Stopped by the budget or the page cap with a full last page: reminders
+  // may still be due. Logged, so a saturated minute is visible.
+  result.truncated = more;
 
   // One entry per failed step: a large run fails many chunks the same way.
   if (failures.length > 0) throw new RunError([...new Set(failures)], result);

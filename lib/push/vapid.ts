@@ -39,7 +39,10 @@ export function readVapid(
     // fine and then gets 403 from every push service.
     const ecdh = createECDH("prime256v1");
     ecdh.setPrivateKey(Buffer.from(privateKey, "base64url"));
-    if (ecdh.getPublicKey().toString("base64url") !== publicKey) return null;
+    // (web-push has already refused padded keys above.)
+    if (!ecdh.getPublicKey().equals(Buffer.from(publicKey, "base64url"))) {
+      return null;
+    }
   } catch {
     return null;
   }

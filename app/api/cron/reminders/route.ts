@@ -19,10 +19,15 @@ export const maxDuration = 60;
  * Every route under app/api/cron/ skips the session proxy, so each must
  * check hasBearer itself (a test enforces it).
  */
-/** Every push failing is a configuration problem (a revoked key, say). */
+/** Pushes failed before the all-failed warning means more than a blip. */
+const ALL_FAILED_MIN = 5;
+
+/** Every push failing is likely a configuration problem (a revoked key). */
 function warnIfAllFailed(result: RunResult) {
-  if (result.sent === 0 && result.failed > 0) {
-    console.error("reminders: every push failed; check the VAPID keys");
+  if (result.sent === 0 && result.failed >= ALL_FAILED_MIN) {
+    console.error(
+      `reminders: all ${result.failed} pushes failed; check the VAPID keys`,
+    );
   }
 }
 

@@ -28,24 +28,87 @@ const fullPage = (prefix: string) =>
 const subs = (n: number, prefix = "d") =>
   Array.from({ length: n }, (_, i) => sub(`${prefix}${i}`));
 
+const reminderPages = (calls: { rpc: [string, unknown][] }) =>
+  calls.rpc.filter(([name]) => name === "due_reminders").length;
+/** Advance the clock by `ms` on every due_reminders fetch (not the saver). */
+const perPage = (clock: { advance: (ms: number) => void }, ms: number) => ({
+  onRpc: (name: string) => {
+    if (name === "due_reminders") clock.advance(ms);
+  },
+});
+/** A clock at 0 for its first read (the run's start), far later after. */
+const lateClock = () => {
+  let first = true;
+  return () => {
+    if (first) {
+      first = false;
+      return 0;
+    }
+    return 10 * FETCH_BUDGET_MS;
+  };
+};
+
 describe("runReminders paging", () => {
-  it(`stops after ${MAX_PAGES} pages even when every page stays full`, async () => {
+  it(`stops after ${MAX_PAGES} pages even when every page stays full, and is truncated`, async () => {
     let n = 0;
     const { admin, calls } = fakeAdmin({
       due_reminders: () => ({ data: fullPage(`p${n++}-`) }),
     });
     const send = ok();
     const out = await runReminders({ admin, send });
-    expect(calls.rpc.filter(([name]) => name === "due_reminders")).toHaveLength(
-      MAX_PAGES,
-    );
+    expect(reminderPages(calls)).toBe(MAX_PAGES);
     expect(send).toHaveBeenCalledTimes(MAX_PAGES * PAGE);
-    expect(out).toEqual({ ...ZERO, sent: MAX_PAGES * PAGE });
-    // The saver still runs after the cap (the clock didn't move).
-    expect(calls.rpc.at(-1)?.[0]).toBe("due_streak_savers");
+    expect(out).toEqual({ ...ZERO, sent: MAX_PAGES * PAGE, truncated: true });
   });
 
-  it("passes the same p_now to every page and to the saver", async () => {
+  it("isn't truncated when the cap's last page is short", async () => {
+    let n = 0;
+    const { admin, calls } = fakeAdmin({
+      due_reminders: () =>
+        ++n < MAX_PAGES
+          ? { data: fullPage(`p${n}-`) }
+          : { data: [reminder("last")] },
+    });
+    const out = await runReminders({ admin, send: ok() });
+    expect(reminderPages(calls)).toBe(MAX_PAGES);
+    expect(out.truncated).toBe(false);
+  });
+
+  it("isn't truncated after a short page", async () => {
+    const { admin } = fakeAdmin({
+      due_reminders: [{ data: fullPage("a") }, { data: [reminder("b")] }],
+    });
+    const out = await runReminders({ admin, send: ok() });
+    expect(out).toEqual({ ...ZERO, sent: PAGE + 1, truncated: false });
+  });
+
+  it("isn't truncated after an empty first page", async () => {
+    const { admin } = fakeAdmin({ due_reminders: [{ data: [] }] });
+    expect(await runReminders({ admin, send: ok() })).toEqual(ZERO);
+  });
+
+  it("isn't truncated when a later due_reminders page fails", async () => {
+    const { admin } = fakeAdmin({
+      due_reminders: [{ data: fullPage("a") }, { error: { code: "57014" } }],
+    });
+    const err = await runReminders({ admin, send: ok() }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(RunError);
+    expect((err as RunError).result.truncated).toBe(false);
+  });
+
+  it("isn't truncated when page 0 fails", async () => {
+    const { admin } = fakeAdmin({
+      due_reminders: [{ error: { code: "57014" } }],
+    });
+    const err = await runReminders({ admin, send: ok() }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as RunError).result).toEqual(ZERO);
+  });
+
+  it("passes the same p_now to the saver and to every page", async () => {
     const empty = () =>
       Array.from({ length: PAGE }, (_, i) => reminder(`h${i}`, []));
     const { admin, calls } = fakeAdmin({
@@ -57,10 +120,10 @@ describe("runReminders paging", () => {
       now: new Date("2026-03-29T01:00:00+01:00"),
     });
     expect(calls.rpc.map(([name]) => name)).toEqual([
-      "due_reminders",
-      "due_reminders",
-      "due_reminders",
       "due_streak_savers",
+      "due_reminders",
+      "due_reminders",
+      "due_reminders",
     ]);
     const nows = calls.rpc.map(([, args]) => (args as { p_now: string }).p_now);
     expect(new Set(nows)).toEqual(new Set(["2026-03-29T00:00:00.000Z"]));
@@ -70,10 +133,10 @@ describe("runReminders paging", () => {
     const clock = fakeClock(Date.parse("2026-10-25T00:59:59.999Z"));
     const { admin, calls } = fakeAdmin({});
     await runReminders({ admin, send: ok(), clock: clock.now });
-    expect(calls.rpc[0][1]).toEqual({
-      p_now: "2026-10-25T00:59:59.999Z",
-      p_limit: PAGE,
-    });
+    expect(calls.rpc).toEqual([
+      ["due_streak_savers", { p_now: "2026-10-25T00:59:59.999Z" }],
+      ["due_reminders", { p_now: "2026-10-25T00:59:59.999Z", p_limit: PAGE }],
+    ]);
   });
 
   it("treats a full page of malformed rows as full and keeps paging", async () => {
@@ -82,29 +145,100 @@ describe("runReminders paging", () => {
       due_reminders: [{ data: junk }, { data: [reminder("h1")] }],
     });
     const out = await runReminders({ admin, send: ok() });
-    expect(calls.rpc.filter(([name]) => name === "due_reminders")).toHaveLength(
-      2,
-    );
+    expect(reminderPages(calls)).toBe(2);
     expect(out).toEqual({ ...ZERO, sent: 1, malformed: PAGE });
   });
 });
 
+describe("runReminders savers first", () => {
+  it("fetches, sends and records the savers before page 0", async () => {
+    const { admin, calls } = fakeAdmin({
+      due_streak_savers: [{ data: [saver(5, [sub("c"), sub("g")])] }],
+      due_reminders: [{ data: [reminder("h1")] }],
+    });
+    const send = vi.fn(async (s: { endpoint: string }) => {
+      calls.log.push(`send ${s.endpoint.split("/").pop()}`);
+      if (s.endpoint.endsWith("/g")) throw gone;
+    });
+    await runReminders({ admin, send });
+    expect(calls.log).toEqual([
+      "rpc due_streak_savers",
+      "send c",
+      "send g",
+      "update",
+      "delete",
+      "rpc due_reminders",
+      "send s-h1",
+      "update",
+    ]);
+  });
+
+  it("runs the saver even when the clock is already past every budget", async () => {
+    const { admin, calls } = fakeAdmin({
+      due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
+    });
+    await runReminders({ admin, send: ok(), clock: lateClock() });
+    expect(calls.rpc[0][0]).toBe("due_streak_savers");
+  });
+
+  it("lets a slow saver use up the fetch budget: no reminder page is fetched (they stay unlogged), truncated", async () => {
+    const clock = fakeClock();
+    const { admin, calls } = fakeAdmin({
+      due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
+      due_reminders: [{ data: fullPage("a") }, { data: fullPage("b") }],
+    });
+    const send = vi.fn(async (s: { endpoint: string }) => {
+      if (s.endpoint.endsWith("/c")) clock.advance(FETCH_BUDGET_MS);
+    });
+    const out = await runReminders({ admin, send, clock: clock.now });
+    expect(reminderPages(calls)).toBe(0);
+    expect(out).toEqual({ ...ZERO, sent: 1, truncated: true });
+  });
+
+  it("still fetches the reminders when the saver fails", async () => {
+    const { admin, calls } = fakeAdmin({
+      due_streak_savers: [{ error: { code: "57014" } }],
+      due_reminders: [{ data: [reminder("h1")] }],
+    });
+    const err = await runReminders({ admin, send: ok() }).catch(
+      (e: unknown) => e,
+    );
+    expect(calls.log).toEqual([
+      "rpc due_streak_savers",
+      "rpc due_reminders",
+      "update",
+    ]);
+    expect((err as RunError).result).toEqual({ ...ZERO, sent: 1 });
+  });
+});
+
 describe("runReminders time budgets (fake clock)", () => {
-  it("fetches no new page and skips the saver once the fetch budget is spent", async () => {
+  it("fetches no new page once the fetch budget is spent, and is truncated", async () => {
     const clock = fakeClock();
     let n = 0;
     const { admin, calls } = fakeAdmin(
       { due_reminders: () => ({ data: fullPage(`p${n++}-`) }) },
       // Each page takes 10 s: pages start at 0, 10 and 20 s; at 30 s, stop.
-      { onRpc: () => clock.advance(10_000) },
+      perPage(clock, 10_000),
     );
     const out = await runReminders({ admin, send: ok(), clock: clock.now });
     expect(calls.rpc.map(([name]) => name)).toEqual([
+      "due_streak_savers",
       "due_reminders",
       "due_reminders",
       "due_reminders",
     ]);
-    expect(out).toEqual({ ...ZERO, sent: 3 * PAGE });
+    expect(out).toEqual({ ...ZERO, sent: 3 * PAGE, truncated: true });
+  });
+
+  it("isn't truncated when the budget is spent but the last page was short", async () => {
+    const clock = fakeClock();
+    const { admin } = fakeAdmin(
+      { due_reminders: [{ data: [reminder("only")] }] },
+      perPage(clock, 2 * FETCH_BUDGET_MS),
+    );
+    const out = await runReminders({ admin, send: ok(), clock: clock.now });
+    expect(out.truncated).toBe(false);
   });
 
   it("fetches a page that starts just under the budget, and not one at it", async () => {
@@ -113,45 +247,38 @@ describe("runReminders time budgets (fake clock)", () => {
     const steps = [FETCH_BUDGET_MS - 1, 1];
     const { admin, calls } = fakeAdmin(
       { due_reminders: () => ({ data: fullPage(`p${n++}-`) }) },
-      { onRpc: () => clock.advance(steps.shift() ?? 0) },
+      {
+        onRpc: (name) => {
+          if (name === "due_reminders") clock.advance(steps.shift() ?? 0);
+        },
+      },
     );
-    await runReminders({ admin, send: ok(), clock: clock.now });
+    const out = await runReminders({ admin, send: ok(), clock: clock.now });
     // Page 1 starts at budget - 1 ms; after it, exactly the budget: stop.
-    expect(calls.rpc.map(([name]) => name)).toEqual([
-      "due_reminders",
-      "due_reminders",
-    ]);
+    expect(reminderPages(calls)).toBe(2);
+    expect(out.truncated).toBe(true);
   });
 
-  it("always fetches page 0, even when the clock is already past the budget", async () => {
-    let first = true;
-    const clock = () => {
-      if (first) {
-        first = false;
-        return 0;
-      }
-      return 10 * FETCH_BUDGET_MS;
-    };
+  it("fetches no reminder page once the clock is past the budget (left for the next minute)", async () => {
     const { admin, calls } = fakeAdmin({
       due_reminders: [{ data: fullPage("p") }],
       due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
     });
     const send = ok();
-    const out = await runReminders({ admin, send, clock });
-    expect(calls.rpc.map(([name]) => name)).toEqual(["due_reminders"]);
-    // Past the send budget too: page 0's rows are fetched (logged) but
-    // nothing may start, and that loss is counted.
+    const out = await runReminders({ admin, send, clock: lateClock() });
+    expect(calls.rpc.map(([name]) => name)).toEqual(["due_streak_savers"]);
+    // Past the send budget too: the saver is fetched (logged) but can't
+    // start, and that loss is counted; no reminder is fetched to be lost.
     expect(send).not.toHaveBeenCalled();
-    expect(out).toEqual({ ...ZERO, skipped: PAGE });
+    expect(out).toEqual({ ...ZERO, skipped: 1, truncated: true });
   });
 
   it("starts no push at the send budget and counts the rest as skipped", async () => {
     const clock = fakeClock();
     const { admin, calls } = fakeAdmin({
       due_reminders: [{ data: [reminder("h1", subs(10))] }],
-      due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
     });
-    // Each push takes 10 s of the clock: they start at 0, 10, 20, 30, 40 s.
+    // Each push takes a fifth of the send budget: five start, then stop.
     const send = vi.fn(async () => {
       clock.advance(SEND_BUDGET_MS / 5);
     });
@@ -164,8 +291,6 @@ describe("runReminders time budgets (fake clock)", () => {
         ids: ["d0", "d1", "d2", "d3", "d4"],
       }),
     ]);
-    // Past the fetch budget: no saver.
-    expect(calls.rpc.map(([name]) => name)).toEqual(["due_reminders"]);
   });
 
   it("stamps last_success_at from the injected clock", async () => {
@@ -519,12 +644,12 @@ describe("runReminders failure reporting", () => {
     expect(err).toBeInstanceOf(RunError);
     expect(calls.writes.map((w) => w.op)).toEqual(["update", "delete"]);
     expect((err as RunError).steps).toEqual([
+      "due_streak_savers (57014)",
       "record successes (42501)",
       "remove subscriptions (40001)",
-      "due_streak_savers (57014)",
     ]);
     expect((err as RunError).message).toBe(
-      "reminders: record successes (42501), remove subscriptions (40001), due_streak_savers (57014) failed",
+      "reminders: due_streak_savers (57014), record successes (42501), remove subscriptions (40001) failed",
     );
     // A failed delete removes nothing; the sends still count.
     expect((err as RunError).result).toEqual({ ...ZERO, sent: 1 });
@@ -542,6 +667,36 @@ describe("runReminders failure reporting", () => {
     expect(calls.writes.filter((w) => w.op === "update")).toHaveLength(3);
     expect((err as RunError).steps).toEqual(["record successes (08006)"]);
     expect((err as RunError).result.sent).toBe(devices.length);
+  });
+
+  it("lists a step that failed in several chunks once", async () => {
+    const devices = subs(3 * WRITE_CHUNK);
+    const { admin, calls } = fakeAdmin(
+      { due_reminders: [{ data: [reminder("h1", devices)] }] },
+      { updateError: () => ({ code: "08006" }) },
+    );
+    const err = await runReminders({ admin, send: ok() }).catch(
+      (e: unknown) => e,
+    );
+    expect(calls.writes.filter((w) => w.op === "update")).toHaveLength(3);
+    expect((err as RunError).message).toBe(
+      "reminders: record successes (08006) failed",
+    );
+  });
+
+  it("lists the same step with different codes separately", async () => {
+    const devices = subs(2 * WRITE_CHUNK);
+    const { admin } = fakeAdmin(
+      { due_reminders: [{ data: [reminder("h1", devices)] }] },
+      { updateError: (n) => ({ code: n === 0 ? "08006" : "57014" }) },
+    );
+    const err = await runReminders({ admin, send: ok() }).catch(
+      (e: unknown) => e,
+    );
+    expect((err as RunError).steps).toEqual([
+      "record successes (08006)",
+      "record successes (57014)",
+    ]);
   });
 
   it("reports a delete failure on one chunk and still counts the chunks that worked", async () => {
@@ -570,7 +725,7 @@ describe("runReminders failure reporting", () => {
     const send = vi.fn();
     const err = await runReminders({ admin, send }).catch((e: unknown) => e);
     expect((err as RunError).message).toBe(
-      "reminders: due_reminders (57014), due_streak_savers (PGRST301) failed",
+      "reminders: due_streak_savers (PGRST301), due_reminders (57014) failed",
     );
     expect((err as RunError).result).toEqual(ZERO);
     expect(send).not.toHaveBeenCalled();
@@ -587,11 +742,11 @@ describe("runReminders failure reporting", () => {
     );
     expect(send).toHaveBeenCalledTimes(PAGE);
     expect((err as RunError).result).toEqual({ ...ZERO, sent: PAGE });
-    // No retry of the failed page, but the saver runs.
+    // The saver ran first; the failed page isn't retried.
     expect(calls.rpc.map(([n]) => n)).toEqual([
-      "due_reminders",
-      "due_reminders",
       "due_streak_savers",
+      "due_reminders",
+      "due_reminders",
     ]);
   });
 
@@ -644,10 +799,10 @@ describe("runReminders payloads", () => {
         expect(typeof v).toBe("string");
       expect((p as { url: string }).url).toMatch(/^\/today(\?|$)/);
     }
-    expect(payloads[1]).toMatchObject({
+    expect(payloads[0]).toMatchObject({ tag: "streak-saver", url: "/today" });
+    expect(payloads[2]).toMatchObject({
       url: "/today?habit=h%202%2F%3F%26",
       tag: "habit-h 2/?&",
     });
-    expect(payloads[2]).toMatchObject({ tag: "streak-saver", url: "/today" });
   });
 });
