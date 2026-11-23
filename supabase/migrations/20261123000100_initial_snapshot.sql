@@ -559,3 +559,174 @@ begin
   );
 end;
 $$;
+
+/**
+ * #82: as in 20261117000400, except that the day's streak state is restored
+ * once no completion of an initial habit remains on it. Late joiners'
+ * completions may remain: they keep their points but never count the day.
+ */
+create or replace function public.undo_completion_at(p_uid uuid, p_completion_id uuid, p_now timestamptz)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  p public.profiles%rowtype;
+  c public.habit_completions%rowtype;
+  d public.daily_progress%rowtype;
+  v_today date;
+  v_window int := (public.economy_value('undo_window_minutes'))::int;
+  v_remaining int;
+  v_restore_day boolean;
+  v_milestone_points int := 0;
+  v_cost int;
+  v_target smallint;
+  v_habit_done int;
+  v_drops boolean;
+  hs public.habit_streaks%rowtype;
+  m record;
+  v_revoked int[] := '{}';
+begin
+  if p_uid is null then
+    raise exception 'Not signed in' using errcode = '28000';
+  end if;
+
+  -- Profile first, NO KEY UPDATE (D5).
+  select * into p from public.profiles where id = p_uid for no key update;
+  if not found then
+    raise exception 'Profile not found' using errcode = 'P0002';
+  end if;
+
+  select * into c from public.habit_completions
+  where id = p_completion_id and user_id = p_uid
+  for update;
+  if not found then
+    raise exception 'Completion not found' using errcode = 'P0002';
+  end if;
+
+  v_today := public.local_date_in(p.timezone, p_now);
+  if c.local_date <> v_today then
+    raise exception 'You can only undo today''s completions' using errcode = 'QX105';
+  end if;
+  if p_now > c.completed_at + make_interval(mins => v_window) then
+    raise exception 'Undo is only possible for % minutes', v_window using errcode = 'QX104';
+  end if;
+
+  select * into d from public.daily_progress
+  where user_id = p_uid and local_date = c.local_date;
+  select count(*) - 1 into v_remaining from public.habit_completions
+  where user_id = p_uid and local_date = c.local_date;
+  -- #82: the day was counted by a completion of an initial habit. Once no
+  -- such completion remains, restore it, even if late joiners' completions
+  -- are left: they never count a day on their own.
+  v_restore_day := coalesce(d.counted_for_streak, false) and not exists (
+    select 1 from public.habit_completions hc
+    join public.daily_schedule_habits sh
+      on sh.user_id = hc.user_id and sh.local_date = hc.local_date and sh.habit_id = hc.habit_id
+    where hc.user_id = p_uid and hc.local_date = c.local_date and hc.id <> c.id and sh.initial);
+
+  -- Only the latest counted day can be emptied; fail closed otherwise.
+  if v_restore_day and p.last_streak_date is distinct from c.local_date then
+    raise exception 'A later day already counts on this one' using errcode = 'QX108';
+  end if;
+
+  -- Per-habit: does this undo take the day below its target?
+  select sh.target_per_day into v_target from public.daily_schedule_habits sh
+  where sh.user_id = p_uid and sh.local_date = c.local_date and sh.habit_id = c.habit_id;
+  select count(*) into v_habit_done from public.habit_completions hc
+  where hc.habit_id = c.habit_id and hc.local_date = c.local_date;
+  -- A missing snapshot row is unreachable (they're deleted together); a
+  -- null target counts as dropping, so the guard below fails closed.
+  v_drops := coalesce(v_habit_done >= v_target, true);
+  select * into hs from public.habit_streaks where habit_id = c.habit_id;
+  if v_drops and hs.last_date is distinct from c.local_date then
+    raise exception 'A later day already counts on this one' using errcode = 'QX108';
+  end if;
+
+  if v_restore_day then
+    select coalesce(sum(sm.points), 0) into v_milestone_points
+    from public.streak_milestones_awarded sm
+    where sm.user_id = p_uid and sm.awarded_on = c.local_date;
+  end if;
+
+  v_cost := c.points_awarded + v_milestone_points;
+  if p.points_balance < v_cost then
+    raise exception 'Those points were already spent' using errcode = 'QX106';
+  end if;
+
+  -- The completion and its points.
+  delete from public.habit_completions where id = c.id;
+  insert into public.points_ledger (user_id, delta, reason, ref_id)
+  values (p_uid, -c.points_awarded, 'undo', c.id);
+
+  -- Per-habit streak.
+  if v_drops then
+    if c.habit_current_before is null then
+      delete from public.habit_streaks where habit_id = c.habit_id;
+    else
+      update public.habit_streaks
+         set current = c.habit_current_before,
+             longest = c.habit_longest_before,
+             last_date = c.habit_last_date_before
+       where habit_id = c.habit_id;
+    end if;
+    -- Later days' completions saved this day's streak; give them the restored one.
+    update public.habit_completions
+       set habit_current_before = c.habit_current_before,
+           habit_longest_before = c.habit_longest_before,
+           habit_last_date_before = c.habit_last_date_before
+     where habit_id = c.habit_id and local_date > c.local_date;
+  end if;
+
+  -- The day: one fewer completion; a restored day can count again.
+  update public.daily_progress
+     set completed_count = completed_count - 1,
+         counted_for_streak = case when v_restore_day or v_remaining = 0 then false
+                                   else counted_for_streak end
+   where user_id = p_uid and local_date = c.local_date;
+
+  if v_restore_day then
+    for m in
+      delete from public.streak_milestones_awarded sm
+       where sm.user_id = p_uid and sm.awarded_on = c.local_date
+      returning sm.id, sm.points, sm.milestone
+    loop
+      insert into public.points_ledger (user_id, delta, reason, ref_id)
+      values (p_uid, -m.points, 'undo', m.id);
+      v_revoked := v_revoked || m.milestone;
+    end loop;
+
+    update public.profiles
+       set current_streak = d.streak_before,
+           longest_streak = d.longest_streak_before,
+           last_streak_date = d.last_streak_date_before,
+           -- A delta, capped: a freeze gained since the count survives.
+           streak_freezes = least(streak_freezes + d.streak_freezes_used,
+                                  (public.economy_value('streak_freezes_max'))::int),
+           streak_run_started = d.streak_run_started_before
+     where id = p_uid;
+  end if;
+
+  update public.profiles
+     set points_balance = points_balance - v_cost,
+         lifetime_points = lifetime_points - v_cost
+   where id = p_uid
+  returning * into p;
+
+  return jsonb_build_object(
+    'undone_id', c.id,
+    'local_date', c.local_date,
+    'habit_id', c.habit_id,
+    'points_removed', c.points_awarded,
+    'milestones_revoked', to_jsonb(v_revoked),
+    'milestone_points_removed', v_milestone_points,
+    'current_streak', p.current_streak,
+    'habit_streak', coalesce((select current from public.habit_streaks where habit_id = c.habit_id), 0),
+    'new_balance', p.points_balance,
+    'lifetime_points', p.lifetime_points,
+    'level', public.level_for(p.lifetime_points)
+  );
+end;
+$$;
+
