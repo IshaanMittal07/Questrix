@@ -24,7 +24,8 @@ create table public.push_subscriptions (
   endpoint text not null unique
     constraint push_subscriptions_endpoint_valid check (
       length(endpoint) <= 1024
-      and endpoint ~ '^https://(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9-]+\.push\.apple\.com|[a-z0-9-]+\.notify\.windows\.com)/'
+      and endpoint !~ '[[:space:][:cntrl:]]'
+      and endpoint ~ '^https://(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.push\.apple\.com|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.notify\.windows\.com)/'
     ),
   p256dh text not null
     constraint push_subscriptions_p256dh_valid check (p256dh ~ '^[A-Za-z0-9_-]{20,200}=*$'),
@@ -73,8 +74,8 @@ create index habits_reminders_idx on public.habits (user_id)
  * - An endpoint already saved (by anyone) moves to the caller: whoever
  *   holds the endpoint URL is that device. Its keys are replaced, and
  *   last_success_at resets when the owner changes.
- * - At most push_subscriptions_max (10) per user, and at most 20 saves of new
- *   endpoints per hour (QX001), so a client can't fill the table.
+ * - At most 10 per user (QX001), so a client can't fill the table. Call
+ *   rate limiting is #79's (a count of live rows can't limit churn).
  * - Locks the profile FOR NO KEY UPDATE first (D5), which serialises the
  *   cap check per user.
  */
@@ -102,10 +103,6 @@ begin
     if (select count(*) from public.push_subscriptions s where s.user_id = v_uid) >= 10 then
       raise exception 'You can have at most 10 devices with notifications'
         using errcode = 'QX001', hint = 'Turn notifications off on a device you no longer use.';
-    end if;
-    if (select count(*) from public.push_subscriptions s
-        where s.user_id = v_uid and s.created_at > now() - interval '1 hour') >= 20 then
-      raise exception 'Too many notification sign-ups' using errcode = 'QX001', hint = 'Try again later.';
     end if;
   end if;
 
