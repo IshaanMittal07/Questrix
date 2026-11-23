@@ -1,19 +1,132 @@
 -- Phase 4 (#81): a move west must not let a user complete a day they
 -- already missed (security audit of PR #80, M1).
 --
--- The latest daily_schedule date is the furthest local date the user has
--- reached: every engine call snapshots its today, and every timezone change
--- snapshots the old today first. A first completion on an earlier date that
--- is after last_streak_date (or with no streak yet) is on a relived day that
--- was never counted. It earns points, but the streak, freezes and milestones
--- don't change and the day stays uncounted, so when the reached day comes the
--- relived day is still a miss. Days already counted keep rule 0 (no change).
+-- profiles.engine_floor_date is the furthest local date the user had reached
+-- when they last moved west: profiles_validate sets it to the old today on a
+-- westward change, under the profile row lock. A first completion on an
+-- earlier date that is after last_streak_date (or with no streak yet) is on a
+-- relived day that was never counted. It earns points at the base
+-- multiplier, but the streak, freezes and milestones don't change and the
+-- day stays uncounted, so when the floor day comes the relived day is still
+-- a miss. Days already counted keep rule 0 (no change).
+--
+-- Only a timezone change writes the floor. Reading "reached" from the latest
+-- daily_schedule row instead would race: a get_today just after midnight
+-- can commit tomorrow's snapshot while a completion from just before it
+-- waits on the profile lock (review of PR #84, B1).
 --
 -- get_today reports such a day as `relived`: the streak is judged as of the
--- reached day, no freezes are needed, and it's never at risk.
+-- floor day, no freezes are needed, and it's never at risk.
 --
 -- Per-habit streaks are unchanged: they carry no points or milestones
 -- (DECISIONS, #81).
+
+alter table public.profiles add column engine_floor_date date;
+comment on column public.profiles.engine_floor_date is
+  'The old today at the last westward timezone change (#81). Earlier uncounted days are relived: they earn points but never count for the streak. Not client-writable.';
+
+create or replace function public.profiles_validate()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_old_today date;
+  v_new_today date;
+  v_cooldown int;
+  v_lookback int;
+begin
+  -- Only validate when it changes: profiles are updated on every completion.
+  if (tg_op = 'INSERT' or new.timezone is distinct from old.timezone)
+     and not exists (select 1 from pg_catalog.pg_timezone_names where name = new.timezone) then
+    raise exception 'Unknown timezone: %', new.timezone using errcode = '22023';
+  end if;
+
+  -- After onboarding, a timezone change is limited and must not gain a
+  -- streak day. During onboarding (old.onboarded_at null) it's free: step 1
+  -- sets username and timezone in one update, which takes FOR UPDATE on the
+  -- profile, so it mustn't snapshot either (D5).
+  if tg_op = 'UPDATE' and new.timezone is distinct from old.timezone
+     and old.onboarded_at is not null then
+    -- A username change takes FOR UPDATE on this row, which blocks the FK
+    -- checks a concurrent snapshot makes; doing both here could deadlock (D5).
+    if new.username is distinct from old.username then
+      raise exception 'Change your username and timezone separately'
+        using errcode = 'QX002';
+    end if;
+    v_cooldown := (public.economy_value('timezone_change_cooldown_days'))::int;
+    if old.timezone_changed_at is not null
+       and old.timezone_changed_at > now() - make_interval(days => v_cooldown) then
+      raise exception 'You can change your timezone once every % days', v_cooldown
+        using errcode = 'QX001',
+              -- In the user's (old) timezone, rounded up to the minute so
+              -- a retry at that time succeeds.
+              hint = 'Try again on or after '
+                || to_char(date_trunc('minute',
+                             (old.timezone_changed_at + make_interval(days => v_cooldown)
+                              + interval '1 minute' - interval '1 microsecond')
+                             at time zone old.timezone),
+                           'YYYY-MM-DD HH24:MI')
+                || ' (' || old.timezone || ').';
+    end if;
+    -- Snapshot the old timezone's days first; the profile row still holds
+    -- the old timezone until this statement finishes.
+    v_lookback := (public.economy_value('streak_lookback_days'))::int;
+    v_old_today := public.ensure_daily_schedule(old.id, now());
+    v_new_today := public.local_date_in(new.timezone, now());
+    -- Moving east: the new timezone's days up to its today are the same real
+    -- day as the old today. If nothing was required there (today already
+    -- counted, or every day since the last counted one was a rest day), the
+    -- new today inherits the counted day, so the jump can't count an extra
+    -- streak day. If a scheduled day is pending, it stays pending and
+    -- becomes a missed day (fail closed).
+    if v_new_today > v_old_today
+       and old.last_streak_date is not null
+       and old.last_streak_date >= v_old_today - v_lookback
+       and not exists (
+         select 1 from generate_series(1, v_old_today - old.last_streak_date) as g(i)
+         left join public.daily_schedule s
+           on s.user_id = old.id and s.local_date = old.last_streak_date + g.i
+         where s.scheduled_count is distinct from 0) then
+      new.last_streak_date := greatest(old.last_streak_date, v_new_today);
+    end if;
+    -- Per-habit streaks, each on its own schedule: a habit inherits if it has
+    -- nothing pending in the old zone (counted today, or not in any day's
+    -- snapshot since its last count; a missing day fails closed).
+    if v_new_today > v_old_today then
+      update public.habit_streaks hs
+         set last_date = greatest(hs.last_date, v_new_today)
+       where hs.user_id = old.id
+         and hs.last_date >= v_old_today - v_lookback
+         and not exists (
+           select 1 from generate_series(1, v_old_today - hs.last_date) as g(i)
+           left join public.daily_schedule s
+             on s.user_id = old.id and s.local_date = hs.last_date + g.i
+           left join public.daily_schedule_habits sh
+             on sh.user_id = old.id and sh.local_date = s.local_date
+            and sh.habit_id = hs.habit_id
+           where s.local_date is null or sh.habit_id is not null);
+    end if;
+    -- Moving west (#81): days before the old today are relived. Record the
+    -- furthest day reached; greatest() ignores a null old floor.
+    if v_new_today < v_old_today then
+      new.engine_floor_date := greatest(old.engine_floor_date, v_old_today);
+    end if;
+    new.timezone_changed_at := now();
+  end if;
+
+  if tg_op = 'UPDATE' and new.username is distinct from old.username then
+    if public.is_reserved_username(new.username::text) then
+      raise exception 'That username is reserved' using errcode = '23514';
+    end if;
+    if new.onboarded_at is null then
+      new.onboarded_at := now();
+    end if;
+  end if;
+  return new;
+end;
+$$;
 
 create or replace function public.complete_habit_at(p_uid uuid, p_habit_id uuid, p_now timestamptz)
 returns jsonb
@@ -52,9 +165,10 @@ declare
   -- The streak was set this call (first ever, increment, freeze or reset),
   -- as opposed to rules 0/1, which leave it alone. Milestones key off this.
   v_streak_set boolean := false;
-  -- The furthest local date this user has reached (#81).
-  v_reached date;
   v_relived boolean := false;
+  -- The streak reported on a relived day: judged as of the floor day, as
+  -- get_today does (#81).
+  v_report int;
 begin
   if p_uid is null then
     raise exception 'Not signed in' using errcode = '28000';
@@ -72,11 +186,6 @@ begin
 
   -- 2. Snapshot today before locking the habit row (D5).
   v_today := public.ensure_daily_schedule(p_uid, p_now);
-  -- Every timezone change snapshots the old today first, and every engine
-  -- call snapshots its own, so the latest snapshot is the furthest local
-  -- date reached. A date before it is being relived after a move west.
-  select max(s.local_date) into v_reached
-  from public.daily_schedule s where s.user_id = p_uid;
 
   -- 3. The habit, read under a row lock (not from client values).
   select h.archived_at into v_archived
@@ -118,7 +227,7 @@ begin
   v_freezes := p.streak_freezes;
   v_run := p.streak_run_started;
   v_last := p.last_streak_date;
-  if v_first_today and v_today < v_reached
+  if v_first_today and v_today < p.engine_floor_date
      and (v_last is null or v_today > v_last) then
     -- A relived day that was never counted (#81): points, but no streak
     -- change, and the day stays uncounted. Counting it would let a user who
@@ -126,6 +235,15 @@ begin
     -- it's still a missed day when the reached day comes. Undo has nothing
     -- to restore.
     v_relived := true;
+    v_report := v_streak;
+    if v_last is null then
+      v_report := 0;
+    elsif v_last < p.engine_floor_date - 1 then
+      if p.engine_floor_date - v_last - 1 > v_lookback
+         or public.streak_missed_days(p_uid, v_last, p.engine_floor_date) > v_freezes then
+        v_report := 0;
+      end if;
+    end if;
   elsif v_first_today then
     if v_last is null then
       -- First completion ever: rule 5.
@@ -135,7 +253,7 @@ begin
       v_streak_set := true;
     elsif v_today <= v_last then
       -- Rules 0 (moved west: an already-counted day) and 1 share this
-      -- branch: no change.
+      -- branch: no change. Uncounted relived days took the branch above.
       null;
     else
       -- null = broken: a gap longer than the lookback, freezes untouched.
@@ -276,7 +394,7 @@ begin
     'target', v_target,
     'points_awarded', v_points,
     'multiplier', v_mult,
-    'current_streak', p.current_streak,
+    'current_streak', case when v_relived then v_report else p.current_streak end,
     'habit_streak', v_hcur,
     'milestone', v_milestone,
     'milestone_points', case when v_milestone is null then null else v_bonus end,
@@ -338,12 +456,10 @@ begin
 
   -- A relived day that was never counted (#81, as in complete_habit_at):
   -- completions earn points but don't touch the streak, so nothing is at
-  -- risk and no freezes are needed. The streak is judged as of the
-  -- furthest day reached.
-  select max(s.local_date) into v_reached
-  from public.daily_schedule s where s.user_id = p_uid;
-  v_relived := v_today < v_reached
-               and (p.last_streak_date is null or v_today > p.last_streak_date);
+  -- risk and no freezes are needed. The streak is judged as of the floor.
+  v_reached := p.engine_floor_date;
+  v_relived := coalesce(v_today < v_reached
+               and (p.last_streak_date is null or v_today > p.last_streak_date), false);
   v_ref := case when v_relived then v_reached else v_today end;
 
   -- The global streak as the next completion would see it (plan §6.2).

@@ -43,7 +43,7 @@ Two keys are also bounded by CHECK constraints, so raise the constraint before r
 - **Rest days.** A day whose snapshot requires nothing doesn't break the streak.
 - **Missed days.** A scheduled day with no completion is missed, and so is a day with no snapshot (fail closed). Freezes cover missed days one each, spent by the next counted day. If there are more missed days than freezes, or a gap longer than `streak_lookback_days`, the streak resets to 1 and no freezes are spent.
 - **Per-habit streaks** advance when a day's count first reaches the habit's snapshotted target. They have no freezes.
-- **Timezones.** Moving east keeps the streak without gaining a day (#28). Moving west relives a counted day, which changes nothing. Changes after onboarding are limited by `timezone_change_cooldown_days`.
+- **Timezones.** Moving east keeps the streak without gaining a day (#28). Moving west relives earlier days. A relived day that was already counted changes nothing. One that wasn't (a missed day) earns points at the base multiplier but never counts, so it stays missed (#81). Changes after onboarding are limited by `timezone_change_cooldown_days`.
 - **`get_today`** reports the streak as the next completion would see it. A streak that would reset reads 0, though the stored value only changes on that completion. `freezes_needed` says how many freezes the next completion will spend.
 - **At risk** (`get_today.at_risk`): the day requires habits, there's a live streak, today isn't counted yet, and it's 18:00 or later local time.
 

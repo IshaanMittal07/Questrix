@@ -1,9 +1,13 @@
 -- Phase 4 (#81): a move west must not let a user complete a day they already
--- missed. A relived day (before the furthest day reached, after the last
--- counted day) earns points but never changes the streak or freezes.
+-- missed. A relived day (before profiles.engine_floor_date, the old today at
+-- the last westward timezone change, and after the last counted day) earns
+-- points but never changes the streak or freezes.
+--
+-- The time seam simulates the move: pg_temp.west sets the floor as
+-- profiles_validate would, then "now" runs back. R5 makes a real change.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(48);
+select plan(53);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -30,6 +34,8 @@ create function pg_temp.done(n int, k int, m numeric default 0) returns jsonb la
   select public.complete_habit_at(pg_temp.u(n), pg_temp.h(n), pg_temp.t(k, m)) $$;
 create function pg_temp.today(n int, k int, m numeric default 0) returns jsonb language sql as $$
   select public.get_today_at(pg_temp.u(n), pg_temp.t(k, m)) $$;
+create function pg_temp.west(n int, k int) returns void language sql as $$
+  update public.profiles set engine_floor_date = pg_temp.day(k) where id = pg_temp.u(n) $$;
 create function pg_temp.prof(n int) returns public.profiles language sql as $$
   select * from public.profiles where id = pg_temp.u(n) $$;
 create function pg_temp.counted(n int, d date) returns boolean language sql as $$
@@ -44,18 +50,19 @@ create function pg_temp.balance_ok(n int) returns boolean language sql as $$
 -- R6 target 2: a relived day, then the reached day and its undo ·
 -- R7 target 2: a relived day half done.
 insert into auth.users (id, email)
-select pg_temp.u(g), 'r' || g || '@example.com' from generate_series(1, 7) as g;
+select pg_temp.u(g), 'r' || g || '@example.com' from generate_series(1, 8) as g;
 insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at)
 select pg_temp.h(g), pg_temp.u(g), 'Daily', 'mind', 'medium', '{0,1,2,3,4,5,6}', case when g in (1, 6, 7) then 2 else 1 end, now() - interval '30 days'
-from generate_series(1, 7) as g;
+from generate_series(1, 8) as g;
 update public.profiles set timezone = 'Pacific/Kiritimati' where id = pg_temp.u(5);
 update public.profiles set onboarded_at = now() - interval '30 days'
-  where id in (select pg_temp.u(g) from generate_series(1, 7) as g);
+  where id in (select pg_temp.u(g) from generate_series(1, 8) as g);
 
 -- ── R1: missed day 3, reached day 4, then back on day 3 ─────────────────────
 select pg_temp.done(1, 1);
 select pg_temp.done(1, 2);
 select pg_temp.today(1, 4);
+select pg_temp.west(1, 4);
 create temp table r1 as select 1 as occ, pg_temp.done(1, 3) as j;
 select ok(((select j from r1) ->> 'points_awarded')::int > 0,
   'a completion on a relived day still earns points');
@@ -63,8 +70,10 @@ select ok((pg_temp.prof(1)).current_streak = 2 and (pg_temp.prof(1)).last_streak
   'but the streak and last_streak_date don''t move');
 select ok(not pg_temp.counted(1, pg_temp.day(3)), 'and the relived day stays uncounted');
 insert into r1 select 2, pg_temp.done(1, 3, 1);
-select is(((select j from r1 where occ = 2) ->> 'current_streak')::int, 2,
+select ok((pg_temp.prof(1)).current_streak = 2 and not pg_temp.counted(1, pg_temp.day(3)),
   'a second completion that day doesn''t count it either');
+select ok((select bool_and((j ->> 'current_streak')::int = 0) from r1),
+  'the completion reports the streak as judged on the reached day (lost), as get_today does');
 -- Counted, day 3 would have taken the streak to 3: a milestone.
 select ok((select bool_and(j -> 'milestone' = 'null'::jsonb and j -> 'milestone_points' = 'null'::jsonb) from r1)
           and not exists (select 1 from public.streak_milestones_awarded where user_id = pg_temp.u(1))
@@ -94,6 +103,7 @@ update public.profiles set streak_freezes = 1 where id = pg_temp.u(2);
 select pg_temp.done(2, 1);
 select pg_temp.done(2, 2);
 select pg_temp.today(2, 4);
+select pg_temp.west(2, 4);
 create temp table gt2 as select pg_temp.today(2, 3, 480) as j;  -- 20:00 on day 3
 select ok((select (j ->> 'relived')::boolean and (j ->> 'current_streak')::int = 2
                   and (j ->> 'freezes_needed')::int = 0 and not (j ->> 'at_risk')::boolean from gt2),
@@ -117,6 +127,7 @@ select is((pg_temp.prof(2)).streak_freezes, 0, '(the freeze is gone: no free fre
 
 -- ── R3: a first completion ever on a relived day ────────────────────────────
 select pg_temp.today(3, 2);
+select pg_temp.west(3, 2);
 select is((pg_temp.done(3, 1) ->> 'current_streak')::int, 0,
   'a first completion on a relived day doesn''t start a streak');
 select ok((pg_temp.prof(3)).last_streak_date is null and (pg_temp.prof(3)).streak_run_started is null,
@@ -128,6 +139,7 @@ select is((pg_temp.done(3, 2) ->> 'current_streak')::int, 1,
 -- ── R4: undo on a relived day ───────────────────────────────────────────────
 select pg_temp.done(4, 1);
 select pg_temp.today(4, 3);
+select pg_temp.west(4, 3);
 create temp table r4 as
   select (pg_temp.prof(4)).points_balance as bal, (pg_temp.prof(4)).current_streak as st,
          pg_temp.done(4, 2) as j;
@@ -152,7 +164,10 @@ select pg_temp.as_postgres();
 select ok(exists (select 1 from public.daily_schedule
                   where user_id = pg_temp.u(5) and local_date = (select d_east from r5)),
   '(the change snapshotted the old today)');
-select is((public.complete_habit_at(pg_temp.u(5), pg_temp.h(5), now()) ->> 'current_streak')::int, 2,
+select is((pg_temp.prof(5)).engine_floor_date, (select d_east from r5),
+  'moving west records the old today as the floor');
+select public.complete_habit_at(pg_temp.u(5), pg_temp.h(5), now());
+select is((pg_temp.prof(5)).current_streak, 2,
   'after moving west, completing a missed day leaves the streak alone');
 select ok(not pg_temp.counted(5, public.local_date_in('Etc/GMT+12', now())), 'and doesn''t count the day');
 select is((public.complete_habit_at(pg_temp.u(5), pg_temp.h(5),
@@ -164,6 +179,7 @@ select is((public.complete_habit_at(pg_temp.u(5), pg_temp.h(5),
 select pg_temp.done(6, 1); select pg_temp.done(6, 1, 1);
 select pg_temp.done(6, 2); select pg_temp.done(6, 2, 1);
 select pg_temp.today(6, 4);
+select pg_temp.west(6, 4);
 create temp table gt6 as select pg_temp.today(6, 3, 480) as j;  -- 20:00 on day 3
 select ok((select (j ->> 'relived')::boolean and not (j ->> 'at_risk')::boolean
                   and (j -> 'habits' -> 0 ->> 'habit_streak')::int = 2 from gt6),
@@ -210,6 +226,7 @@ select is((pg_temp.done(6, 4, 3) ->> 'current_streak')::int, 1,
 select pg_temp.done(7, 1); select pg_temp.done(7, 1, 1);
 select pg_temp.done(7, 2); select pg_temp.done(7, 2, 1);
 select pg_temp.today(7, 4);
+select pg_temp.west(7, 4);
 select is((pg_temp.done(7, 3) ->> 'habit_streak')::int, 2,
   'R7: one of two on a relived day leaves the habit streak alone');
 select pg_temp.done(7, 4);
@@ -218,6 +235,26 @@ select ok(((select j from r7) ->> 'habit_streak')::int = 1
           and ((select j from r7) ->> 'current_streak')::int = 1,
   'R7: the half-done relived day breaks both streaks on the reached day');
 select ok(pg_temp.balance_ok(7), 'R7: the ledger matches');
+
+-- ── R8: no move, a completion just before midnight (review of PR #84, B1) ──
+-- get_today at 00:00:01 of day 3 snapshots day 3 first (the rollover
+-- refetch), then a completion from 23:59:30 of day 2 lands. With no move
+-- west, day 2 counts as usual.
+select pg_temp.done(8, 0);
+select pg_temp.done(8, 1);
+select pg_temp.today(8, 2, 720.02);
+create temp table r8 as select pg_temp.done(8, 2, 719.5) as j;
+select ok(((select j from r8) ->> 'current_streak')::int = 3 and pg_temp.counted(8, pg_temp.day(2))
+          and ((select j from r8) ->> 'milestone')::int = 3,
+  'R8: a later snapshot alone never makes a day relived (only a move west does)');
+
+-- ── The floor is server-only ────────────────────────────────────────────────
+select column_privs_are('public', 'profiles', 'engine_floor_date', 'authenticated', array['SELECT'],
+  'clients can read but not write engine_floor_date');
+select pg_temp.as_user(pg_temp.u(8));
+select throws_ok($$update public.profiles set engine_floor_date = null where id = pg_temp.u(8)$$,
+  '42501', null, 'a client can''t clear the floor');
+select pg_temp.as_postgres();
 
 select * from finish();
 rollback;
