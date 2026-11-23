@@ -1,7 +1,10 @@
 -- Phase 5 (#90): the reminders cron jobs, invoke_reminders and log cleanup.
-begin;
+-- Repeatable read: once real Vault secrets exist locally, the live minute
+-- job commits (and the pg_net worker deletes) queue rows; this snapshot
+-- keeps the counts below from racing them.
+begin isolation level repeatable read;
 create extension if not exists pgtap with schema extensions;
-select plan(38);
+select plan(43);
 
 create function pg_temp.queued() returns int language sql as $$
   select count(*)::int from net.http_request_queue $$;
@@ -102,8 +105,8 @@ select pg_temp.set_secrets('javascript:alert(1)', repeat('s', 64));
 select is(public.invoke_reminders(), null::bigint, 'nor a javascript: one');
 select pg_temp.set_secrets('ftp://app.example.com', repeat('s', 64));
 select is(public.invoke_reminders(), null::bigint, 'nor an ftp: one');
-select pg_temp.set_secrets(' https://app.example.com', repeat('s', 64));
-select is(public.invoke_reminders(), null::bigint, 'nor one with whitespace before the scheme');
+select pg_temp.set_secrets('javascript://app.example.com', repeat('s', 64));
+select is(public.invoke_reminders(), null::bigint, 'nor a javascript: one written like a URL');
 select pg_temp.set_secrets(null, repeat('s', 64));
 select is(public.invoke_reminders(), null::bigint, 'a missing app_url with a present secret queues nothing');
 select pg_temp.set_secrets('https://app.example.com', null);
@@ -138,6 +141,23 @@ select is((select array_agg(local_date order by local_date) from public.reminder
 select is((select array_agg(local_date order by local_date) from public.streak_saver_log
            where user_id = '99999999-0000-0000-0000-000000000001'),
   array[current_date - 7, current_date - 2], 'and the same for the streak saver log');
+
+-- ── Review of PR #98: cleartext, trimming, run history ───────────────────────
+select pg_temp.set_secrets('http://app.example.com', repeat('s', 64));
+select is(public.invoke_reminders(), null::bigint,
+  'plain http to another host is refused: the bearer never crosses a network in cleartext');
+select pg_temp.set_secrets('http://localhost:3000', repeat('s', 64));
+select ok(public.invoke_reminders() is not null, 'plain http to this machine is allowed (local development)');
+select pg_temp.set_secrets('https://trim.example.com/' || chr(10), repeat('t', 64) || chr(10));
+create temp table q9 as select public.invoke_reminders() as id;
+select ok((select url = 'https://trim.example.com/api/cron/reminders'
+                  and headers ->> 'Authorization' = 'Bearer ' || repeat('t', 64)
+           from net.http_request_queue where id = (select id from q9)),
+  'pasted values are trimmed (a trailing newline would fail every run)');
+select ok((select prosrc ~ 'delete from cron.job_run_details' from pg_proc
+           where oid = 'public.cleanup_push_logs()'::regprocedure),
+  'cleanup also prunes pg_cron''s run history (1,440 rows a day from the minute job)');
+select lives_ok($$select public.cleanup_push_logs()$$, 'and postgres may delete its own run history');
 
 select * from finish();
 rollback;

@@ -81,23 +81,29 @@ select vault.update_secret(id, '<new value>') from vault.secrets where name = 'c
 
 `host.docker.internal` works with Docker Desktop (Windows and macOS). On Linux, add the host-gateway mapping, or use the host's LAN address.
 
+Values are trimmed, but paste them without quotes. `app_url` must be `https://`, except plain `http://` to `localhost`, `127.0.0.1`, `[::1]` or `host.docker.internal`, so the bearer secret never crosses a network in cleartext.
+
 The `db reset` command recreates the database, so re-run these after a reset. Locally, the service worker registers only in production builds, so test push with `pnpm build && pnpm start`, not `pnpm dev`.
 
 ### 3. Check it's running
 
 ```sql
 -- Recent runs of the minute job (success or error).
-select jobid, status, return_message, start_time
-from cron.job_run_details order by start_time desc limit 10;
+select d.status, d.return_message, d.start_time
+from cron.job_run_details d join cron.job j using (jobid)
+where j.jobname = 'questrix-reminders'
+order by d.start_time desc limit 10;
 
 -- Recent responses from the route: {sent, failed, removed, skipped, malformed, truncated}.
-select id, status_code, content::text, error_msg, created
+select id, status_code, timed_out, content, error_msg, created
 from net._http_response order by created desc limit 10;
 ```
 
 pg_net gives up waiting after 30 s, but the route can run for up to 60 s. A "timeout" row therefore only means the response was discarded; the run itself completes. Check the route's own log line, `reminders: {...}`, in the host's function logs.
 
-Trigger a run by hand, without waiting for the minute:
+No rows at all here means `invoke_reminders()` isn't sending: a secret is missing, the secret is under 32 characters, or `app_url` is plain `http://` to anything but this machine. It returns null quietly in those cases, by design.
+
+Trigger a run by hand, without waiting for the minute. This puts the secret on the command line, so do it only on your own machine:
 
 ```bash
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reminders
@@ -106,14 +112,19 @@ curl -X POST -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/c
 ### 4. Pause, resume, remove
 
 ```sql
-update cron.job set active = false where jobname = 'questrix-reminders';  -- pause
-update cron.job set active = true  where jobname = 'questrix-reminders';  -- resume
-select cron.unschedule('questrix-reminders');                             -- remove (a migration re-adds it)
+-- postgres isn't a superuser: change jobs through pg_cron's API, not cron.job.
+select cron.alter_job((select jobid from cron.job where jobname = 'questrix-reminders'), active := false);  -- pause
+select cron.alter_job((select jobid from cron.job where jobname = 'questrix-reminders'), active := true);   -- resume
+select cron.unschedule('questrix-reminders');                                                              -- remove
+-- To re-add after a remove (only a local `db reset` re-runs the migration):
+select cron.schedule('questrix-reminders', '* * * * *', 'select public.invoke_reminders()');
 ```
 
-The daily `questrix-push-log-cleanup` job (03:17 UTC) deletes reminder and streak-saver log rows older than 7 days. Never shorten that below 2 days: the log is what stops a timezone change re-firing a reminder.
+The daily `questrix-push-log-cleanup` job (03:17 UTC) deletes reminder and streak-saver log rows, and pg_cron's own run history, older than 7 days. Never shorten that below 2 days: the log is what stops a timezone change re-firing a reminder.
 
 ### 5. Before turning it on in production
+
+- **Never expose `net`, `vault` or `cron` through the API** (`[api] schemas` in `supabase/config.toml`, or the dashboard's exposed schemas). pg_net's `net.http_request_queue` holds each queued request's headers, including the bearer secret, and Supabase grants every role access to it. It's safe only because PostgREST can't reach it. A unit test pins the local config.
 
 - **#79's rate limit on `save_push_subscription` must ship first** (security audit S2). Without it, a user can churn garbage endpoints, and every run would spend the app's standing with the push services.
 - **Timezone names.** `due_reminders` is one statement for every user. If a tzdata upgrade ever drops a timezone name a profile stores, it would fail for everyone. tzdata keeps backward links, so this is unlikely. If `due_reminders` errors start appearing, check `select distinct timezone from profiles` against `pg_timezone_names`.
