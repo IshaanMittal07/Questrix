@@ -459,7 +459,7 @@ select cron.schedule('questrix-reminders', '* * * * *', $$
 $$);
 ```
   (pg_net's default timeout is only a few seconds, so it's raised here.)
-- `GET|POST /api/cron/reminders` (Node.js runtime, `export const dynamic = 'force-dynamic'`):
+- `POST /api/cron/reminders` (Node.js is the default runtime; no `dynamic` export, which Cache Components removes; `maxDuration = 60`; excluded from `proxy.ts`. DECISIONS P8):
   1. Reject unless the `Authorization` header equals `Bearer ${CRON_SECRET}` (constant-time compare).
   2. Call SQL function `due_reminders(now())` with the service-role client (EXECUTE revoked from `public`, `anon` and `authenticated` — see the global DB rules) which returns rows where, **in each user's timezone**: today's weekday ∈ `days_of_week`, a `reminder_time` falls in the window `(now − 2 min, now]` truncated to minutes, the habit isn't archived, today's completions < `target_per_day`, and no `reminder_log` row exists. It inserts the `reminder_log` rows in the same statement (`insert … on conflict do nothing returning …`) so overlapping cron runs can't double-send.
   3. Send with `web-push` (VAPID keys from env), concurrency 20, TTL 1 hour, `urgency: 'high'`. On HTTP 404/410 delete the subscription; on success update `last_success_at`.
