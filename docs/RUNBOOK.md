@@ -43,6 +43,91 @@ Tests: `pnpm test` (unit), `pnpm db:test` (pgTAP), `pnpm build && pnpm test:e2e`
 - **Text-cleaning parity:** after the first `supabase db push`, run the four `habits_clean_text` parity selects at the end of `supabase/tests/020_habits_rls.sql` in the hosted SQL editor and check they return the expected values (the habit forms assume them).
 - **Node on Vercel:** `engines` is `>=22.22.2 <23` with `engineStrict`. On the first deploy, check the build log's Node.js line is 22.22.2 or newer; if Vercel's image ships an older 22.x, the install fails.
 
+## Reminders and push notifications
+
+Every minute, pg_cron runs `public.invoke_reminders()`. It reads two Vault secrets and POSTs to `/api/cron/reminders` through pg_net, and the route sends the pushes (DECISIONS P5–P9). Until both secrets exist, the job does nothing, so a fresh stack or CI never calls out.
+
+### 1. Keys and the cron secret (once per environment)
+
+```bash
+pnpm dlx web-push generate-vapid-keys      # a public/private pair (base64url, no "=")
+openssl rand -hex 32                        # CRON_SECRET: ASCII, at least 32 characters
+```
+
+Put these in `.env.local` locally, or the host's env settings in production. Never commit them.
+
+```
+NEXT_PUBLIC_VAPID_PUBLIC_KEY=<publicKey>
+VAPID_PRIVATE_KEY=<privateKey>              # server only
+VAPID_SUBJECT=mailto:you@example.com        # a real address; Safari rejects localhost
+CRON_SECRET=<hex from openssl>              # server only
+```
+
+A key pair that doesn't match, or a padded key, makes the route return 500 "Push is not configured" before it fetches anything. If keys are revoked later, every push fails, and the log says `all N pushes failed; check the VAPID keys`.
+
+### 2. The Vault secrets (once per environment, outside git)
+
+Run these in the SQL editor (Studio at http://127.0.0.1:55323 locally) or with psql. Never put them in `seed.sql` or a migration.
+
+```sql
+-- Locally: the database runs in Docker and reaches the host's Next server.
+select vault.create_secret('http://host.docker.internal:3000', 'app_url');
+-- Production: the deployed origin, e.g. https://your-app.example.
+select vault.create_secret('<same value as CRON_SECRET>', 'cron_secret');
+
+-- To change one later:
+select vault.update_secret(id, '<new value>') from vault.secrets where name = 'cron_secret';
+```
+
+`host.docker.internal` works with Docker Desktop (Windows and macOS). On Linux, add the host-gateway mapping, or use the host's LAN address.
+
+The `db reset` command recreates the database, so re-run these after a reset. Locally, the service worker registers only in production builds, so test push with `pnpm build && pnpm start`, not `pnpm dev`.
+
+### 3. Check it's running
+
+```sql
+-- Recent runs of the minute job (success or error).
+select jobid, status, return_message, start_time
+from cron.job_run_details order by start_time desc limit 10;
+
+-- Recent responses from the route: {sent, failed, removed, skipped, malformed, truncated}.
+select id, status_code, content::text, error_msg, created
+from net._http_response order by created desc limit 10;
+```
+
+pg_net gives up waiting after 30 s, but the route can run for up to 60 s. A "timeout" row therefore only means the response was discarded; the run itself completes. Check the route's own log line, `reminders: {...}`, in the host's function logs.
+
+Trigger a run by hand, without waiting for the minute:
+
+```bash
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/reminders
+```
+
+### 4. Pause, resume, remove
+
+```sql
+update cron.job set active = false where jobname = 'questrix-reminders';  -- pause
+update cron.job set active = true  where jobname = 'questrix-reminders';  -- resume
+select cron.unschedule('questrix-reminders');                             -- remove (a migration re-adds it)
+```
+
+The daily `questrix-push-log-cleanup` job (03:17 UTC) deletes reminder and streak-saver log rows older than 7 days. Never shorten that below 2 days: the log is what stops a timezone change re-firing a reminder.
+
+### 5. Before turning it on in production
+
+- **#79's rate limit on `save_push_subscription` must ship first** (security audit S2). Without it, a user can churn garbage endpoints, and every run would spend the app's standing with the push services.
+- **Timezone names.** `due_reminders` is one statement for every user. If a tzdata upgrade ever drops a timezone name a profile stores, it would fail for everyone. tzdata keeps backward links, so this is unlikely. If `due_reminders` errors start appearing, check `select distinct timezone from profiles` against `pg_timezone_names`.
+
+### 6. Testing on a real iPhone (no hosted Supabase)
+
+iOS push needs HTTPS and an installed PWA. Without a hosted project:
+
+1. Run the local stack and `pnpm build && pnpm start`.
+2. Expose the app over HTTPS with a Cloudflare quick tunnel (no account needed): `cloudflared tunnel --url http://localhost:3000`. It prints an `https://<random>.trycloudflare.com` URL.
+3. The phone must also reach the Supabase API. Either open a second tunnel for `http://127.0.0.1:55321` and build with `NEXT_PUBLIC_SUPABASE_URL` set to it, or proxy it through Next. Add the app's tunnel URL to `additional_redirect_urls` in `supabase/config.toml` and restart the stack.
+4. Keep `app_url` in Vault as `http://host.docker.internal:3000`. pg_cron calls the local server directly, not through the tunnel.
+5. On the iPhone, open the tunnel URL in Safari, use Share → Add to Home Screen, open the app from the Home Screen, and enable notifications from a tap.
+
 ## Production setup
 
-_Phases 5 and 8 add Vercel env vars, the Supabase Vault secrets (`app_url`, `cron_secret`), pg_cron jobs and VAPID keys._
+_Phase 8 adds hosting. Phase 5's VAPID keys, cron secret, Vault secrets and pg_cron jobs are described under "Reminders and push notifications" above; the same steps apply in production with the deployed origin as `app_url`._
