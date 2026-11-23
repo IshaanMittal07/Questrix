@@ -440,7 +440,7 @@ Avatar rendering: `components/avatar/Avatar.tsx` stacks SVG layers in fixed orde
 1. Service worker `public/sw.js` registered from a client component after load.
 2. **Enable notifications** button in Settings and in onboarding. Permission must be requested **inside a user tap** (required by iOS Safari).
 3. On iPhone, detect when the app is *not* running standalone (`window.matchMedia('(display-mode: standalone)').matches` false **and** `navigator.standalone` not true) and show an "Install Questrix" sheet: *Share → Add to Home Screen*, then open from the Home Screen and enable notifications. Push on iOS only works in the installed app on iOS/iPadOS 16.4+.
-4. `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: VAPID_PUBLIC_KEY })` → `POST /api/push/subscribe` (Zod-validated) → upsert `push_subscriptions` by endpoint.
+4. `pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: VAPID_PUBLIC_KEY })` → `POST /api/push/subscribe` (Zod-validated: https on an allowlisted push service, printable ASCII, keys of exactly 87 and 22 base64url characters) → `save_push_subscription()` RPC, which also moves a device's row to whoever signed in on it. Unsubscribing and signing out delete the device's row directly (owner-only RLS). See DECISIONS P1/P2.
 5. `sw.js` handles `push` (show notification with title, body, icon `/icons/icon-192.png`, `data.url`) and `notificationclick` (focus an existing window or open `data.url`, e.g. `/today?habit=<id>`).
 
 ### 7.2 Server scheduler
