@@ -327,7 +327,9 @@ No update/delete grants for anyone except the service role.
 | user_agent | text |
 | created_at, last_success_at | timestamptz |
 
-**reminder_log** — `(habit_id, local_date, reminder_time)` PK, `sent_at`. Guarantees each reminder is sent at most once.
+**reminder_log** — `(habit_id, local_date, reminder_time)` PK, `sent_at`. Guarantees each reminder is sent at most once. Server-only (RLS, no client access); also has `user_id`.
+
+**push_subscriptions** is written only through `save_push_subscription()`: endpoints must be https on a known push service, at most 10 per user (DECISIONS P1/P2). **profiles** also has `push_enabled` and `streak_saver_enabled` (both default true, DECISIONS P3).
 
 **follows** — `(follower_id, followee_id)` PK, check `follower_id <> followee_id`, index on `followee_id`.
 

@@ -426,3 +426,13 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Reduced motion.** Under `prefers-reduced-motion`, confetti is hidden, the flame and the check pop don't animate, and the floating points fade in place. Milestones still get a toast and the announcement.
   - **Offline.** Completions are never queued (plan §8, the server is authoritative). A tap while `navigator.onLine` is false, or an action that fails to reach the server, shows "You're offline" (or a retry message) and reverts. `useOffline` isn't used: it needs `experimental.useOffline`, which also retries blocked Server Actions automatically, and a delayed replay of a completion isn't what we want. Viewing a cached Today offline is Phase 8 hardening.
   - **Settings shows the timezone cooldown** (#28): `timezone_changed_at + timezone_change_cooldown_days`, rounded up to the minute like the trigger's hint and shown in the user's timezone. It's display only; the trigger enforces it.
+
+## Phase 5
+
+- **P1. Push subscriptions are written through an RPC (#87).** Plan §7.1 says the server upserts `push_subscriptions` by endpoint. Under owner-only RLS that fails when a second user signs in on a device the first user registered, because the row belongs to the first user. Instead, clients can only SELECT and DELETE their own rows, and `save_push_subscription(endpoint, p256dh, auth, user_agent)` (SECURITY DEFINER, `auth.uid()`) inserts or moves the row to the caller.
+  - An endpoint URL is a capability: whoever holds it is that device. Moving it is accepted.
+  - The row's keys are replaced. `last_success_at` resets when the owner changes.
+  - At most 10 subscriptions per user, and at most 20 new ones an hour (`QX001`).
+- **P2. Endpoint allowlist (#87).** The server POSTs to stored endpoints, so a CHECK constraint (and Zod in #91) requires `https://` on a known push service: `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.push.apple.com` and `*.notify.windows.com`. This is a deviation from the plan, which stores any endpoint. It prevents SSRF against internal hosts. A new browser push service needs a migration.
+- **P3. Notification settings (#87).** The plan wants a global toggle and a streak-saver toggle but defines no columns. Added `profiles.push_enabled` and `profiles.streak_saver_enabled` (both default true, client-writable through the column grant). Per-habit reminders keep `habits.reminders_enabled`.
+- **P4. `reminder_log` is server-only (#87).** RLS is on, with no policies and no client privileges. It cascades with the habit and the profile. Plan §5.2's key `(habit_id, local_date, reminder_time)` gives at-most-once delivery. The partial index `habits_reminders_idx` (asked for in Phase 3) serves `due_reminders` (#88).
