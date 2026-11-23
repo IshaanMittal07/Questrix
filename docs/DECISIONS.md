@@ -212,6 +212,12 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Never removed.** Archiving or editing a habit doesn't remove it, so `scheduled_count` never falls. A day holds at most 20 habits, which bounds archive-and-recreate farming.
   - **What reads the snapshot.** Points, targets and "scheduled today" all come from the snapshot, never the live habit. Changes to `difficulty` and `target_per_day` therefore apply from the next day.
   - **Enforced by the database.** `habit_completions` has a foreign key to the snapshot, so a completion of an unscheduled habit can't exist.
+  - **Late joiners don't count the day (#82, security audit of PR #80, M2).** `daily_schedule_habits.initial` marks the habits in a day's first snapshot. Only `ensure_daily_schedule` writes true; the column defaults to false, so a new insert path fails closed. Rows that existed before the column are treated as initial.
+    - The exploit: keep every habit archived, so each day's snapshot is empty and counts as a rest day. Then unarchive one habit on the days you choose, complete it to grow the streak, and archive it again. Skipped days never broke the streak.
+    - Now a completion of a late-joined habit earns points, but takes the "no change" path for the global streak and leaves the day uncounted. A later completion of an initial habit still counts the day.
+    - Its multiplier and reported streak are the streak as judged today, the value `get_today` shows. They don't include the day it would have added, and a lost streak pays the base rate.
+    - **Trade-off, accepted:** a habit created mid-day, or the first habit after days with nothing scheduled, only starts counting the next day. `get_today` reports `joined_late` per habit, and the Today card says "Streak from tomorrow".
+    - Per-habit streaks still advance for late joiners. They carry no points, freezes or milestones, and undo's QX108 guard depends on them advancing (see #85).
 - **D2. Lazy backfill instead of the nightly job.** Plan §5.2 and §6.2 call for a nightly pg_cron job to fill `daily_schedule`. Instead, `ensure_daily_schedule` fills missing days on demand. This deviation drops the job.
   - Up to 7 past days are filled, rebuilt from `created_at`/`archived_at` and the current `days_of_week`. That's accurate because every edit to the days snapshots first.
   - Never earlier than the onboarding date.

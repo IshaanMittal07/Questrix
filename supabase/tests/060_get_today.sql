@@ -93,7 +93,7 @@ select is((select array_agg(k order by k) from r, jsonb_object_keys(r.j) k where
         'relived', 'scheduled_count', 'streak_freezes', 'timezone', 'undo_window_minutes', 'username'],
   'the JSON has exactly the documented keys');
 select is((select array_agg(k order by k) from r, jsonb_object_keys(pg_temp.habit(r.j, 'A')) k where n = 'g1a'),
-  array['category', 'color', 'completions', 'difficulty', 'done', 'habit_streak', 'icon', 'id', 'target', 'title'],
+  array['category', 'color', 'completions', 'difficulty', 'done', 'habit_streak', 'icon', 'id', 'joined_late', 'target', 'title'],
   'each habit has exactly the documented keys');
 select ok((select (j ->> 'local_date')::date = pg_temp.day(1) and (j ->> 'local_hour')::int = 12
                   and j ->> 'timezone' = 'UTC' and (j ->> 'undo_window_minutes')::int = 15
@@ -472,14 +472,15 @@ select ok((select pg_temp.titles(j) = array['Late'] and (j ->> 'scheduled_count'
                   and not (j ->> 'at_risk')::boolean
            from public.get_today_at(pg_temp.u('0e'), pg_temp.end_of_today()) j),
   'a habit added on a rest day is listed, but the day stays a rest day and isn''t at risk');
-select ok((select (c ->> 'current_streak')::int = 2 and (j ->> 'counted_today')::boolean
+select ok((select (c ->> 'current_streak')::int = 1 and not (j ->> 'counted_today')::boolean
                   and (j ->> 'completed_count')::int = 1 and (j ->> 'scheduled_count')::int = 0
                   and (pg_temp.habit(j, 'Late') ->> 'done')::int = 1
+                  and (pg_temp.habit(j, 'Late') ->> 'joined_late')::boolean
            from public.complete_habit_at(pg_temp.u('0e'),
                   (select id from public.habits where user_id = pg_temp.u('0e') and title = 'Late'),
                   pg_temp.end_of_today()) c,
                 public.get_today_at(pg_temp.u('0e'), pg_temp.end_of_today()) j),
-  '(it can be completed, and that counts the day)');
+  '(it can be completed for points, but a habit that joined late doesn''t count the day, #82)');
 select ok((select pg_temp.titles(j) = array['Daily', 'Late'] and (j ->> 'scheduled_count')::int = 1
            from public.get_today_at(pg_temp.u('0f'), pg_temp.end_of_today()) j),
   'a habit added mid-day is listed after the others, but scheduled_count is unchanged');
@@ -515,7 +516,7 @@ select ok((select j ->> 'local_date' ~ '^\d{4}-\d{2}-\d{2}$' and (j -> 'local_ho
 select is((select array_agg(k || ':' || jsonb_typeof(h -> k) order by k)
            from r, pg_temp.habit(r.j, 'A') h, jsonb_object_keys(h) k where n = 'g1b'),
   array['category:string', 'color:string', 'completions:array', 'difficulty:string', 'done:number',
-        'habit_streak:number', 'icon:string', 'id:string', 'target:number', 'title:string'],
+        'habit_streak:number', 'icon:string', 'id:string', 'joined_late:boolean', 'target:number', 'title:string'],
   'habit JSON types');
 select is((select array_agg(k || ':' || jsonb_typeof(c -> k) order by k)
            from r, pg_temp.habit(r.j, 'A') h, jsonb_array_elements(h -> 'completions') c, jsonb_object_keys(c) k
