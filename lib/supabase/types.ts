@@ -761,6 +761,40 @@ export type Database = {
           },
         ];
       };
+      streak_saver_log: {
+        Row: {
+          local_date: string;
+          sent_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          local_date: string;
+          sent_at?: string;
+          user_id: string;
+        };
+        Update: {
+          local_date?: string;
+          sent_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "streak_saver_log_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "streak_saver_log_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       user_items: {
         Row: {
           acquired_at: string;
@@ -848,6 +882,28 @@ export type Database = {
       complete_habit_at: {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
         Returns: Json;
+      };
+      due_reminders: {
+        Args: { p_now: string };
+        Returns: {
+          category: string;
+          habit_id: string;
+          icon: string;
+          local_date: string;
+          points: number;
+          reminder_time: string;
+          streak: number;
+          title: string;
+          user_id: string;
+        }[];
+      };
+      due_streak_savers: {
+        Args: { p_now: string };
+        Returns: {
+          local_date: string;
+          streak: number;
+          user_id: string;
+        }[];
       };
       economy_config_value_valid: {
         Args: { p_key: string; value: Json };
