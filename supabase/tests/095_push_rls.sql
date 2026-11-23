@@ -1,7 +1,7 @@
 -- Phase 5 (#87): push_subscriptions, reminder_log, notification settings.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(80);
+select plan(90);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -24,7 +24,7 @@ create function pg_temp.ep(n int) returns text language sql as $$
 -- Valid-looking keys (base64url).
 create function pg_temp.save(p_endpoint text) returns uuid language sql as $$
   select public.save_push_subscription(p_endpoint,
-    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ', 'k3yAuthSecret01', 'Mozilla/5.0 (iPhone)') $$;
+    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY', 'Mozilla/5.0 (iPhone)') $$;
 
 -- Alice, Bob, Carol.
 insert into auth.users (id, email) values
@@ -110,7 +110,7 @@ select lives_ok($$select pg_temp.save(pg_temp.ep(1))$$, 'Alice saves a subscript
 select lives_ok($$select pg_temp.save(pg_temp.ep(1))$$, 'saving the same endpoint again is an update');
 select is((select count(*)::int from public.push_subscriptions), 1, 'she sees one row');
 select throws_ok($$insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
-                   values ('11111111-1111-1111-1111-111111111111', 'https://fcm.googleapis.com/x', 'BOr8z6W6Lm5vB9sF0QkPzXxk', 'k3yAuthSecret01')$$,
+                   values ('11111111-1111-1111-1111-111111111111', 'https://fcm.googleapis.com/x', 'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY')$$,
   '42501', null, 'a direct insert is refused');
 select throws_ok($$update public.push_subscriptions set user_id = '22222222-2222-2222-2222-222222222222'$$,
   '42501', null, 'a direct update is refused');
@@ -156,16 +156,16 @@ select lives_ok($$select pg_temp.save('https://fcm.googleapis.com/' || repeat('a
   'a 1024-character endpoint is accepted');
 select throws_ok($$select pg_temp.save('https://fcm.googleapis.com/' || repeat('a', 1025 - 27))$$, '23514', null,
   'a 1025-character endpoint is refused');
-select throws_ok($$select public.save_push_subscription(pg_temp.ep(9), 'BOr8z6W6Lm5vB9sF0QkPzXxk+/', 'k3yAuthSecret01')$$,
+select throws_ok($$select public.save_push_subscription(pg_temp.ep(9), 'BOr8z6W6Lm5vB9sF0QkPzXxk+/', 'k3yAuthSecret01_abc-XY')$$,
   '23514', null, 'standard base64 (+/) keys are refused');
-select throws_ok($$select public.save_push_subscription(pg_temp.ep(9), 'BOr8z6W6Lm5vB9sF0Qk', 'k3yAuthSecret01')$$,
-  '23514', null, 'a p256dh shorter than 20 is refused');
+select throws_ok($$select public.save_push_subscription(pg_temp.ep(9), 'BOr8z6W6Lm5vB9sF0Qk', 'k3yAuthSecret01_abc-XY')$$,
+  '23514', null, 'a p256dh that isn''t 87 characters is refused');
 
 -- user_agent is truncated to 512 and empty becomes null.
-select public.save_push_subscription(pg_temp.ep(300), 'BOr8z6W6Lm5vB9sF0QkPzXxk', 'k3yAuthSecret01', repeat('U', 600));
+select public.save_push_subscription(pg_temp.ep(300), 'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY', repeat('U', 600));
 select is((select length(user_agent) from public.push_subscriptions where endpoint = pg_temp.ep(300)), 512,
   'a long user agent is truncated to 512');
-select public.save_push_subscription(pg_temp.ep(301), 'BOr8z6W6Lm5vB9sF0QkPzXxk', 'k3yAuthSecret01', '');
+select public.save_push_subscription(pg_temp.ep(301), 'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY', '');
 select ok((select user_agent is null from public.push_subscriptions where endpoint = pg_temp.ep(301)),
   'an empty user agent is stored as null');
 
@@ -177,14 +177,14 @@ update public.push_subscriptions
 select set_config('qx.alice_ep1',
   (select id::text from public.push_subscriptions where endpoint = pg_temp.ep(1)), true);
 select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
-select is(public.save_push_subscription(pg_temp.ep(1), 'NEWkeyNEWkeyNEWkeyNEWkey', 'newAuthSecret01'),
+select is(public.save_push_subscription(pg_temp.ep(1), 'NEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEW', 'newAuthSecret01newAuth'),
   current_setting('qx.alice_ep1')::uuid, 'a same-owner re-save returns the same row');
 select is((select row(p256dh, auth, last_success_at, created_at)::text from public.push_subscriptions
            where endpoint = pg_temp.ep(1)),
-  row('NEWkeyNEWkeyNEWkeyNEWkey', 'newAuthSecret01', '2026-11-20 08:00+00'::timestamptz,
+  row('NEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEWNEW', 'newAuthSecret01newAuth', '2026-11-20 08:00+00'::timestamptz,
       '2026-11-01 00:00+00'::timestamptz)::text,
   'it replaces the keys and keeps last_success_at and created_at');
-select throws_ok($$select public.save_push_subscription(pg_temp.ep(9), 'not base64!', 'k3yAuthSecret01')$$,
+select throws_ok($$select public.save_push_subscription(pg_temp.ep(9), 'not base64!', 'k3yAuthSecret01_abc-XY')$$,
   '23514', null, 'malformed keys are refused');
 
 -- ── Visibility and takeover ─────────────────────────────────────────────────
@@ -200,11 +200,11 @@ select pg_temp.as_postgres();
 select is((select user_id from public.push_subscriptions where endpoint = pg_temp.ep(1)),
   '22222222-2222-2222-2222-222222222222'::uuid,
   'Bob signing in on Alice''s device moves its subscription to him');
-select is((select row(id, last_success_at is null, created_at = now(), p256dh)::text
+select is((select row(id <> current_setting('qx.alice_ep1')::uuid, last_success_at is null, created_at = now(), p256dh)::text
            from public.push_subscriptions where endpoint = pg_temp.ep(1)),
-  row(current_setting('qx.alice_ep1')::uuid, true, true,
-      'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ')::text,
-  'the row moves with his keys, and last_success_at and created_at reset');
+  row(true, true, true,
+      'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh')::text,
+  'the row moves with his keys under a new id (so a stale id can''t credit him), and last_success_at and created_at reset');
 select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
 select is((select count(*)::int from public.push_subscriptions where id = current_setting('qx.bob_ep1')::uuid), 1,
   'the id the RPC returns is a row Bob can now see');
@@ -259,6 +259,35 @@ select throws_ok($$select pg_temp.save('https://web.push.apple.com/x' || chr(10)
 select throws_ok($$select pg_temp.save('https://web.push.apple.com/a b')$$, '23514', null,
   'and so are spaces');
 select pg_temp.as_postgres();
+
+-- ── Key sizes are pinned (security audit of PR #95, B1) ─────────────────────
+select pg_temp.as_user('22222222-2222-2222-2222-222222222222');
+select throws_ok($$select public.save_push_subscription('https://fcm.googleapis.com/pad',
+                     repeat('A', 87) || repeat('=', 5000), 'k3yAuthSecret01_abc-XY')$$,
+  '23514', null, 'p256dh padding can''t grow the row');
+select throws_ok($$select public.save_push_subscription('https://fcm.googleapis.com/pad',
+                     'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', repeat('a', 22) || repeat('=', 5000))$$,
+  '23514', null, 'nor can auth padding');
+select lives_ok($$select public.save_push_subscription('https://fcm.googleapis.com/padded',
+                    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh=', 'k3yAuthSecret01_abc-XY==')$$,
+  'standard padding (one = and two =) is accepted');
+select throws_ok($$select pg_temp.save('https://web.push.apple.com/' || chr(8203) || 'x')$$, '23514', null,
+  'non-ASCII (a zero-width space) is refused, so the unique index never sees an oversized key');
+select throws_ok($$select pg_temp.save('https://web.push.apple.com/' || repeat(chr(128512), 990))$$, '23514', null,
+  'and long non-ASCII paths fail the CHECK, not the btree');
+select is((select user_agent from public.push_subscriptions where endpoint = 'https://fcm.googleapis.com/padded'), null,
+  '(a missing user agent stays null)');
+select public.save_push_subscription('https://fcm.googleapis.com/ua', 'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY', 'Safari' || chr(7) || chr(10) || '/17');
+select is((select user_agent from public.push_subscriptions where endpoint = 'https://fcm.googleapis.com/ua'), 'Safari/17',
+  'control characters are stripped from the user agent');
+select public.save_push_subscription('https://fcm.googleapis.com/ua', 'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY');
+select is((select user_agent from public.push_subscriptions where endpoint = 'https://fcm.googleapis.com/ua'), 'Safari/17',
+  'a same-owner re-save without a user agent keeps the stored one');
+select pg_temp.as_postgres();
+select table_privs_are('public', 'push_subscriptions', 'service_role', array['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+  'service_role has no TRUNCATE, TRIGGER or REFERENCES on push_subscriptions');
+select table_privs_are('public', 'reminder_log', 'service_role', array['SELECT', 'INSERT', 'UPDATE', 'DELETE'],
+  'nor on reminder_log');
 
 select * from finish();
 rollback;

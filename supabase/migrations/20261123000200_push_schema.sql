@@ -24,13 +24,17 @@ create table public.push_subscriptions (
   endpoint text not null unique
     constraint push_subscriptions_endpoint_valid check (
       length(endpoint) <= 1024
-      and endpoint !~ '[[:space:][:cntrl:]]'
+      -- Printable ASCII only (real endpoints are), so the 1024 limit is in
+      -- bytes too and invisible characters can't hide in the path.
+      and endpoint ~ '^[!-~]+$'
       and endpoint ~ '^https://(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.push\.apple\.com|[a-z0-9]([a-z0-9-]*[a-z0-9])?\.notify\.windows\.com)/'
     ),
+  -- An uncompressed P-256 key (65 bytes) and a 16-byte auth secret, in
+  -- base64url: exact sizes, so a client can't store megabytes of padding.
   p256dh text not null
-    constraint push_subscriptions_p256dh_valid check (p256dh ~ '^[A-Za-z0-9_-]{20,200}=*$'),
+    constraint push_subscriptions_p256dh_valid check (p256dh ~ '^[A-Za-z0-9_-]{87}=?$'),
   auth text not null
-    constraint push_subscriptions_auth_valid check (auth ~ '^[A-Za-z0-9_-]{8,100}=*$'),
+    constraint push_subscriptions_auth_valid check (auth ~ '^[A-Za-z0-9_-]{22}(==)?$'),
   user_agent text
     constraint push_subscriptions_user_agent_len check (length(user_agent) <= 512),
   created_at timestamptz not null default now(),
@@ -46,6 +50,7 @@ create policy push_subscriptions_select_own on public.push_subscriptions
 create policy push_subscriptions_delete_own on public.push_subscriptions
   for delete to authenticated using (user_id = (select auth.uid()));
 revoke all on public.push_subscriptions from anon, authenticated;
+revoke truncate, trigger, references on public.push_subscriptions from service_role;
 grant select, delete on public.push_subscriptions to authenticated;
 
 -- ── reminder_log ────────────────────────────────────────────────────────────
@@ -63,6 +68,7 @@ create index reminder_log_user_id_idx on public.reminder_log (user_id);
 create index reminder_log_sent_at_idx on public.reminder_log (sent_at);
 alter table public.reminder_log enable row level security;
 revoke all on public.reminder_log from anon, authenticated;
+revoke truncate, trigger, references on public.reminder_log from service_role;
 
 -- Candidate habits for due_reminders (DECISIONS § Phase 3 asked for it).
 create index habits_reminders_idx on public.habits (user_id)
@@ -77,7 +83,10 @@ create index habits_reminders_idx on public.habits (user_id)
  * - At most 10 per user (QX001), so a client can't fill the table. Call
  *   rate limiting is #79's (a count of live rows can't limit churn).
  * - Locks the profile FOR NO KEY UPDATE first (D5), which serialises the
- *   cap check per user.
+ *   cap check per user: every insert of a row for this user runs after the
+ *   lock, and READ COMMITTED re-reads the count after it. Other users'
+ *   takeovers and deletes only lower it. NO KEY UPDATE doesn't block the
+ *   FK checks' KEY SHARE, so it can't deadlock against the engine.
  */
 create function public.save_push_subscription(
   p_endpoint text, p_p256dh text, p_auth text, p_user_agent text default null)
@@ -107,11 +116,16 @@ begin
   end if;
 
   insert into public.push_subscriptions as s (user_id, endpoint, p256dh, auth, user_agent)
-  values (v_uid, p_endpoint, p_p256dh, p_auth, nullif(left(p_user_agent, 512), ''))
+  values (v_uid, p_endpoint, p_p256dh, p_auth, nullif(left(regexp_replace(p_user_agent, '[[:cntrl:]]', '', 'g'), 512), ''))
   on conflict (endpoint) do update
     set p256dh = excluded.p256dh,
         auth = excluded.auth,
-        user_agent = excluded.user_agent,
+        -- A re-save without a user agent keeps the stored one.
+        user_agent = case when s.user_id = excluded.user_id
+                          then coalesce(excluded.user_agent, s.user_agent) else excluded.user_agent end,
+        -- A moved row gets a new id, so a sender holding the old id (#89)
+        -- can't record a success or a removal against the new owner.
+        id = case when s.user_id = excluded.user_id then s.id else gen_random_uuid() end,
         last_success_at = case when s.user_id = excluded.user_id then s.last_success_at end,
         created_at = case when s.user_id = excluded.user_id then s.created_at else now() end,
         user_id = excluded.user_id
