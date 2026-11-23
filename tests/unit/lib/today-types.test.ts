@@ -16,6 +16,7 @@ const day = (completedAt: string, until: string) => ({
   streak_freezes: 0,
   freezes_needed: 0,
   counted_today: false,
+  relived: false,
   scheduled_count: 1,
   completed_count: 1,
   at_risk: false,
@@ -53,6 +54,17 @@ describe("todaySchema timestamps", () => {
     const c = parsed.habits[0].completions[0];
     expect(Date.parse(c.undoable_until)).toBe(
       Date.parse("2026-11-18T12:15:00.123Z"),
+    );
+  });
+
+  it("requires a boolean relived flag (#81), so a stale server fails closed", () => {
+    const ok = day("2026-11-18T12:00:00+00:00", "2026-11-18T12:15:00+00:00");
+    expect(todaySchema.parse({ ...ok, relived: true }).relived).toBe(true);
+    const missing: Record<string, unknown> = { ...ok };
+    delete missing.relived;
+    expect(todaySchema.safeParse(missing).success).toBe(false);
+    expect(todaySchema.safeParse({ ...ok, relived: "true" }).success).toBe(
+      false,
     );
   });
 
