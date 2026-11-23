@@ -156,7 +156,7 @@ export async function runReminders(deps: {
   }
 
   // Savers first: at most one row per user, and a 20:00 saver is due in only
-  // three overlapping runs, so it mustn't be what a busy minute cuts
+  // two overlapping runs, so it mustn't be what a busy minute cuts
   // (reviews of PR #97).
   const savers = await admin.rpc("due_streak_savers", { p_now: now });
   if (savers.error) {
