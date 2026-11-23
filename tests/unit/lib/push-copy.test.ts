@@ -73,6 +73,19 @@ describe("reminderMessage", () => {
     }
   });
 
+  it("treats inherited property names as unknown categories", () => {
+    for (const c of [
+      "constructor",
+      "toString",
+      "__proto__",
+      "hasOwnProperty",
+    ]) {
+      expect(reminderMessage(row({ category: c }), () => 0).body).toContain(
+        "Read",
+      );
+    }
+  });
+
   it("handles a random source that returns 1", () => {
     expect(() => reminderMessage(row(), () => 1)).not.toThrow();
   });

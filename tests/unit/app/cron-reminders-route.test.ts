@@ -90,6 +90,7 @@ describe("POST /api/cron/reminders", () => {
         },
         TTL: 3600,
         urgency: "high",
+        timeout: 10_000,
       },
     );
   });

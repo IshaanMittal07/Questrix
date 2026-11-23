@@ -75,7 +75,10 @@ export function reminderMessage(
   r: ReminderRow,
   random: () => number = Math.random,
 ): PushMessage {
-  const lines = BY_CATEGORY[r.category] ?? BY_CATEGORY.other;
+  // Own keys only: an inherited name like "constructor" isn't a category.
+  const lines = Object.hasOwn(BY_CATEGORY, r.category)
+    ? BY_CATEGORY[r.category]
+    : BY_CATEGORY.other;
   let body = pick(lines, random)(r);
   // Only a live streak of 2+ is worth naming; 0 means "don't claim one".
   if (r.streak >= 2) body += ` Keep the ${r.streak}-day streak alive 🔥`;

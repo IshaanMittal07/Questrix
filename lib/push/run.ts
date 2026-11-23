@@ -16,7 +16,6 @@ const subscriptionSchema = z.object({
   p256dh: z.string(),
   auth: z.string(),
 });
-const subscriptionsSchema = z.array(subscriptionSchema).nullable();
 
 const reminderSchema = z.object({
   habit_id: z.string(),
@@ -45,10 +44,15 @@ export class RunError extends Error {
   }
 }
 
+/** One job per well-formed device; a malformed one doesn't cost the others. */
 function jobsFor(subscriptions: unknown, message: Job["message"]): Job[] {
-  const subs = subscriptionsSchema.safeParse(subscriptions);
-  if (!subs.success || !subs.data) return [];
-  return subs.data.map((subscription) => ({ subscription, message }));
+  if (!Array.isArray(subscriptions)) return [];
+  const jobs: Job[] = [];
+  for (const raw of subscriptions) {
+    const s = subscriptionSchema.safeParse(raw);
+    if (s.success) jobs.push({ subscription: s.data, message });
+  }
+  return jobs;
 }
 
 /**
@@ -66,13 +70,19 @@ export async function runReminders(deps: {
   const { admin, send, random } = deps;
   const now = (deps.now ?? new Date()).toISOString();
   const jobs: Job[] = [];
+  // Rows are logged as the database returns them, so whatever was collected
+  // before a failure is still sent; the failure is reported afterwards.
+  let failure: RunError | undefined;
 
   for (let page = 0; page < MAX_PAGES; page++) {
     const { data, error } = await admin.rpc("due_reminders", {
       p_now: now,
       p_limit: PAGE,
     });
-    if (error) throw new RunError("due_reminders", error.code);
+    if (error) {
+      failure = new RunError("due_reminders", error.code);
+      break;
+    }
     const rows: unknown[] = Array.isArray(data) ? data : [];
     for (const raw of rows) {
       // One malformed row is skipped, not the page: the rows are already
@@ -88,13 +98,13 @@ export async function runReminders(deps: {
     if (rows.length < PAGE) break;
   }
 
-  // A saver failure mustn't cost the reminders already collected (and
-  // logged): send those first, then report it.
-  let saverError: RunError | undefined;
-  const savers = await admin.rpc("due_streak_savers", { p_now: now });
-  if (savers.error) {
-    saverError = new RunError("due_streak_savers", savers.error.code);
-  } else {
+  // Savers are a separate call; a failure there mustn't cost the reminders.
+  const savers = failure
+    ? undefined
+    : await admin.rpc("due_streak_savers", { p_now: now });
+  if (savers?.error) {
+    failure = new RunError("due_streak_savers", savers.error.code);
+  } else if (savers) {
     for (const raw of Array.isArray(savers.data) ? savers.data : []) {
       const r = saverSchema.safeParse(raw);
       if (r.success) {
@@ -128,11 +138,12 @@ export async function runReminders(deps: {
       .in("id", removed);
     if (error) throw new RunError("remove subscriptions", error.code);
   }
+  // sent and failed count pushes; removed counts subscriptions deleted.
   const result = {
     sent: out.sent.length,
     failed: out.failed,
     removed: removed.length,
   };
-  if (saverError) throw Object.assign(saverError, { result });
+  if (failure) throw Object.assign(failure, { result });
   return result;
 }

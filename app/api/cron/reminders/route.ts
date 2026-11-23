@@ -30,6 +30,9 @@ export async function POST(request: Request) {
       vapidDetails: vapid,
       TTL: 3600,
       urgency: "high",
+      // A push service that never answers mustn't hold a slot until
+      // maxDuration.
+      timeout: 10_000,
     });
   try {
     const result = await runReminders({ admin: createAdminClient(), send });
