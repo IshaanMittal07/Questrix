@@ -57,6 +57,7 @@ const habit = (
   difficulty: "medium",
   target: 1,
   done: 0,
+  joined_late: false,
   habit_streak: 0,
   completions: [],
   ...over,
@@ -515,6 +516,23 @@ describe("TodayView", () => {
     );
     expect(await screen.findByText("+20")).toBeInTheDocument();
     expect(screen.queryByText(/×1\.00/)).toBeNull();
+  });
+
+  it("marks a habit that joined today as counting from tomorrow (#82)", () => {
+    renderView(
+      day({
+        habits: [
+          habit("h1", "Read"),
+          habit("h2", "New", { joined_late: true }),
+        ],
+      }),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Complete New, 0 of 1 done, counts toward your streak from tomorrow",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Streak from tomorrow")).toHaveLength(1);
   });
 
   it("explains a relived day (#81) and says nothing on a normal one", () => {

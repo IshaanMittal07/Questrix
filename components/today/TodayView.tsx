@@ -548,7 +548,8 @@ function HabitCard({
             : `Complete ${h.title}, ${progress} done`) +
           (h.habit_streak > 0
             ? `, ${plural(h.habit_streak, "day")} streak`
-            : "")
+            : "") +
+          (h.joined_late ? ", counts toward your streak from tomorrow" : "")
         }
         className={cn(
           "flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl p-4 text-left active:scale-[0.99]",
@@ -592,6 +593,9 @@ function HabitCard({
             ) : null}
             {h.target > 1 ? <span>{progress}</span> : null}
             {h.habit_streak > 0 ? <span>🔥 {h.habit_streak}</span> : null}
+            {h.joined_late ? (
+              <span className="text-cyan">Streak from tomorrow</span>
+            ) : null}
           </span>
         </span>
       </button>
