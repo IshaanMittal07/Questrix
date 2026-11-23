@@ -3,80 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { PAGE, RunError, runReminders } from "@/lib/push/run";
-import type { AdminClient } from "@/lib/supabase/admin";
-
-type Rpc = { data?: unknown; error?: { code: string } | null };
-
-const sub = (id: string) => ({
-  id,
-  endpoint: `https://fcm.googleapis.com/fcm/send/${id}`,
-  p256dh: "p",
-  auth: "a",
-});
-const reminder = (habit: string, subs = [sub(`s-${habit}`)]) => ({
-  user_id: "u1",
-  habit_id: habit,
-  local_date: "2026-12-01",
-  reminder_time: "08:00:00",
-  title: `Habit ${habit}`,
-  icon: null,
-  category: "mind",
-  points: 20,
-  streak: 0,
-  subscriptions: subs,
-});
-
-/** A fake admin client: queued RPC results, recorded table writes. */
-function fakeAdmin(rpc: Record<string, Rpc[]>, writeError?: { code: string }) {
-  const calls: {
-    rpc: [string, unknown][];
-    writes: [string, string, string[]][];
-  } = {
-    rpc: [],
-    writes: [],
-  };
-  const admin = {
-    rpc: vi.fn(async (name: string, args: unknown) => {
-      calls.rpc.push([name, args]);
-      const r = rpc[name]?.shift() ?? { data: [] };
-      return { data: r.data ?? null, error: r.error ?? null };
-    }),
-    from: vi.fn((table: string) => ({
-      update: () => ({
-        in: async (_c: string, ids: string[]) => {
-          calls.writes.push([table, "update", ids]);
-          return { error: writeError ?? null };
-        },
-      }),
-      delete: () => ({
-        in: async (_c: string, ids: string[]) => {
-          calls.writes.push([table, "delete", ids]);
-          return { error: writeError ?? null };
-        },
-      }),
-    })),
-  };
-  return { admin: admin as unknown as AdminClient, calls };
-}
-
-const gone = Object.assign(new Error("gone"), { statusCode: 410 });
+import { ZERO, fakeAdmin, gone, reminder, saver, sub } from "./push-fakes";
 
 describe("runReminders", () => {
   it("sends reminders and savers to every device, records successes and drops gone devices", async () => {
     const { admin, calls } = fakeAdmin({
       due_reminders: [{ data: [reminder("h1", [sub("a"), sub("b")])] }],
-      due_streak_savers: [
-        {
-          data: [
-            {
-              user_id: "u2",
-              local_date: "2026-12-01",
-              streak: 4,
-              subscriptions: [sub("c")],
-            },
-          ],
-        },
-      ],
+      due_streak_savers: [{ data: [saver(4, [sub("c")])] }],
     });
     const send = vi.fn(async (s: { endpoint: string }, _payload: string) => {
       void _payload;
@@ -88,15 +21,18 @@ describe("runReminders", () => {
       now: new Date("2026-12-01T18:00:30Z"),
       random: () => 0,
     });
-    expect(out).toEqual({ sent: 2, failed: 0, removed: 1 });
+    expect(out).toEqual({ ...ZERO, sent: 2, removed: 1 });
     expect(calls.rpc[0]).toEqual([
       "due_reminders",
       { p_now: "2026-12-01T18:00:30.000Z", p_limit: PAGE },
     ]);
-    expect(calls.writes).toEqual([
-      ["push_subscriptions", "update", ["a", "c"]],
-      ["push_subscriptions", "delete", ["b"]],
+    // Page by page: the reminders page is recorded before the saver's sends.
+    expect(calls.writes.map((w) => [w.op, w.ids])).toEqual([
+      ["update", ["a"]],
+      ["delete", ["b"]],
+      ["update", ["c"]],
     ]);
+    expect(calls.writes.find((w) => w.op === "delete")?.select).toBe("id");
     const payloads = send.mock.calls.map((c) => JSON.parse(c[1]));
     expect(payloads.map((p) => p.tag)).toEqual([
       "habit-h1",
@@ -115,6 +51,24 @@ describe("runReminders", () => {
     expect(out.sent).toBe(PAGE + 1);
   });
 
+  it("sends a page and records it before fetching the next", async () => {
+    const full = Array.from({ length: PAGE }, (_, i) => reminder(`h${i}`));
+    const { admin, calls } = fakeAdmin({
+      due_reminders: [{ data: full }, { data: [] }],
+    });
+    const send = vi.fn(async () => {
+      if (calls.log.at(-1) !== "send") calls.log.push("send");
+    });
+    await runReminders({ admin, send });
+    expect(calls.log).toEqual([
+      "rpc due_reminders",
+      "send",
+      "update",
+      "rpc due_reminders",
+      "rpc due_streak_savers",
+    ]);
+  });
+
   it("skips a malformed row and a user without devices, not the page", async () => {
     const { admin } = fakeAdmin({
       due_reminders: [
@@ -123,19 +77,29 @@ describe("runReminders", () => {
     });
     const send = vi.fn(async () => {});
     expect(await runReminders({ admin, send })).toEqual({
+      ...ZERO,
       sent: 1,
-      failed: 0,
-      removed: 0,
+      malformed: 1,
     });
   });
 
-  it("fails on a due_reminders error, before sending anything", async () => {
-    const { admin } = fakeAdmin({
+  it("reports a due_reminders error, still runs the saver, and has a result", async () => {
+    const { admin, calls } = fakeAdmin({
       due_reminders: [{ error: { code: "PGRST301" } }],
+      due_streak_savers: [{ data: [saver(5, [sub("c")])] }],
     });
-    const send = vi.fn();
-    await expect(runReminders({ admin, send })).rejects.toThrow(RunError);
-    expect(send).not.toHaveBeenCalled();
+    const send = vi.fn(async () => {});
+    const err = await runReminders({ admin, send }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunError);
+    expect((err as RunError).message).toBe(
+      "reminders: due_reminders (PGRST301) failed",
+    );
+    expect((err as RunError).steps).toEqual(["due_reminders (PGRST301)"]);
+    expect((err as RunError).result).toEqual({ ...ZERO, sent: 1 });
+    expect(calls.rpc.map(([n]) => n)).toEqual([
+      "due_reminders",
+      "due_streak_savers",
+    ]);
   });
 
   it("still sends the collected reminders when the saver fails, then reports it", async () => {
@@ -148,27 +112,23 @@ describe("runReminders", () => {
     expect(send).toHaveBeenCalledTimes(1);
     expect(err).toBeInstanceOf(RunError);
     expect((err as RunError).message).toBe(
-      "reminders: due_streak_savers failed (57014)",
+      "reminders: due_streak_savers (57014) failed",
     );
-    expect((err as RunError).result).toEqual({
-      sent: 1,
-      failed: 0,
-      removed: 0,
-    });
+    expect((err as RunError).result).toEqual({ ...ZERO, sent: 1 });
   });
 
   it("never puts an endpoint or key in an error message", async () => {
     const { admin } = fakeAdmin(
       { due_reminders: [{ data: [reminder("h1")] }] },
-      { code: "42501" },
+      { updateError: () => ({ code: "42501" }) },
     );
     const err = await runReminders({
       admin,
       send: vi.fn(async () => {}),
     }).catch((e: Error) => e);
     expect((err as Error).message).toBe(
-      "reminders: record successes failed (42501)",
+      "reminders: record successes (42501) failed",
     );
-    expect((err as Error).message).not.toMatch(/googleapis|p256dh/);
+    expect((err as Error).message).not.toMatch(/googleapis|p256dh|auth-/);
   });
 });

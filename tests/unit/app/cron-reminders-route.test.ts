@@ -5,23 +5,30 @@ const { sendNotification, runReminders } = vi.hoisted(() => ({
   sendNotification: vi.fn(),
   runReminders: vi.fn(),
 }));
-vi.mock("web-push", () => ({ sendNotification }));
+vi.mock("web-push", async (orig) => ({
+  ...(await orig<typeof import("web-push")>()),
+  sendNotification,
+}));
 vi.mock("@/lib/push/run", async (orig) => ({
   ...(await orig<typeof import("@/lib/push/run")>()),
   runReminders,
 }));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient: () => ({}) }));
 
+import { generateVAPIDKeys } from "web-push";
 import { POST, maxDuration } from "@/app/api/cron/reminders/route";
 import { RunError } from "@/lib/push/run";
 import { config } from "@/proxy";
 
+const KEYS = generateVAPIDKeys();
 const ENV = {
-  CRON_SECRET: "cron-secret-value",
+  CRON_SECRET: "cron-secret-value-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
   VAPID_SUBJECT: "mailto:ops@example.com",
-  NEXT_PUBLIC_VAPID_PUBLIC_KEY: "B" + "a".repeat(86),
-  VAPID_PRIVATE_KEY: "k".repeat(43),
+  NEXT_PUBLIC_VAPID_PUBLIC_KEY: KEYS.publicKey,
+  VAPID_PRIVATE_KEY: KEYS.privateKey,
 };
+const COUNTS = { sent: 0, failed: 0, removed: 0, skipped: 0, malformed: 0 };
+const AUTHED = `Bearer ${ENV.CRON_SECRET}`;
 const req = (auth?: string) =>
   new Request("http://localhost:3000/api/cron/reminders", {
     method: "POST",
@@ -45,7 +52,7 @@ describe("POST /api/cron/reminders", () => {
     undefined,
     "Bearer wrong",
     "Bearer cron-secret-valu",
-    "cron-secret-value",
+    "cron-secret-value-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
   ])("returns 401 for %s and does nothing", async (auth) => {
     const res = await POST(req(auth));
     expect(res.status).toBe(401);
@@ -58,10 +65,26 @@ describe("POST /api/cron/reminders", () => {
   });
 
   it("runs and returns the counts with the secret", async () => {
-    runReminders.mockResolvedValue({ sent: 3, failed: 1, removed: 2 });
-    const res = await POST(req("Bearer cron-secret-value"));
+    runReminders.mockResolvedValue({
+      sent: 3,
+      failed: 1,
+      removed: 2,
+      skipped: 4,
+      malformed: 5,
+    });
+    const res = await POST(req(AUTHED));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sent: 3, failed: 1, removed: 2 });
+    expect(await res.json()).toEqual({
+      sent: 3,
+      failed: 1,
+      removed: 2,
+      skipped: 4,
+      malformed: 5,
+    });
+    expect(console.info).toHaveBeenCalledWith(
+      'reminders: {"sent":3,"failed":1,"removed":2,"skipped":4,"malformed":5}',
+    );
+    expect(console.error).not.toHaveBeenCalled();
   });
 
   it("sends with VAPID, a 1 hour TTL and high urgency", async () => {
@@ -73,9 +96,9 @@ describe("POST /api/cron/reminders", () => {
         },
         "{}",
       );
-      return { sent: 1, failed: 0, removed: 0 };
+      return { ...COUNTS, sent: 1 };
     });
-    await POST(req("Bearer cron-secret-value"));
+    await POST(req(AUTHED));
     expect(sendNotification).toHaveBeenCalledWith(
       {
         endpoint: "https://fcm.googleapis.com/x",
@@ -97,7 +120,7 @@ describe("POST /api/cron/reminders", () => {
 
   it("returns 500 without leaking anything when VAPID is missing", async () => {
     vi.stubEnv("VAPID_PRIVATE_KEY", "");
-    const res = await POST(req("Bearer cron-secret-value"));
+    const res = await POST(req(AUTHED));
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Push is not configured" });
     expect(runReminders).not.toHaveBeenCalled();
@@ -106,13 +129,66 @@ describe("POST /api/cron/reminders", () => {
     );
   });
 
-  it("returns 500 with a generic body on a run error, logging the step only", async () => {
-    runReminders.mockRejectedValue(new RunError("due_reminders", "PGRST301"));
-    const res = await POST(req("Bearer cron-secret-value"));
+  it("returns 500 with a generic body on a run error, logging the steps and counts", async () => {
+    runReminders.mockRejectedValue(
+      new RunError(["due_reminders (PGRST301)", "due_streak_savers (57014)"], {
+        ...COUNTS,
+        sent: 2,
+      }),
+    );
+    const res = await POST(req(AUTHED));
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Reminders failed" });
     expect(console.error).toHaveBeenCalledWith(
-      "reminders: due_reminders failed (PGRST301)",
+      'reminders: due_reminders (PGRST301), due_streak_savers (57014) failed {"sent":2,"failed":0,"removed":0,"skipped":0,"malformed":0}',
+    );
+  });
+
+  it("logs a generic line for any other error, without its message", async () => {
+    runReminders.mockRejectedValue(
+      new Error("fetch failed https://x.supabase.co"),
+    );
+    const res = await POST(req(AUTHED));
+    expect(res.status).toBe(500);
+    expect(vi.mocked(console.error).mock.calls).toEqual([
+      ["reminders: run failed"],
+    ]);
+  });
+
+  it("flags a run where every push failed as a VAPID problem", async () => {
+    runReminders.mockResolvedValue({ ...COUNTS, failed: 7 });
+    const res = await POST(req(AUTHED));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...COUNTS, failed: 7 });
+    expect(console.error).toHaveBeenCalledWith(
+      "reminders: every push failed; check the VAPID keys",
+    );
+  });
+
+  it.each([
+    ["nothing was due", COUNTS],
+    ["one push got through", { ...COUNTS, sent: 1, failed: 9 }],
+    ["only removals", { ...COUNTS, removed: 3 }],
+    ["only skips", { ...COUNTS, skipped: 3 }],
+  ])("doesn't flag VAPID when %s", async (_label, counts) => {
+    runReminders.mockResolvedValue(counts);
+    await POST(req(AUTHED));
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("refuses a too-short CRON_SECRET even when the caller sends it exactly", async () => {
+    vi.stubEnv("CRON_SECRET", "short-secret");
+    expect((await POST(req("Bearer short-secret"))).status).toBe(401);
+    expect(runReminders).not.toHaveBeenCalled();
+  });
+
+  it("returns 500 for a padded VAPID key, before running", async () => {
+    vi.stubEnv("VAPID_PRIVATE_KEY", `${KEYS.privateKey}=`);
+    const res = await POST(req(AUTHED));
+    expect(res.status).toBe(500);
+    expect(runReminders).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain(
+      KEYS.privateKey,
     );
   });
 

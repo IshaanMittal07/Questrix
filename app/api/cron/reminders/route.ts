@@ -1,6 +1,6 @@
 import { sendNotification } from "web-push";
 import { hasBearer } from "@/lib/http/bearer";
-import { RunError, runReminders } from "@/lib/push/run";
+import { RunError, runReminders, type RunResult } from "@/lib/push/run";
 import type { SendFn } from "@/lib/push/send";
 import { readVapid } from "@/lib/push/vapid";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -13,9 +13,19 @@ export const maxDuration = 60;
 /**
  * The reminders cron (plan §7.2), called every minute by pg_cron through
  * pg_net with `Authorization: Bearer <CRON_SECRET>`. Returns
- * `{sent, failed, removed}`. Logs counts and error codes only, never
- * endpoints or keys (DECISIONS P1).
+ * `{sent, failed, removed, skipped, malformed}`. Logs counts and error codes
+ * only, never endpoints or keys (DECISIONS P1, P8).
+ *
+ * Every route under app/api/cron/ skips the session proxy, so each must
+ * check hasBearer itself (a test enforces it).
  */
+/** Every push failing is a configuration problem (a revoked key, say). */
+function warnIfAllFailed(result: RunResult) {
+  if (result.sent === 0 && result.failed > 0) {
+    console.error("reminders: every push failed; check the VAPID keys");
+  }
+}
+
 export async function POST(request: Request) {
   if (!hasBearer(request.headers, process.env.CRON_SECRET)) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
@@ -37,15 +47,15 @@ export async function POST(request: Request) {
   try {
     const result = await runReminders({ admin: createAdminClient(), send });
     console.info(`reminders: ${JSON.stringify(result)}`);
+    warnIfAllFailed(result);
     return Response.json(result);
   } catch (err) {
-    const what =
-      err instanceof RunError ? err.message : "reminders: run failed";
-    const partial =
-      err instanceof RunError && err.result
-        ? ` ${JSON.stringify(err.result)}`
-        : "";
-    console.error(`${what}${partial}`);
+    if (err instanceof RunError) {
+      console.error(`${err.message} ${JSON.stringify(err.result)}`);
+      warnIfAllFailed(err.result);
+    } else {
+      console.error("reminders: run failed");
+    }
     return Response.json({ error: "Reminders failed" }, { status: 500 });
   }
 }

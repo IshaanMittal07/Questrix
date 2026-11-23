@@ -5,18 +5,23 @@ const { sendNotification, createAdminClient } = vi.hoisted(() => ({
   sendNotification: vi.fn(),
   createAdminClient: vi.fn(),
 }));
-vi.mock("web-push", () => ({ sendNotification }));
+vi.mock("web-push", async (orig) => ({
+  ...(await orig<typeof import("web-push")>()),
+  sendNotification,
+}));
 vi.mock("@/lib/supabase/admin", () => ({ createAdminClient }));
 
+import { generateVAPIDKeys } from "web-push";
 import * as route from "@/app/api/cron/reminders/route";
 import { POST } from "@/app/api/cron/reminders/route";
 import { hasBearer } from "@/lib/http/bearer";
 
+const KEYS = generateVAPIDKeys();
 const ENV = {
-  CRON_SECRET: "cron-secret-value-0123456789",
+  CRON_SECRET: "cron-secret-value-0123456789abcdef0123456789abcdef",
   VAPID_SUBJECT: "mailto:ops@example.com",
-  NEXT_PUBLIC_VAPID_PUBLIC_KEY: "B" + "q".repeat(86),
-  VAPID_PRIVATE_KEY: "Z".repeat(43),
+  NEXT_PUBLIC_VAPID_PUBLIC_KEY: KEYS.publicKey,
+  VAPID_PRIVATE_KEY: KEYS.privateKey,
   SUPABASE_SERVICE_ROLE_KEY: "service-role-key-should-never-leak",
 };
 const ENDPOINT = "https://fcm.googleapis.com/fcm/send/device-token-xyz";
@@ -38,6 +43,7 @@ const req = (auth?: string, method = "POST") =>
     headers: auth ? { authorization: auth } : {},
   });
 const AUTHED = `Bearer ${ENV.CRON_SECRET}`;
+const COUNTS = { sent: 0, failed: 0, removed: 0, skipped: 0, malformed: 0 };
 
 type Rpc = { data?: unknown; error?: { code: string; message?: string } };
 function fakeAdmin(rpc: Record<string, Rpc>, writeError?: unknown) {
@@ -48,7 +54,14 @@ function fakeAdmin(rpc: Record<string, Rpc>, writeError?: unknown) {
     }),
     from: vi.fn(() => ({
       update: () => ({ in: async () => ({ error: writeError ?? null }) }),
-      delete: () => ({ in: async () => ({ error: writeError ?? null }) }),
+      delete: () => ({
+        in: (_c: string, ids: string[]) => ({
+          select: async () =>
+            writeError
+              ? { data: null, error: writeError }
+              : { data: ids.map((id) => ({ id })), error: null },
+        }),
+      }),
     })),
   };
 }
@@ -108,7 +121,7 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     sendNotification.mockResolvedValue({ statusCode: 201 });
     const res = await POST(req(AUTHED));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ sent: 1, failed: 0, removed: 0 });
+    expect(await res.json()).toEqual({ ...COUNTS, sent: 1 });
     const [subscription, payload, options] = sendNotification.mock.calls[0];
     expect(subscription).toEqual({
       endpoint: ENDPOINT,
@@ -118,9 +131,13 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     expect(Object.keys(p).sort()).toEqual(["body", "tag", "title", "url"]);
     expect(p.url).toBe("/today?habit=h1");
     expect(p.tag).toBe("habit-h1");
-    expect(options).toMatchObject({ TTL: 3600, urgency: "high" });
+    expect(options).toMatchObject({
+      TTL: 3600,
+      urgency: "high",
+      timeout: 10_000,
+    });
     expect(console.info).toHaveBeenCalledWith(
-      'reminders: {"sent":1,"failed":0,"removed":0}',
+      `reminders: ${JSON.stringify({ ...COUNTS, sent: 1 })}`,
     );
   });
 
@@ -139,7 +156,48 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
       ),
     );
     const res = await POST(req(AUTHED));
-    expect(await res.json()).toEqual({ sent: 0, failed: 1, removed: 0 });
+    expect(await res.json()).toEqual({ ...COUNTS, failed: 1 });
+    // ...and says what to check instead.
+    expect(console.error).toHaveBeenCalledWith(
+      "reminders: every push failed; check the VAPID keys",
+    );
+  });
+
+  it("drops a 410 device end to end and counts it", async () => {
+    createAdminClient.mockReturnValue(
+      fakeAdmin({ due_reminders: { data: [dueRow] } }),
+    );
+    sendNotification.mockRejectedValue(
+      Object.assign(new Error("gone"), { statusCode: 410, endpoint: ENDPOINT }),
+    );
+    const res = await POST(req(AUTHED));
+    expect(await res.json()).toEqual({ ...COUNTS, removed: 1 });
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("counts a non-allowlisted endpoint as malformed and never sends to it", async () => {
+    createAdminClient.mockReturnValue(
+      fakeAdmin({
+        due_reminders: {
+          data: [
+            {
+              ...dueRow,
+              subscriptions: [
+                {
+                  id: "s1",
+                  endpoint: "https://evil.example/x",
+                  p256dh: P256DH,
+                  auth: AUTH,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const res = await POST(req(AUTHED));
+    expect(await res.json()).toEqual({ ...COUNTS, malformed: 1 });
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 
   it("logs a write failure by step and code, with the partial counts", async () => {
@@ -159,7 +217,7 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     expect(res.status).toBe(500);
     expect(await res.json()).toEqual({ error: "Reminders failed" });
     expect(console.error).toHaveBeenCalledWith(
-      "reminders: record successes failed (42501)",
+      `reminders: record successes (42501), due_streak_savers (57014) failed ${JSON.stringify({ ...COUNTS, sent: 1 })}`,
     );
   });
 
@@ -176,7 +234,7 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     const res = await POST(req(AUTHED));
     expect(res.status).toBe(500);
     expect(console.error).toHaveBeenCalledWith(
-      'reminders: due_streak_savers failed (57014) {"sent":1,"failed":0,"removed":0}',
+      `reminders: due_streak_savers (57014) failed ${JSON.stringify({ ...COUNTS, sent: 1 })}`,
     );
   });
 
@@ -222,8 +280,11 @@ describe("POST /api/cron/reminders, end to end through run and send", () => {
     );
     sendNotification.mockResolvedValue({});
     await POST(req(AUTHED));
-    const rotated = "Y".repeat(43);
+    // A rotation replaces the pair (a lone private key is a mismatch).
+    const pair = generateVAPIDKeys();
+    const rotated = pair.privateKey;
     vi.stubEnv("VAPID_PRIVATE_KEY", rotated);
+    vi.stubEnv("NEXT_PUBLIC_VAPID_PUBLIC_KEY", pair.publicKey);
     await POST(req(AUTHED));
     expect(
       sendNotification.mock.calls.map(
@@ -239,30 +300,52 @@ describe("hasBearer edge headers", () => {
   const h = (v: string) => new Headers({ authorization: v });
 
   it("compares Latin-1 header values exactly", () => {
-    const e = String.fromCharCode(0xe9);
-    expect(hasBearer(h(`Bearer caf${e}`), `caf${e}`)).toBe(true);
-    expect(hasBearer(h("Bearer cafe"), `caf${e}`)).toBe(false);
-    expect(hasBearer(h(`Bearer caf${e}`), "cafe")).toBe(false);
+    const tail = "-0123456789abcdef0123456789abcdef";
+    const accented = `caf${String.fromCharCode(0xe9)}${tail}`;
+    const plain = `cafe${tail}`;
+    expect(hasBearer(h(`Bearer ${accented}`), accented)).toBe(true);
+    expect(hasBearer(h(`Bearer ${plain}`), accented)).toBe(false);
+    expect(hasBearer(h(`Bearer ${accented}`), plain)).toBe(false);
   });
 
   it("refuses a secret with extra inner whitespace or a different scheme case", () => {
     for (const v of ["Bearer  s3cret", "Bearer\ts3cret", "BEARER s3cret"]) {
-      expect(hasBearer(h(v), "s3cret")).toBe(false);
+      expect(hasBearer(h(v), "s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")).toBe(
+        false,
+      );
     }
   });
 
   it("accepts surrounding whitespace, which HTTP strips from header values", () => {
-    expect(hasBearer(h("  Bearer s3cret  "), "s3cret")).toBe(true);
+    expect(
+      hasBearer(
+        h("  Bearer s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx  "),
+        "s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      ),
+    ).toBe(true);
   });
 
   it("refuses a very long header without throwing", () => {
-    expect(hasBearer(h(`Bearer ${"s".repeat(100_000)}`), "s3cret")).toBe(false);
+    expect(
+      hasBearer(
+        h(`Bearer ${"s".repeat(100_000)}`),
+        "s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      ),
+    ).toBe(false);
   });
 
   it("refuses a header carrying the secret twice", () => {
     const headers = new Headers();
-    headers.append("authorization", "Bearer s3cret");
-    headers.append("authorization", "Bearer s3cret");
-    expect(hasBearer(headers, "s3cret")).toBe(false);
+    headers.append(
+      "authorization",
+      "Bearer s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    );
+    headers.append(
+      "authorization",
+      "Bearer s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    );
+    expect(hasBearer(headers, "s3cret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")).toBe(
+      false,
+    );
   });
 });

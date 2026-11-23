@@ -24,7 +24,12 @@ describe("sendAll", () => {
   it("sends each job once, with the keys and a JSON payload", async () => {
     const send = vi.fn().mockResolvedValue({});
     const out = await sendAll([job("a"), job("b")], send);
-    expect(out).toEqual({ sent: ["a", "b"], failed: 0, removed: [] });
+    expect(out).toEqual({
+      sent: ["a", "b"],
+      failed: 0,
+      removed: [],
+      skipped: 0,
+    });
     expect(send).toHaveBeenCalledWith(
       {
         endpoint: "https://fcm.googleapis.com/fcm/send/a",
@@ -43,7 +48,12 @@ describe("sendAll", () => {
       .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValueOnce({});
     const out = await sendAll(["a", "b", "c", "d", "e"].map(job), send, 1);
-    expect(out).toEqual({ sent: ["e"], failed: 2, removed: ["a", "b"] });
+    expect(out).toEqual({
+      sent: ["e"],
+      failed: 2,
+      removed: ["a", "b"],
+      skipped: 0,
+    });
   });
 
   it(`never has more than ${CONCURRENCY} sends in flight`, async () => {
@@ -69,6 +79,7 @@ describe("sendAll", () => {
       sent: [],
       failed: 0,
       removed: [],
+      skipped: 0,
     });
     expect(send).not.toHaveBeenCalled();
   });

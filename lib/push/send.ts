@@ -20,6 +20,8 @@ export type SendOutcome = {
   sent: string[];
   failed: number;
   removed: string[];
+  /** Jobs never started because the deadline passed. */
+  skipped: number;
 };
 
 /** At most this many pushes in flight (plan §7.2). */
@@ -43,11 +45,14 @@ export async function sendAll(
   jobs: Job[],
   send: SendFn,
   concurrency = CONCURRENCY,
+  deadline = Number.POSITIVE_INFINITY,
+  clock: () => number = Date.now,
 ): Promise<SendOutcome> {
-  const out: SendOutcome = { sent: [], failed: 0, removed: [] };
+  const out: SendOutcome = { sent: [], failed: 0, removed: [], skipped: 0 };
   let next = 0;
   async function worker() {
     while (next < jobs.length) {
+      if (clock() >= deadline) return;
       const { subscription: s, message } = jobs[next++];
       try {
         await send(
@@ -65,5 +70,6 @@ export async function sendAll(
   await Promise.all(
     Array.from({ length: Math.min(concurrency, jobs.length) }, worker),
   );
+  out.skipped = jobs.length - next;
   return out;
 }
