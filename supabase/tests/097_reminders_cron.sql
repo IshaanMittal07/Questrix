@@ -154,10 +154,18 @@ select ok((select url = 'https://trim.example.com/api/cron/reminders'
                   and headers ->> 'Authorization' = 'Bearer ' || repeat('t', 64)
            from net.http_request_queue where id = (select id from q9)),
   'pasted values are trimmed (a trailing newline would fail every run)');
-select ok((select prosrc ~ 'delete from cron.job_run_details' from pg_proc
-           where oid = 'public.cleanup_push_logs()'::regprocedure),
-  'cleanup also prunes pg_cron''s run history (1,440 rows a day from the minute job)');
-select lives_ok($$select public.cleanup_push_logs()$$, 'and postgres may delete its own run history');
+insert into cron.job_run_details (jobid, runid, database, username, command, status, start_time, end_time)
+values ((select jobid from cron.job where jobname = 'questrix-reminders'), -1, current_database(), 'postgres',
+        'old', 'succeeded', now() - interval '8 days', now() - interval '8 days'),
+       ((select jobid from cron.job where jobname = 'questrix-reminders'), -2, current_database(), 'postgres',
+        'crashed', 'running', now() - interval '8 days', null),
+       ((select jobid from cron.job where jobname = 'questrix-reminders'), -3, current_database(), 'postgres',
+        'recent', 'succeeded', now() - interval '1 day', now() - interval '1 day');
+select public.cleanup_push_logs();
+select is((select array_agg(command order by runid) from cron.job_run_details where runid < 0), array['recent'],
+  'cleanup prunes run history older than 7 days, including runs that never ended, and keeps recent runs');
+select is((select count(*)::int from cron.job where jobname like 'questrix-%'), 2,
+  'and leaves the jobs themselves alone');
 
 select * from finish();
 rollback;

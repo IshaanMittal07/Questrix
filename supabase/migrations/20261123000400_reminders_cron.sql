@@ -61,8 +61,9 @@ $$;
 
 /**
  * Delete reminder and streak-saver log rows older than 7 days, and pg_cron's
- * own run history for this user's jobs (the minute job adds 1,440 rows a
- * day; Supabase recommends pruning it).
+ * run history for all jobs (postgres bypasses its RLS; the minute job adds
+ * 1,440 rows a day, and Supabase recommends pruning it). A run that never
+ * recorded an end (a crash mid-run) is judged by its start.
  */
 create function public.cleanup_push_logs()
 returns void
@@ -72,7 +73,8 @@ set search_path = ''
 as $$
   delete from public.reminder_log where sent_at < now() - interval '7 days';
   delete from public.streak_saver_log where sent_at < now() - interval '7 days';
-  delete from cron.job_run_details where end_time < now() - interval '7 days';
+  delete from cron.job_run_details
+   where coalesce(end_time, start_time) < now() - interval '7 days';
 $$;
 
 revoke all on function public.invoke_reminders() from public, anon, authenticated, service_role;
