@@ -884,7 +884,7 @@ export type Database = {
         Returns: Json;
       };
       due_reminders: {
-        Args: { p_now: string };
+        Args: { p_limit?: number; p_now: string };
         Returns: {
           category: string;
           habit_id: string;
@@ -893,6 +893,7 @@ export type Database = {
           points: number;
           reminder_time: string;
           streak: number;
+          subscriptions: Json;
           title: string;
           user_id: string;
         }[];
@@ -902,6 +903,7 @@ export type Database = {
         Returns: {
           local_date: string;
           streak: number;
+          subscriptions: Json;
           user_id: string;
         }[];
       };
