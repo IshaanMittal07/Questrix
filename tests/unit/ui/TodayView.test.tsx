@@ -76,6 +76,7 @@ const day = (over: Partial<Today> = {}): Today => ({
   streak_freezes: 0,
   freezes_needed: 0,
   counted_today: false,
+  relived: false,
   scheduled_count: 2,
   completed_count: 0,
   at_risk: false,
@@ -514,6 +515,16 @@ describe("TodayView", () => {
     );
     expect(await screen.findByText("+20")).toBeInTheDocument();
     expect(screen.queryByText(/×1\.00/)).toBeNull();
+  });
+
+  it("explains a relived day (#81) and says nothing on a normal one", () => {
+    const { unmount } = renderView(day());
+    expect(screen.queryByText(/previous timezone/)).toBeNull();
+    unmount();
+    renderView(day({ relived: true }));
+    expect(
+      screen.getByText(/already passed this day in your previous timezone/),
+    ).toBeInTheDocument();
   });
 
   it("offers Restore when today's habits were archived (not at risk)", () => {

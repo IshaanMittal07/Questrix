@@ -395,6 +395,12 @@ export function TodayView({
           empty={today.habits.length === 0}
         />
       ) : null}
+      {today.relived ? (
+        <p className="text-muted text-sm">
+          You already passed this day in your previous timezone. Completions
+          earn points but don&apos;t change your streak.
+        </p>
+      ) : null}
       {today.freezes_needed > 0 && today.current_streak > 0 ? (
         <p className="text-cyan text-sm">
           Your next completion uses{" "}

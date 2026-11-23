@@ -43,6 +43,8 @@ export const todaySchema = z.object({
   streak_freezes: z.number().int(),
   freezes_needed: z.number().int(),
   counted_today: z.boolean(),
+  // #81: a day already passed in an earlier timezone (after a move west).
+  relived: z.boolean(),
   scheduled_count: z.number().int(),
   completed_count: z.number().int(),
   at_risk: z.boolean(),

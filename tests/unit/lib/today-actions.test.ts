@@ -70,6 +70,7 @@ const today = {
   streak_freezes: 0,
   freezes_needed: 0,
   counted_today: true,
+  relived: false,
   scheduled_count: 1,
   completed_count: 1,
   at_risk: false,
