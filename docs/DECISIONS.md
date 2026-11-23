@@ -229,7 +229,13 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - Inheriting restarts the lookback clock, so an all-rest stretch can outlast `streak_lookback_days` across a jump; accepted. Shifting the date instead would make the new timezone's days fail closed as misses.
     - A jump of up to two days (UTC-12 late evening to UTC+14) bridges the skipped day without a completion; accepted.
     - #28's end-to-end acceptance (two streak increments within 24 real hours) needs `complete_habit`, so #28 closes in #68.
-  - **Moving west** is covered by plan §6.2 rule 0. The user can still collect points for the previous day's unused occurrences, but that is bounded to one day per cooldown too.
+  - **Moving west.** A day that was already counted is covered by plan §6.2 rule 0. The user can still collect points for its unused occurrences, bounded to one day per cooldown.
+    - The original claim, that rule 0 covers every move west, was wrong (#81, security audit of PR #80, M1). A user who missed D-1 could move west early on D, complete D-1 as an increment with nothing missed, and so get a free freeze once per cooldown.
+    - **Relived days (#81).** The latest `daily_schedule` date is the furthest local date reached: every engine call snapshots its today, and every timezone change snapshots the old today first. A completion on a date before it and after `last_streak_date` (or with no streak yet) is on a relived day. It earns points, but the streak, freezes, run and milestones don't change, and the day stays uncounted, so it's still a miss when the reached day comes. Undo of such a completion only gives back the points.
+    - A relived day pays the base multiplier (streak 1). The stored streak may already be lost as of the reached day, so paying it would reward the move (found by `test-writer`).
+    - The issue proposed a new `profiles.engine_floor_date`. The latest snapshot already records the same date and can't drift out of sync, so no column was added.
+    - `get_today` adds `relived`: the streak is judged as of the reached day, `freezes_needed` is 0, and the day is never `at_risk`. The Today screen explains the day.
+    - Per-habit streaks are unchanged on relived days: they carry no points, freezes or milestones.
 - **D4. `economy_config`** is `key text PK, value jsonb`. It's read through the internal `economy_value(key)`, which raises if the key is missing. Signed-in users can read the table, but nobody can write it from a client. ECONOMY.md documents every key.
 - **D5. Lock order.**
   - `complete_habit` and, later, `purchase_item` lock the profile row `for no key update`, then call `ensure_daily_schedule`, then lock the habit row `for share` (see below). `undo_completion` locks the profile, then the completion row `for update`, and nothing else (see #69).
