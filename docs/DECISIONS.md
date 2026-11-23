@@ -478,3 +478,10 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Copy** (`lib/push/copy.ts`). Playful lines per category, with the random source injected. A streak is named only when the server reports a live one of at least 2. A category that isn't an own key of the copy table gets generic copy.
   - **Before production scheduling,** #79 must rate-limit `save_push_subscription`. Otherwise churned garbage endpoints would spend the app's standing with push services (security audit S2).
   - **Types.** `web-push` 4.0 is ESM and ships no types. `@types/web-push` 3.6 matches its named exports, so it's used as is.
+- **P9. pg_cron and Vault (#90).** The migration enables `pg_cron` and `pg_net` (in `extensions`) and schedules jobs by name, so re-running it updates rather than duplicates them.
+  - **The minute job.** `questrix-reminders` (`* * * * *`) calls `public.invoke_reminders()`. That reads `app_url` and `cron_secret` from Vault at run time and queues one pg_net POST to `/api/cron/reminders`, with a 30 s timeout.
+  - **No secrets, no request.** With either secret missing, a URL that isn't http(s), or a secret under 32 characters, it returns null and queues nothing, so a fresh local stack or CI never posts to a null URL. Plan §7.2 inlined the call in the job; wrapping it adds this guard.
+  - **Cleanup.** `questrix-push-log-cleanup` (daily, 03:17 UTC) deletes `reminder_log` and `streak_saver_log` rows older than 7 days. Keep at least 2 days (P5).
+  - Both functions are SECURITY DEFINER with an empty `search_path`, and no client role, not even `service_role`, can execute them. pg_cron runs them as `postgres`.
+  - **D2 still holds:** pg_cron is used only for reminders, and daily snapshots stay lazy.
+  - Setup, monitoring, pausing and the local and iPhone test path are in RUNBOOK, "Reminders and push notifications". Secrets are never in git or seeds.
