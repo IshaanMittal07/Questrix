@@ -286,6 +286,8 @@ select ok(not exists (
                                and sh.habit_id = hc.habit_id
                               where hc.user_id = m.user_id and hc.local_date = m.awarded_on
                                 and sh.initial)),
+  -- Unqualified on purpose: a late joiner only counts a day with no live
+  -- streak, where it starts a run at 1, and no milestone is configured at 1.
   'no milestone stands on a day without a completion of an initial habit');
 select ok((select bool_and((h ->> 'joined_late')::boolean = not sh.initial)
            from generate_series(0, 9) as g,
