@@ -555,6 +555,7 @@ export type Database = {
           created_at: string;
           current_streak: number;
           display_name: string | null;
+          engine_floor_date: string | null;
           id: string;
           is_private: boolean;
           last_streak_date: string | null;
@@ -574,6 +575,7 @@ export type Database = {
           created_at?: string;
           current_streak?: number;
           display_name?: string | null;
+          engine_floor_date?: string | null;
           id: string;
           is_private?: boolean;
           last_streak_date?: string | null;
@@ -592,6 +594,7 @@ export type Database = {
           created_at?: string;
           current_streak?: number;
           display_name?: string | null;
+          engine_floor_date?: string | null;
           id?: string;
           is_private?: boolean;
           last_streak_date?: string | null;

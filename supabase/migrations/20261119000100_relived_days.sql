@@ -425,7 +425,7 @@ declare
   v_counted boolean;
   v_habits jsonb;
   v_midnight timestamptz;
-  v_reached date;
+  v_floor date;
   v_relived boolean;
   v_ref date;
 begin
@@ -457,10 +457,10 @@ begin
   -- A relived day that was never counted (#81, as in complete_habit_at):
   -- completions earn points but don't touch the streak, so nothing is at
   -- risk and no freezes are needed. The streak is judged as of the floor.
-  v_reached := p.engine_floor_date;
-  v_relived := coalesce(v_today < v_reached
+  v_floor := p.engine_floor_date;
+  v_relived := coalesce(v_today < v_floor
                and (p.last_streak_date is null or v_today > p.last_streak_date), false);
-  v_ref := case when v_relived then v_reached else v_today end;
+  v_ref := case when v_relived then v_floor else v_today end;
 
   -- The global streak as the next completion would see it (plan §6.2).
   v_streak := p.current_streak;
