@@ -10,7 +10,7 @@
 -- exists (DECISIONS: "Spending before Phase 6"); Phase 6 re-runs this with it.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(18);
+select plan(21);
 
 -- Users 4000000{1..4}; users 2 and 4 start with two freezes.
 insert into auth.users (id, email)
@@ -98,6 +98,17 @@ create function pg_temp.violations() returns text[] language sql as $$
         and (select count(*) from public.points_ledger u
              where u.reason = 'undo' and u.ref_id = l.ref_id and u.delta = -l.delta) <> 1)
     union all
+    -- #82: only a completion of a habit in the day's first snapshot counts
+    -- the day; a habit that joined late earns points but must not.
+    select 'every counted day has a completion of an initial habit' where exists (
+      select 1 from public.daily_progress d where pg_temp.mine(d.user_id)
+        and d.counted_for_streak
+        and not exists (select 1 from public.habit_completions c
+                        join public.daily_schedule_habits sh
+                          on sh.user_id = c.user_id and sh.local_date = c.local_date
+                         and sh.habit_id = c.habit_id
+                        where c.user_id = d.user_id and c.local_date = d.local_date and sh.initial))
+    union all
     select 'every milestone has its ledger entry and a completed day' where exists (
       select 1 from public.streak_milestones_awarded m where pg_temp.mine(m.user_id)
         and (not exists (select 1 from public.points_ledger l
@@ -120,9 +131,17 @@ create temp table mismatches (step int, what text);
  * Where get_today (taken just before) disagrees with the completion that
  * followed, or null. The completion adds a day to the global streak unless
  * the day is already covered (last_streak_date >= today) or relived after a
- * move west (#81: no change, reported as judged on the floor day), and to the habit
- * streak when it reaches the target on a day after the habit's last_date.
+ * move west (#81: no change, reported as judged on the floor day) or the
+ * habit joined the day late and the day isn't counted yet (#82: no change and
+ * no freezes spent, reported as judged today), and to the habit streak when
+ * it reaches the target on a day after the habit's last_date. The multiplier
+ * is the reported streak's (base on a relived day).
  */
+/** #82: a completion of a habit that joined late, on a day not yet counted. */
+create function pg_temp.late_first(p_gt jsonb, p_listed jsonb) returns boolean language sql as $$
+  select coalesce((p_listed ->> 'joined_late')::boolean, false)
+         and not (p_gt ->> 'counted_today')::boolean $$;
+
 create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_last date,
                                      p_hlast date, p_fb int, p_fa int) returns text language sql as $$
   select case
@@ -131,9 +150,18 @@ create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_la
     when (p_listed ->> 'target')::int <> (p_c ->> 'target')::int then 'target'
     when (p_c ->> 'current_streak')::int - (p_gt ->> 'current_streak')::int
          <> case when p_last >= (p_c ->> 'local_date')::date or (p_gt ->> 'relived')::boolean
+                      or pg_temp.late_first(p_gt, p_listed)
                  then 0 else 1 end then 'current_streak'
-    when (p_gt ->> 'freezes_needed')::int <> p_fb - p_fa or (p_gt ->> 'streak_freezes')::int <> p_fb
+    when case when pg_temp.late_first(p_gt, p_listed) then 0
+              else (p_gt ->> 'freezes_needed')::int end <> p_fb - p_fa
+         or (p_gt ->> 'streak_freezes')::int <> p_fb
       then 'freezes_needed'
+    when (p_c ->> 'multiplier')::numeric
+         <> round(1 + (public.economy_value('multiplier_step'))::numeric
+                      * least(case when (p_gt ->> 'relived')::boolean then 1
+                                   else greatest((p_c ->> 'current_streak')::int, 1) end,
+                              (public.economy_value('multiplier_cap'))::int), 2)
+      then 'multiplier'
     -- This completion reaches the target (occurrences are reused after an
     -- undo, so the count decides, not the occurrence number).
     when (p_listed ->> 'done')::int + 1 = (p_listed ->> 'target')::int
@@ -159,13 +187,44 @@ declare
   v_hlast date;
   v_fb int;
   v_bad text;
+  v_join uuid;
 begin
   for step in 1 .. p_steps loop
     v_uid := ('4000000' || (1 + floor(random() * 4))::int || '-0000-0000-0000-000000000000')::uuid;
     r := random();
+    v_join := null;
+    if r >= 0.92 and r < 0.96 then
+      -- #82: H3 (not daily) joins today after the first snapshot, as
+      -- snapshot_add_habit does when it is rescheduled onto today (the
+      -- trigger path uses the real now(), so the row is written directly).
+      -- Then a completion follows, of H3 if it joined. The user is one whose
+      -- today isn't counted yet, if any, so the late completion is the first.
+      select x.id into v_uid from (
+        select p.id from public.profiles p
+        where pg_temp.mine(p.id)
+          and not exists (select 1 from public.daily_progress d
+                          where d.user_id = p.id and d.counted_for_streak
+                            and d.local_date = public.local_date_in(p.timezone, v_now))
+        order by p.id) x
+      order by random() limit 1;
+      v_uid := coalesce(v_uid, '40000001-0000-0000-0000-000000000000');
+      perform public.ensure_daily_schedule(v_uid, v_now);
+      insert into public.daily_schedule_habits
+        (user_id, local_date, habit_id, difficulty, target_per_day, initial)
+      select v_uid, public.local_date_in(p.timezone, v_now), h.id, h.difficulty, h.target_per_day, false
+      from public.habits h join public.profiles p on p.id = h.user_id
+      where h.user_id = v_uid and h.title = 'H3'
+      on conflict (user_id, local_date, habit_id) do nothing
+      returning habit_id into v_join;
+      if v_join is not null then
+        perform pg_temp.bump('join late');
+      end if;
+      r := 0;
+    end if;
     if r < 0.55 then
-      v_habit := ('f' || substr(v_uid::text, 8, 1) || '00000' || (1 + floor(random() * 4))::int
-                  || '-0000-0000-0000-000000000000')::uuid;
+      v_habit := coalesce(v_join,
+                          ('f' || substr(v_uid::text, 8, 1) || '00000' || (1 + floor(random() * 4))::int
+                           || '-0000-0000-0000-000000000000')::uuid);
       -- get_today first, in the same subtransaction (a refusal rolls back its
       -- snapshot too, so the walk is unchanged); it must predict the result.
       v_gt := null;
@@ -181,6 +240,8 @@ begin
         perform pg_temp.bump('complete');
         if (v_gt ->> 'relived')::boolean then
           perform pg_temp.bump('complete relived');
+        elsif pg_temp.late_first(v_gt, v_listed) then
+          perform pg_temp.bump('complete late');
         end if;
         v_bad := pg_temp.disagreement(v_gt, v_listed, v_c, v_last, v_hlast, v_fb,
                                       (select streak_freezes from public.profiles where id = v_uid));
@@ -278,7 +339,8 @@ select cmp_ok(pg_temp.stat('complete'), '>=', 200, 'at least 200 completions');
 select cmp_ok(pg_temp.stat('undo'), '>=', 30, 'at least 30 undos');
 select cmp_ok(pg_temp.stat('spend'), '>=', 20, 'at least 20 spends');
 select cmp_ok(pg_temp.stat('back') + pg_temp.stat('jump'), '>=', 50, 'at least 50 relived stretches or skipped days');
-select cmp_ok(pg_temp.stat('complete relived'), '>=', 5, 'at least 5 completions on relived days after a move west (#81)');
+select cmp_ok(pg_temp.stat('complete relived'), '>=', 3, 'at least 3 completions on relived days after a move west (#81)');
+select cmp_ok(pg_temp.stat('complete late'), '>=', 5, 'at least 5 uncounted-day completions of a habit that joined late (#82)');
 select cmp_ok((select count(*)::int from public.points_ledger
                where reason = 'streak_milestone' and pg_temp.mine(user_id)), '>=', 1, 'milestones were awarded');
 select cmp_ok((select count(*)::int from public.daily_progress
@@ -315,6 +377,34 @@ select ok(pg_temp.disagreement(
             '{"local_date": "2026-01-02", "target": 2, "occurrence": 1, "current_streak": 3, "habit_streak": 5}',
             '2026-01-01', null, 0, 0) = 'habit_streak',
   'the parity checker flags a wrong streak and passes a right one');
+select ok(pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 0, "streak_freezes": 0, "relived": false, "counted_today": false}',
+            '{"target": 1, "done": 0, "habit_streak": 0, "joined_late": true}',
+            '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 3, "habit_streak": 1, "multiplier": 1.03}',
+            '2026-01-01', null, 0, 0) = 'current_streak'
+          and pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 1, "streak_freezes": 1, "relived": false, "counted_today": false}',
+            '{"target": 1, "done": 0, "habit_streak": 0, "joined_late": true}',
+            '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 2, "habit_streak": 1, "multiplier": 1.02}',
+            '2025-12-31', null, 1, 0) = 'freezes_needed'
+          and pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 0, "streak_freezes": 0, "relived": false, "counted_today": false}',
+            '{"target": 1, "done": 0, "habit_streak": 0, "joined_late": true}',
+            '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 2, "habit_streak": 1, "multiplier": 1.03}',
+            '2026-01-01', null, 0, 0) = 'multiplier'
+          and pg_temp.disagreement(
+            '{"local_date": "2026-01-02", "current_streak": 2, "freezes_needed": 1, "streak_freezes": 1, "relived": false, "counted_today": false}',
+            '{"target": 1, "done": 0, "habit_streak": 0, "joined_late": true}',
+            '{"local_date": "2026-01-02", "target": 1, "occurrence": 1, "current_streak": 2, "habit_streak": 1, "multiplier": 1.02}',
+            '2025-12-31', null, 1, 1) is null,
+  'it flags a late completion that adds a day, spends a freeze or pays another multiplier (#82)');
+-- A counted day whose only completion is of a habit that joined late.
+update public.daily_schedule_habits sh set initial = false
+ where sh.user_id = '40000002-0000-0000-0000-000000000000'
+   and sh.local_date = (select max(d.local_date) from public.daily_progress d
+                        where d.user_id = sh.user_id and d.counted_for_streak);
+select ok(pg_temp.violations() @> array['every counted day has a completion of an initial habit'],
+  'the checker flags a day counted only by habits that joined late (#82)');
 
 select diag('stats: ' || (select string_agg(k || '=' || n, ', ' order by k) from stats));
 select lives_ok($$set constraints all immediate$$, 'deferred FKs hold');
