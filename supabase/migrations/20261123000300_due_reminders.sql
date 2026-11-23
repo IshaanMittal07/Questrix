@@ -91,6 +91,7 @@ create table public.streak_saver_log (
 create index streak_saver_log_sent_at_idx on public.streak_saver_log (sent_at);
 alter table public.streak_saver_log enable row level security;
 revoke all on public.streak_saver_log from anon, authenticated;
+revoke truncate, trigger, references on public.streak_saver_log from service_role;
 
 /**
  * Users whose local 20:00 falls in the window and whose streak of 3+ is at
@@ -101,8 +102,10 @@ revoke all on public.streak_saver_log from anon, authenticated;
  *   not counted today, 20:00 in the window), then get_today_at for the
  *   real answer, so the rules live in one place. It snapshots today, which
  *   any engine call that day would do anyway.
- * - Each user runs in its own sub-block: one failure (a profile deleted
- *   mid-run, say) is skipped with a warning and doesn't stop the batch.
+ * - Each user runs in its own sub-block: one failure, or a lock wait over
+ *   2 s, is skipped with a warning and doesn't stop the batch. Each is a
+ *   subtransaction; past 64 in one call Postgres's subtransaction cache
+ *   overflows, which is fine at this scale (P7).
  */
 create function public.due_streak_savers(p_now timestamptz)
 returns table (user_id uuid, local_date date, streak int)
@@ -110,6 +113,9 @@ language plpgsql
 volatile
 security definer
 set search_path = ''
+-- A user whose profile is locked by another transaction (a completion, a
+-- username change) is skipped after 2 s instead of stalling the batch.
+set lock_timeout = '2s'
 as $$
 #variable_conflict use_column
 declare

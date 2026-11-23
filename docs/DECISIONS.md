@@ -454,4 +454,4 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Pre-filter.** It cheaply selects users with both switches on, a device, onboarded, a stored streak of at least 3, and today not yet counted.
   - **Decision.** It then calls `get_today_at`, and sends only if `at_risk` and the judged streak is at least 3. That reuses every rule: lookback, freezes, relived days (#81), rest days, and late joiners (#82, `at_risk` is computed from the initial snapshot).
   - **Side effect.** It snapshots today, as any engine call that day would.
-  - **Errors.** Each user runs in its own sub-block, so one failure logs a warning and doesn't stop the batch.
+  - **Errors.** Each user runs in its own sub-block, so one failure logs a warning and doesn't stop the batch. `lock_timeout = 2s` turns a wait on a profile locked elsewhere into such a skip. Each user is a subtransaction; past 64 in one call Postgres's subtransaction cache overflows, which is fine at this scale and worth revisiting if 20:00 batches grow.
