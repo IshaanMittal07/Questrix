@@ -37,7 +37,7 @@ begin
   select s.decrypted_secret into v_secret
   from vault.decrypted_secrets s where s.name = 'cron_secret';
   -- The route refuses secrets under 32 characters (lib/http/bearer.ts).
-  if v_url is null or v_url !~ '^https?://' or v_secret is null or length(v_secret) < 32 then
+  if v_url is null or v_url !~* '^https?://' or v_secret is null or length(v_secret) < 32 then
     return null;
   end if;
   return net.http_post(
