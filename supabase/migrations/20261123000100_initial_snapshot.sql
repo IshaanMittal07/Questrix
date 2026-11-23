@@ -10,14 +10,17 @@
 -- (ensure_daily_schedule). A habit that joins later (snapshot_add_habit:
 -- added, unarchived or rescheduled today) earns points, but its completion
 -- takes the "no change" path for the global streak and leaves the day
--- uncounted. A later completion of an initial habit still counts the day.
+-- uncounted while a live streak stands. A later completion of an initial
+-- habit still counts the day, and with no live streak a late joiner counts
+-- it too (it can only start a run at 1).
 --
 -- Per-habit streaks are unchanged: they carry no points, freezes or
 -- milestones, and undo's QX108 guard relies on them advancing (DECISIONS,
 -- #82, #85). get_today reports each habit's joined_late.
 
--- Existing rows predate the flag; treat them as initial. New rows default to
--- false (fail closed): only ensure_daily_schedule writes true.
+-- Existing rows predate the flag; treat them as initial (this only matters
+-- for the deploy day). New rows default to false (fail closed): only
+-- ensure_daily_schedule writes true.
 alter table public.daily_schedule_habits
   add column initial boolean not null default true;
 alter table public.daily_schedule_habits
@@ -97,6 +100,34 @@ begin
   return v_today;
 end;
 $$;
+
+/**
+ * The global streak as a completion on p_ref would find it, before counting
+ * p_ref: 0 when there's none, when the gap is longer than the lookback, or
+ * when more days were missed than there are freezes (plan §6.2). Used where
+ * a completion doesn't count its day (#81 relived, #82 late joiners).
+ */
+create function public.streak_as_of(p_uid uuid, p_streak int, p_last date, p_freezes int, p_ref date)
+returns int
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if p_last is null then
+    return 0;
+  elsif p_last >= p_ref - 1 then
+    return p_streak;
+  elsif p_ref - p_last - 1 > (public.economy_value('streak_lookback_days'))::int
+        or public.streak_missed_days(p_uid, p_last, p_ref) > p_freezes then
+    return 0;
+  end if;
+  return p_streak;
+end;
+$$;
+revoke all on function public.streak_as_of(uuid, int, date, int, date)
+  from public, anon, authenticated, service_role;
 
 create or replace function public.complete_habit_at(p_uid uuid, p_habit_id uuid, p_now timestamptz)
 returns jsonb
@@ -208,32 +239,23 @@ begin
     -- it's still a missed day when the reached day comes. Undo has nothing
     -- to restore.
     v_relived := true;
-    v_report := v_streak;
-    if v_last is null then
-      v_report := 0;
-    elsif v_last < p.engine_floor_date - 1 then
-      if p.engine_floor_date - v_last - 1 > v_lookback
-         or public.streak_missed_days(p_uid, v_last, p.engine_floor_date) > v_freezes then
-        v_report := 0;
-      end if;
-    end if;
-  elsif v_first_today and not v_initial then
+    v_report := public.streak_as_of(p_uid, v_streak, v_last, v_freezes, p.engine_floor_date);
+  elsif v_first_today and not v_initial
+        and public.streak_as_of(p_uid, v_streak, v_last, v_freezes, v_today) > 0 then
     -- A habit that joined the day after its first snapshot (added,
-    -- unarchived or rescheduled today, #82): points, but no streak change,
-    -- and the day stays uncounted. Otherwise a user could keep everything
-    -- archived, so every day is a rest day, and unarchive one habit on the
-    -- days they choose to grow the streak. The multiplier and the reported
-    -- streak are the streak as judged today, as get_today shows it.
+    -- unarchived or rescheduled today, #82), while a live streak stands:
+    -- points, but no streak change, and the day stays uncounted. Otherwise
+    -- a user could keep everything archived, so every day is a rest day,
+    -- and unarchive one habit on the days they choose to grow the streak.
+    -- The multiplier and the reported streak are the streak as judged
+    -- today, as get_today shows it.
+    --
+    -- With no live streak there's nothing to protect, so the completion
+    -- counts as usual and can only start a run at 1. That keeps a new
+    -- user's first day: onboarding snapshots today before any habit
+    -- exists, so every first-day habit joins late (review of PR #94).
     v_late := true;
     v_report := v_streak;
-    if v_last is null then
-      v_report := 0;
-    elsif v_last < v_today - 1 then
-      if v_today - v_last - 1 > v_lookback
-         or public.streak_missed_days(p_uid, v_last, v_today) > v_freezes then
-        v_report := 0;
-      end if;
-    end if;
   elsif v_first_today then
     if v_last is null then
       -- First completion ever: rule 5.

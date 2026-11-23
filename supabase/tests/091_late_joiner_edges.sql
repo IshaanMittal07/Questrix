@@ -268,13 +268,15 @@ select ok(not exists (
             select 1 from public.daily_progress d
             where d.user_id in (select pg_temp.u(g) from generate_series(0, 9) as g)
               and d.counted_for_streak
+              and public.streak_as_of(d.user_id, d.streak_before, d.last_streak_date_before,
+                                      d.streak_freezes_before, d.local_date) > 0
               and not exists (select 1 from public.habit_completions hc
                               join public.daily_schedule_habits sh
                                 on sh.user_id = hc.user_id and sh.local_date = hc.local_date
                                and sh.habit_id = hc.habit_id
                               where hc.user_id = d.user_id and hc.local_date = d.local_date
                                 and sh.initial)),
-  'no day is counted without a completion of an initial habit');
+  'no day with a live streak is counted without a completion of an initial habit');
 select ok(not exists (
             select 1 from public.streak_milestones_awarded m
             where m.user_id in (select pg_temp.u(g) from generate_series(0, 9) as g)
