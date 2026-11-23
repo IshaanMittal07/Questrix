@@ -566,8 +566,10 @@ export type Database = {
           longest_streak: number;
           onboarded_at: string | null;
           points_balance: number;
+          push_enabled: boolean;
           streak_freezes: number;
           streak_run_started: string | null;
+          streak_saver_enabled: boolean;
           timezone: string;
           timezone_changed_at: string | null;
           username: string;
@@ -586,8 +588,10 @@ export type Database = {
           longest_streak?: number;
           onboarded_at?: string | null;
           points_balance?: number;
+          push_enabled?: boolean;
           streak_freezes?: number;
           streak_run_started?: string | null;
+          streak_saver_enabled?: boolean;
           timezone?: string;
           timezone_changed_at?: string | null;
           username: string;
@@ -605,13 +609,111 @@ export type Database = {
           longest_streak?: number;
           onboarded_at?: string | null;
           points_balance?: number;
+          push_enabled?: boolean;
           streak_freezes?: number;
           streak_run_started?: string | null;
+          streak_saver_enabled?: boolean;
           timezone?: string;
           timezone_changed_at?: string | null;
           username?: string;
         };
         Relationships: [];
+      };
+      push_subscriptions: {
+        Row: {
+          auth: string;
+          created_at: string;
+          endpoint: string;
+          id: string;
+          last_success_at: string | null;
+          p256dh: string;
+          user_agent: string | null;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          auth: string;
+          created_at?: string;
+          endpoint: string;
+          id?: string;
+          last_success_at?: string | null;
+          p256dh: string;
+          user_agent?: string | null;
+          user_id: string;
+        };
+        Update: {
+          auth?: string;
+          created_at?: string;
+          endpoint?: string;
+          id?: string;
+          last_success_at?: string | null;
+          p256dh?: string;
+          user_agent?: string | null;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "push_subscriptions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "push_subscriptions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      reminder_log: {
+        Row: {
+          habit_id: string;
+          local_date: string;
+          reminder_time: string;
+          sent_at: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          habit_id: string;
+          local_date: string;
+          reminder_time: string;
+          sent_at?: string;
+          user_id: string;
+        };
+        Update: {
+          habit_id?: string;
+          local_date?: string;
+          reminder_time?: string;
+          sent_at?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "reminder_log_habit_id_fkey";
+            columns: ["habit_id"];
+            isOneToOne: false;
+            referencedRelation: "habits";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "reminder_log_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "reminder_log_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       streak_milestones_awarded: {
         Row: {
@@ -781,9 +883,28 @@ export type Database = {
       level_for: { Args: { p_lifetime: number }; Returns: number };
       local_date_in: { Args: { p_at: string; p_tz: string }; Returns: string };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
+      save_push_subscription: {
+        Args: {
+          p_auth: string;
+          p_endpoint: string;
+          p_p256dh: string;
+          p_user_agent?: string;
+        };
+        Returns: string;
+      };
       snapshot_add_habit: {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
         Returns: undefined;
+      };
+      streak_as_of: {
+        Args: {
+          p_freezes: number;
+          p_last: string;
+          p_ref: string;
+          p_streak: number;
+          p_uid: string;
+        };
+        Returns: number;
       };
       streak_missed_days: {
         Args: { p_from: string; p_to: string; p_uid: string };
