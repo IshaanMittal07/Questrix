@@ -74,6 +74,7 @@ describe("sendAll fairness and error shapes", () => {
       sent: [],
       failed: 1,
       removed: [],
+      skipped: 0,
     });
   });
 
@@ -88,6 +89,66 @@ describe("sendAll fairness and error shapes", () => {
       sent: ["b"],
       failed: 1,
       removed: [],
+      skipped: 0,
     });
+  });
+});
+
+describe("sendAll deadline", () => {
+  it("starts nothing when the deadline has already passed, and counts every job as skipped", async () => {
+    const send = vi.fn();
+    expect(
+      await sendAll(["a", "b", "c"].map(job), send, 2, 1_000, () => 1_000),
+    ).toEqual({ sent: [], failed: 0, removed: [], skipped: 3 });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("finishes a push already in flight at the deadline, but starts no new one", async () => {
+    let t = 0;
+    const send = vi.fn(async () => {
+      t += 10;
+      await new Promise((r) => setTimeout(r, 1));
+    });
+    // One worker: pushes start at 0, 10, 20; at 30 the deadline is reached.
+    const out = await sendAll(
+      ["a", "b", "c", "d", "e"].map(job),
+      send,
+      1,
+      30,
+      () => t,
+    );
+    expect(out).toEqual({
+      sent: ["a", "b", "c"],
+      failed: 0,
+      removed: [],
+      skipped: 2,
+    });
+  });
+
+  it("counts skipped across all workers", async () => {
+    let t = 0;
+    const send = vi.fn(async () => {
+      t += 1;
+    });
+    const out = await sendAll(
+      Array.from({ length: 50 }, (_, i) => job(String(i))),
+      send,
+      20,
+      7,
+      () => t,
+    );
+    expect(out.sent).toHaveLength(7);
+    expect(out.skipped).toBe(43);
+    expect(
+      out.sent.length + out.failed + out.removed.length + out.skipped,
+    ).toBe(50);
+  });
+
+  it("has no deadline by default", async () => {
+    const out = await sendAll(
+      ["a"].map(job),
+      vi.fn(async () => {}),
+    );
+    expect(out.skipped).toBe(0);
   });
 });
