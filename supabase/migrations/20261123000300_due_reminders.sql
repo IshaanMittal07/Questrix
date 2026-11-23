@@ -23,9 +23,10 @@
  * - streak is only reported while it's live (last counted yesterday or
  *   today), so copy never claims a streak that's already lost.
  */
-create function public.due_reminders(p_now timestamptz)
+create function public.due_reminders(p_now timestamptz, p_limit int default 500)
 returns table (user_id uuid, habit_id uuid, local_date date, reminder_time time,
-               title text, icon text, category text, points int, streak int)
+               title text, icon text, category text, points int, streak int,
+               subscriptions jsonb)
 language sql
 volatile
 security definer
@@ -33,24 +34,33 @@ set search_path = ''
 as $$
   with win as (
     select date_trunc('minute', p_now) as hi,
-           date_trunc('minute', p_now) - interval '2 minutes' as lo
+           date_trunc('minute', p_now) - interval '2 minutes' as lo,
+           public.economy_value('base_points') as bp
   ),
-  cand as (
+  -- Materialized so the window cuts first: the snapshot, completion and log
+  -- lookups below run only for reminders actually due (review of PR #96).
+  cand as materialized (
     select h.id as habit_id, h.user_id, h.title, h.icon, h.category::text as category,
-           h.difficulty, h.target_per_day, h.days_of_week, rt.t, d.local_date,
-           p.current_streak, p.last_streak_date
+           h.difficulty, h.target_per_day, h.days_of_week, h.created_at, rt.t, d.local_date,
+           ((d.local_date + rt.t) at time zone p.timezone) as at,
+           p.current_streak, p.last_streak_date, p.engine_floor_date
     from win
     join public.profiles p
       on p.push_enabled and p.onboarded_at is not null
      and exists (select 1 from public.push_subscriptions s where s.user_id = p.id)
+    -- habits_reminders_idx's predicate, repeated literally (P5).
     join public.habits h
       on h.user_id = p.id and h.archived_at is null and h.reminders_enabled
      and cardinality(h.reminder_times) > 0
     cross join lateral unnest(h.reminder_times) as rt(t)
+    -- The local dates of now and now - 2 min (the window can cross
+    -- midnight), and of 2 hours earlier: a late-evening DST jump can move a
+    -- skipped time onto the next date.
     cross join lateral (
       select distinct x as local_date
       from unnest(array[(win.hi at time zone p.timezone)::date,
-                        (win.lo at time zone p.timezone)::date]) as x
+                        (win.lo at time zone p.timezone)::date,
+                        ((win.lo - interval '2 hours') at time zone p.timezone)::date]) as x
     ) d
     where ((d.local_date + rt.t) at time zone p.timezone) > win.lo
       and ((d.local_date + rt.t) at time zone p.timezone) <= win.hi
@@ -63,10 +73,19 @@ as $$
     left join public.daily_schedule_habits sh
       on sh.user_id = c.user_id and sh.local_date = c.local_date and sh.habit_id = c.habit_id
     where case when s.local_date is not null then sh.habit_id is not null
-               else extract(dow from c.local_date)::smallint = any (c.days_of_week) end
+               -- The live fallback: scheduled that weekday, and the habit
+               -- existed at the reminder's moment.
+               else extract(dow from c.local_date)::smallint = any (c.days_of_week)
+                    and c.at >= c.created_at end
       and (select count(*) from public.habit_completions hc
            where hc.habit_id = c.habit_id and hc.local_date = c.local_date)
           < case when s.local_date is not null then sh.target_per_day else c.target_per_day end
+      -- Already sent: skipped before the limit, so repeated calls page.
+      and not exists (select 1 from public.reminder_log rl
+                      where rl.habit_id = c.habit_id and rl.local_date = c.local_date
+                        and rl.reminder_time = c.t)
+    order by c.user_id, c.habit_id, c.local_date, c.t
+    limit greatest(p_limit, 1)
   ),
   logged as (
     insert into public.reminder_log (habit_id, local_date, reminder_time, user_id)
@@ -75,9 +94,17 @@ as $$
     returning reminder_log.habit_id, reminder_log.local_date, reminder_log.reminder_time
   )
   select d.user_id, d.habit_id, d.local_date, d.t, d.title, d.icon, d.category,
-         (public.economy_value('base_points') ->> d.eff_difficulty::text)::int,
-         case when d.last_streak_date >= d.local_date - 1 then d.current_streak else 0 end
+         (win.bp ->> d.eff_difficulty::text)::int,
+         -- Live and extendable only: counted yesterday or today, and not a
+         -- relived day (#81), where completions can't extend it.
+         case when d.last_streak_date >= d.local_date - 1
+                   and not d.local_date < coalesce(d.engine_floor_date, '-infinity'::date)
+              then d.current_streak else 0 end,
+         (select jsonb_agg(jsonb_build_object('id', s.id, 'endpoint', s.endpoint,
+                                              'p256dh', s.p256dh, 'auth', s.auth) order by s.id)
+          from public.push_subscriptions s where s.user_id = d.user_id)
   from due d
+  cross join win
   join logged l on l.habit_id = d.habit_id and l.local_date = d.local_date and l.reminder_time = d.t;
 $$;
 
@@ -103,19 +130,22 @@ revoke truncate, trigger, references on public.streak_saver_log from service_rol
  *   real answer, so the rules live in one place. It snapshots today, which
  *   any engine call that day would do anyway.
  * - Each user runs in its own sub-block: one failure, or a lock wait over
- *   2 s, is skipped with a warning and doesn't stop the batch. Each is a
- *   subtransaction; past 64 in one call Postgres's subtransaction cache
- *   overflows, which is fine at this scale (P7).
+ *   200 ms, is skipped with a warning and doesn't stop the batch. A 4 s
+ *   budget stops the loop well inside the 8 s statement timeout; the rest
+ *   are picked up by the next minute's overlapping window. Each user is a
+ *   subtransaction (past 64 the subtransaction cache overflows; fine at
+ *   this scale), and the FOR SHARE profile locks get_today_at takes are
+ *   held until the call commits, so keep batches short (P7).
  */
 create function public.due_streak_savers(p_now timestamptz)
-returns table (user_id uuid, local_date date, streak int)
+returns table (user_id uuid, local_date date, streak int, subscriptions jsonb)
 language plpgsql
 volatile
 security definer
 set search_path = ''
 -- A user whose profile is locked by another transaction (a completion, a
--- username change) is skipped after 2 s instead of stalling the batch.
-set lock_timeout = '2s'
+-- username change) is skipped quickly instead of stalling the batch.
+set lock_timeout = '200ms'
 as $$
 #variable_conflict use_column
 declare
@@ -123,6 +153,7 @@ declare
   v_lo timestamptz := date_trunc('minute', p_now) - interval '2 minutes';
   r record;
   j jsonb;
+  v_start timestamptz := clock_timestamp();
 begin
   for r in
     select p.id
@@ -138,6 +169,9 @@ begin
           and (p.last_streak_date is null or p.last_streak_date < x.d))
     order by p.id
   loop
+    -- A time budget well inside PostgREST's 8 s statement timeout: users
+    -- left over are picked up by the next minute's overlapping window.
+    exit when clock_timestamp() - v_start > interval '4 seconds';
     begin
       j := public.get_today_at(r.id, p_now);
       if (j ->> 'at_risk')::boolean and (j ->> 'current_streak')::int >= 3 then
@@ -148,17 +182,20 @@ begin
           user_id := r.id;
           local_date := (j ->> 'local_date')::date;
           streak := (j ->> 'current_streak')::int;
+          subscriptions := (select jsonb_agg(jsonb_build_object('id', s.id, 'endpoint', s.endpoint,
+                                                                'p256dh', s.p256dh, 'auth', s.auth) order by s.id)
+                            from public.push_subscriptions s where s.user_id = r.id);
           return next;
         end if;
       end if;
     exception when others then
-      raise warning 'due_streak_savers: skipped a user (%)', sqlstate;
+      raise warning 'due_streak_savers: skipped user % (%: %)', r.id, sqlstate, sqlerrm;
     end;
   end loop;
 end;
 $$;
 
-revoke all on function public.due_reminders(timestamptz) from public, anon, authenticated;
+revoke all on function public.due_reminders(timestamptz, int) from public, anon, authenticated;
 revoke all on function public.due_streak_savers(timestamptz) from public, anon, authenticated;
-grant execute on function public.due_reminders(timestamptz) to service_role;
+grant execute on function public.due_reminders(timestamptz, int) to service_role;
 grant execute on function public.due_streak_savers(timestamptz) to service_role;

@@ -2,7 +2,7 @@
 -- (now − 2 min, now] window, midnight and DST, exclusions, idempotency.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(58);
+select plan(67);
 
 create function pg_temp.u(n int) returns uuid language sql as $$
   select ('6000000' || n || '-0000-0000-0000-000000000000')::uuid $$;
@@ -17,6 +17,20 @@ create function pg_temp.run(p_k text, p_now timestamptz) returns int language sq
   returning 1 $$;
 create function pg_temp.has(p_k text, p_habit uuid) returns boolean language sql as $$
   select exists (select 1 from got where k = p_k and habit_id = p_habit) $$;
+-- Habit writes snapshot "today" by the real clock (the habit triggers use
+-- now()), with a 7-day backfill. Fixture habit writes run with their users
+-- briefly un-onboarded, so no real-date snapshot can collide with the fixed
+-- fixture dates whenever the suite runs (review of PR #96). Only the
+-- "created today" case uses the real clock on purpose.
+create temp table q_on (id uuid primary key, at timestamptz not null);
+create function pg_temp.off() returns void language sql as $$
+  insert into q_on select id, onboarded_at from public.profiles
+  where onboarded_at is not null and (id::text like '6000000%' or id::text like '7000000%')
+  on conflict (id) do update set at = excluded.at;
+  update public.profiles set onboarded_at = null where id in (select id from q_on) $$;
+create function pg_temp.on() returns void language sql as $$
+  update public.profiles p set onboarded_at = q.at from q_on q where q.id = p.id;
+  delete from q_on $$;
 create function pg_temp.sub(n int) returns void language sql as $$
   insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
   values (pg_temp.u(n), 'https://fcm.googleapis.com/fcm/send/u' || n, repeat('A', 87), repeat('a', 22)) $$;
@@ -36,6 +50,7 @@ update public.profiles set push_enabled = false where id = pg_temp.u(4);
 update public.profiles set streak_saver_enabled = false where id = pg_temp.u(9);
 select pg_temp.sub(g) from generate_series(1, 9) g where g <> 5;
 
+select pg_temp.off();
 insert into public.habits (id, user_id, title, category, difficulty, reminder_times, created_at) values
   -- U1: the window, completions, exclusions
   (pg_temp.h(1, 1), pg_temp.u(1), 'Edge', 'mind', 'hard', '{07:58,07:59,08:00,08:01}', '2026-10-01'),
@@ -58,12 +73,13 @@ update public.habits set reminders_enabled = false where id = pg_temp.h(1, 4);
 -- U1's "Weekday" habit: never on the test day's weekday (2026-12-01 is a Tuesday).
 insert into public.habits (id, user_id, title, category, days_of_week, reminder_times, created_at)
 values (pg_temp.h(1, 7), pg_temp.u(1), 'Not Tuesday', 'mind', '{0,1,3,4,5,6}', '{08:00}', '2026-10-01');
+select pg_temp.on();
 
 -- ── Privileges ──────────────────────────────────────────────────────────────
-select function_privs_are('public', 'due_reminders', array['timestamp with time zone'], 'authenticated', array[]::text[],
+select function_privs_are('public', 'due_reminders', array['timestamp with time zone', 'integer'], 'authenticated', array[]::text[],
   'clients can''t call due_reminders');
-select function_privs_are('public', 'due_reminders', array['timestamp with time zone'], 'anon', array[]::text[], 'nor can anon');
-select function_privs_are('public', 'due_reminders', array['timestamp with time zone'], 'service_role', array['EXECUTE'],
+select function_privs_are('public', 'due_reminders', array['timestamp with time zone', 'integer'], 'anon', array[]::text[], 'nor can anon');
+select function_privs_are('public', 'due_reminders', array['timestamp with time zone', 'integer'], 'service_role', array['EXECUTE'],
   'the cron route (service_role) can');
 select function_privs_are('public', 'due_streak_savers', array['timestamp with time zone'], 'authenticated', array[]::text[],
   'clients can''t call due_streak_savers');
@@ -72,11 +88,11 @@ select function_privs_are('public', 'due_streak_savers', array['timestamp with t
 select function_privs_are('public', 'due_streak_savers', array['timestamp with time zone'], 'anon', array[]::text[],
   'anon can''t call due_streak_savers');
 select ok((select prosecdef and proconfig = array['search_path=""'] from pg_proc
-           where oid = 'public.due_reminders(timestamptz)'::regprocedure),
+           where oid = 'public.due_reminders(timestamptz, int)'::regprocedure),
   'due_reminders is SECURITY DEFINER with an empty search_path');
-select ok((select prosecdef and proconfig @> array['search_path=""', 'lock_timeout=2s'] from pg_proc
+select ok((select prosecdef and proconfig @> array['search_path=""', 'lock_timeout=200ms'] from pg_proc
            where oid = 'public.due_streak_savers(timestamptz)'::regprocedure),
-  'due_streak_savers is SECURITY DEFINER with an empty search_path and a 2 s lock timeout');
+  'due_streak_savers is SECURITY DEFINER with an empty search_path and a 200 ms lock timeout');
 select ok((select relrowsecurity from pg_class where oid = 'public.streak_saver_log'::regclass), 'streak_saver_log has RLS');
 select col_is_pk('public', 'streak_saver_log', array['user_id', 'local_date'],
   'streak_saver_log is keyed by (user, local date): one saver a day');
@@ -128,7 +144,9 @@ select public.complete_habit_at(pg_temp.u(1), pg_temp.h(1, 5), '2026-12-01 18:30
 select pg_temp.run('d', '2026-12-01 19:00:05+00');
 select ok(not pg_temp.has('d', pg_temp.h(1, 5)), 'a habit done for the day isn''t reminded');
 -- Today's snapshot says target 1; the live habit is raised to 3 afterwards.
+select pg_temp.off();
 update public.habits set target_per_day = 3 where id = pg_temp.h(1, 6);
+select pg_temp.on();
 select public.complete_habit_at(pg_temp.u(1), pg_temp.h(1, 6), '2026-12-01 19:30+00');
 select pg_temp.run('s', '2026-12-01 20:00:05+00');
 select ok(not pg_temp.has('s', pg_temp.h(1, 6)), 'the snapshot''s target decides (1 of 1 done), not the live 3');
@@ -180,7 +198,9 @@ update public.profiles set streak_saver_enabled = true where id = pg_temp.u(9);
 select is((select count(*)::int from public.due_streak_savers('2026-12-04 06:00:20+00') where user_id = pg_temp.u(9)), 0,
   'a day already counted gets no saver');
 -- A rest day (nothing scheduled) isn't at risk either.
+select pg_temp.off();
 update public.habits set days_of_week = '{1}' where id = pg_temp.h(7, 1);  -- Mondays only
+select pg_temp.on();
 update public.profiles set last_streak_date = '2026-12-03', current_streak = 3 where id = pg_temp.u(7);
 select is((select count(*)::int from public.due_streak_savers('2026-12-05 06:00:20+00') where user_id = pg_temp.u(7)), 0,
   'a rest day gets no saver');
@@ -206,9 +226,11 @@ from generate_series(1, 8) g;
 -- ── Several devices, a target of 2, a habit outside the snapshot ────────────
 insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
 values (pg_temp.u(1), 'https://fcm.googleapis.com/fcm/send/u1b', repeat('B', 87), repeat('b', 22));
+select pg_temp.off();
 insert into public.habits (id, user_id, title, category, target_per_day, reminder_times, created_at) values
   (pg_temp.h(1, 8), pg_temp.u(1), 'Later', 'mind', 1, '{11:00}', '2026-10-01'),
   (pg_temp.h(1, 9), pg_temp.u(1), 'Twice', 'mind', 2, '{12:00,13:00}', '2026-10-01');
+select pg_temp.on();
 -- 2026-12-08 (no snapshot yet): one of two done at 11:00 Honolulu.
 select public.complete_habit_at(pg_temp.u(1), pg_temp.h(1, 9), '2026-12-08 21:00+00');
 select pg_temp.run('t1', '2026-12-08 22:00:30+00');
@@ -235,8 +257,10 @@ select pg_temp.run('late', now());
 select ok(pg_temp.has('late', pg_temp.hv(1)), 'a habit that joined today late is reminded today');
 
 -- ── A timezone change between runs ──────────────────────────────────────────
+select pg_temp.off();
 insert into public.habits (id, user_id, title, category, reminder_times, created_at)
 values (pg_temp.hv(2), pg_temp.v(2), 'Morning', 'mind', '{08:00}', '2026-10-01');
+select pg_temp.on();
 select pg_temp.run('tz1', '2026-12-01 18:00:30+00');  -- 08:00 in Honolulu
 select ok(pg_temp.has('tz1', pg_temp.hv(2)), '(08:00 in Honolulu is sent)');
 -- One hour west: 08:00 in Pago Pago (UTC-11) is 19:00 UTC, the same local date.
@@ -253,10 +277,12 @@ select is((select local_date from got where k = 'tz3' and habit_id = pg_temp.hv(
 -- v(3) control; v(4) relived (#81); v(5) completed only a late joiner and
 -- v(6) has only a late joiner on the list (#82); v(7) streak broken by missed
 -- days; v(8) the same with freezes to cover them.
+select pg_temp.off();
 insert into public.habits (id, user_id, title, category, days_of_week, created_at)
 select pg_temp.hv(g), pg_temp.v(g), 'Daily', 'mind',
        case when g = 6 then '{0,1,2,4,5,6}'::smallint[] else '{0,1,2,3,4,5,6}'::smallint[] end, '2026-10-01'
 from generate_series(3, 6) g;
+select pg_temp.on();
 update public.profiles set current_streak = 5, longest_streak = 5, last_streak_date = '2026-12-01',
        streak_run_started = '2026-11-27'
  where id in (select pg_temp.v(g) from generate_series(3, 6) g);
@@ -265,14 +291,18 @@ update public.profiles set current_streak = 5, longest_streak = 5, last_streak_d
 update public.profiles set engine_floor_date = '2026-12-03', streak_freezes = 2 where id = pg_temp.v(4);
 -- v(5): 'Daily' is in the day's first snapshot; 'Bonus' joins at 19:00 and is done.
 select public.ensure_daily_schedule(pg_temp.v(5), '2026-12-03 05:00+00');
+select pg_temp.off();
 insert into public.habits (id, user_id, title, category, created_at)
 values (pg_temp.hv(5, 2), pg_temp.v(5), 'Bonus', 'mind', '2026-10-01');
+select pg_temp.on();
 select public.snapshot_add_habit(pg_temp.v(5), pg_temp.hv(5, 2), '2026-12-03 05:00+00');
 select public.complete_habit_at(pg_temp.v(5), pg_temp.hv(5, 2), '2026-12-03 05:10+00');
 -- v(6): the first snapshot is empty (not a Wednesday habit); it's then
 -- rescheduled and joins late.
 select public.ensure_daily_schedule(pg_temp.v(6), '2026-12-03 05:00+00');
+select pg_temp.off();
 update public.habits set days_of_week = '{0,1,2,3,4,5,6}' where id = pg_temp.hv(6);
+select pg_temp.on();
 select public.snapshot_add_habit(pg_temp.v(6), pg_temp.hv(6), '2026-12-03 05:00+00');
 select ok((select s.scheduled_count = 0 and not sh.initial
            from public.daily_schedule s
@@ -293,8 +323,10 @@ select ok(not exists (select 1 from sv2 where user_id = pg_temp.v(6)),
 
 -- v(7)/v(8): a stored streak of 5 last counted 2026-11-29; 11-30 and 12-01
 -- missed (v(8) has the 2 freezes, the maximum, to cover them).
+select pg_temp.off();
 insert into public.habits (id, user_id, title, category, created_at)
 select pg_temp.hv(g), pg_temp.v(g), 'Daily', 'mind', '2026-10-01' from generate_series(7, 8) g;
+select pg_temp.on();
 update public.profiles set current_streak = 5, longest_streak = 5, last_streak_date = '2026-11-29',
        streak_run_started = '2026-11-25', streak_freezes = case when id = pg_temp.v(8) then 2 else 0 end
  where id in (pg_temp.v(7), pg_temp.v(8));
@@ -327,5 +359,69 @@ select ok(not exists (select 1 from public.streak_saver_log where user_id = pg_t
           and not exists (select 1 from public.daily_schedule where user_id = pg_temp.v(7) and local_date = '2026-12-03'),
   'and the failed user''s work is rolled back: nothing logged, no partial snapshot');
 drop trigger test_fail_snapshot on public.daily_schedule;
+-- ── Round 1 of the PR #96 review ────────────────────────────────────────────
+-- Paging: logged rows drop out before the limit, so repeated calls page.
+insert into auth.users (id, email) values (pg_temp.u(0), 'r0@example.com');
+update public.profiles set timezone = 'Pacific/Honolulu' where id = pg_temp.u(0);
+select pg_temp.off();
+insert into public.habits (id, user_id, title, category, difficulty, reminder_times, created_at)
+select ('f00000' || g || '0-0000-0000-0000-000000000000')::uuid, pg_temp.u(0), 'Page ' || g, 'mind',
+       (case when g = 1 then 'hard' else 'easy' end)::public.habit_difficulty, '{06:00}', '2026-10-01'
+from generate_series(1, 3) g;
+select pg_temp.on();
+update public.profiles set onboarded_at = '2026-10-01 00:00+00' where id = pg_temp.u(0);
+select pg_temp.sub(0);
+insert into public.push_subscriptions (user_id, endpoint, p256dh, auth)
+values (pg_temp.u(0), 'https://web.push.apple.com/u0b', repeat('C', 87), repeat('c', 22));
+-- 2026-12-10 06:00 Honolulu = 16:00 UTC.
+create temp table pg1 as select * from public.due_reminders('2026-12-10 16:00:30+00', 2);
+create temp table pg2 as select * from public.due_reminders('2026-12-10 16:00:40+00', 2);
+create temp table pg3 as select * from public.due_reminders('2026-12-10 16:00:50+00', 2);
+select ok((select count(*) from pg1 where user_id = pg_temp.u(0)) = 2
+          and (select count(*) from pg2 where user_id = pg_temp.u(0)) = 1
+          and (select count(*) from pg3 where user_id = pg_temp.u(0)) = 0,
+  'p_limit pages: 2, then the 1 left, then none');
+select is((select count(*)::int from public.reminder_log where user_id = pg_temp.u(0)), 3,
+  'and only the returned rows are logged (none lost past the limit)');
+select is((select jsonb_array_length(subscriptions) from pg1 where user_id = pg_temp.u(0) limit 1), 2,
+  'each row carries the user''s devices');
+select ok((select bool_and(e ? 'id' and e ? 'endpoint' and e ? 'p256dh' and e ? 'auth')
+           from pg1, jsonb_array_elements(subscriptions) e where user_id = pg_temp.u(0)),
+  'with id, endpoint and keys, what the sender needs');
+
+-- Points come from the snapshot's difficulty, not a later edit.
+select public.ensure_daily_schedule(pg_temp.u(0), '2026-12-11 10:00+00');
+select pg_temp.off();
+update public.habits set difficulty = 'easy' where id = 'f0000010-0000-0000-0000-000000000000';
+select pg_temp.on();
+create temp table pd as select * from public.due_reminders('2026-12-11 16:00:30+00');
+select is((select points from pd where habit_id = 'f0000010-0000-0000-0000-000000000000'),
+  (public.economy_value('base_points') ->> 'hard')::int,
+  'points follow the snapshot''s difficulty (hard), not the live edit (easy)');
+
+-- A relived day (#81) reports no streak: completions there can't extend it.
+update public.profiles set current_streak = 9, last_streak_date = '2026-12-11', engine_floor_date = '2026-12-13'
+ where id = pg_temp.u(0);
+create temp table pr as select * from public.due_reminders('2026-12-12 16:00:30+00');
+select ok((select bool_and(streak = 0) from pr where user_id = pg_temp.u(0))
+          and exists (select 1 from pr where user_id = pg_temp.u(0)),
+  'on a relived day the streak is reported as 0');
+
+-- The saver's pre-filter: push off, no device, not onboarded.
+update public.profiles set current_streak = 3, longest_streak = 3, last_streak_date = '2026-12-01',
+       streak_run_started = '2026-11-29', streak_saver_enabled = true
+ where id in (pg_temp.u(4), pg_temp.u(5), pg_temp.u(6));
+select pg_temp.off();
+insert into public.habits (id, user_id, title, category, created_at)
+select pg_temp.h(g, 2), pg_temp.u(g), 'Daily', 'mind', '2026-10-01' from generate_series(4, 6) g;
+select pg_temp.on();
+create temp table sv4 as select * from public.due_streak_savers('2026-12-03 06:00:20+00');
+select ok(not exists (select 1 from sv4 where user_id in (pg_temp.u(4), pg_temp.u(5), pg_temp.u(6))),
+  'push off, no device or not onboarded: no saver');
+select ok(not exists (select 1 from public.streak_saver_log where user_id in (pg_temp.u(4), pg_temp.u(5), pg_temp.u(6))),
+  '(and none logged)');
+select ok((select bool_and(jsonb_array_length(subscriptions) >= 1) from sv2),
+  'saver rows carry the devices too');
+
 select * from finish();
 rollback;
