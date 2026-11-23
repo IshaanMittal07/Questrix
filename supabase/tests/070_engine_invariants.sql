@@ -99,10 +99,13 @@ create function pg_temp.violations() returns text[] language sql as $$
              where u.reason = 'undo' and u.ref_id = l.ref_id and u.delta = -l.delta) <> 1)
     union all
     -- #82: only a completion of a habit in the day's first snapshot counts
-    -- the day; a habit that joined late earns points but must not.
+    -- the day while a live streak stands; a habit that joined late earns
+    -- points but must not (with no live streak it may start a run at 1).
     select 'every counted day has a completion of an initial habit' where exists (
       select 1 from public.daily_progress d where pg_temp.mine(d.user_id)
         and d.counted_for_streak
+        and public.streak_as_of(d.user_id, d.streak_before, d.last_streak_date_before,
+                                d.streak_freezes_before, d.local_date) > 0
         and not exists (select 1 from public.habit_completions c
                         join public.daily_schedule_habits sh
                           on sh.user_id = c.user_id and sh.local_date = c.local_date
@@ -140,7 +143,9 @@ create temp table mismatches (step int, what text);
 /** #82: a completion of a habit that joined late, on a day not yet counted. */
 create function pg_temp.late_first(p_gt jsonb, p_listed jsonb) returns boolean language sql as $$
   select coalesce((p_listed ->> 'joined_late')::boolean, false)
-         and not (p_gt ->> 'counted_today')::boolean $$;
+         and not (p_gt ->> 'counted_today')::boolean
+         -- With no live streak a late joiner counts the day as usual.
+         and (p_gt ->> 'current_streak')::int > 0 $$;
 
 create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_last date,
                                      p_hlast date, p_fb int, p_fa int) returns text language sql as $$

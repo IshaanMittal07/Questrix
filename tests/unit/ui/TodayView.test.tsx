@@ -518,21 +518,47 @@ describe("TodayView", () => {
     expect(screen.queryByText(/×1\.00/)).toBeNull();
   });
 
-  it("marks a habit that joined today as counting from tomorrow (#82)", () => {
-    renderView(
-      day({
-        habits: [
-          habit("h1", "Read"),
-          habit("h2", "New", { joined_late: true }),
-        ],
-      }),
-    );
+  it("marks a habit that joined late while a streak is live (#82)", () => {
+    const habits = [
+      habit("h1", "Read"),
+      habit("h2", "New", { joined_late: true }),
+    ];
+    const { rerender } = renderView(day({ habits }));
     expect(
       screen.getByRole("button", {
-        name: "Complete New, 0 of 1 done, counts toward your streak from tomorrow",
+        name: "Complete New, 0 of 1 done, doesn't count toward today's streak",
       }),
     ).toBeInTheDocument();
-    expect(screen.getAllByText("Streak from tomorrow")).toHaveLength(1);
+    expect(screen.getAllByText("Not for today's streak")).toHaveLength(1);
+    // Irrelevant once today counts, with no live streak, or on a relived day.
+    for (const over of [
+      { counted_today: true },
+      { current_streak: 0 },
+      { relived: true },
+    ]) {
+      rerender(day({ habits, ...over }));
+      expect(screen.queryByText("Not for today's streak")).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Complete New, 0 of 1 done" }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  it("treats a list of only late habits like an archived day (#82)", () => {
+    renderView(
+      day({
+        at_risk: true,
+        freezes_needed: 1,
+        streak_freezes: 1,
+        habits: [habit("h2", "New", { joined_late: true })],
+      }),
+    );
+    const banner = screen.getByTestId("at-risk");
+    expect(banner).toHaveTextContent("Restore one and complete it");
+    expect(
+      within(banner).queryByRole("link", { name: "Add a habit" }),
+    ).toBeNull();
+    expect(screen.queryByText(/streak freeze/)).toBeNull();
   });
 
   it("explains a relived day (#81) and says nothing on a normal one", () => {
@@ -798,20 +824,15 @@ describe("TodayView", () => {
   });
 
   describe("empty and at-risk states", () => {
-    it("offers add and restore when today's habits were archived", () => {
+    it("offers restore (not add) when today's habits were archived", () => {
       renderView(day({ at_risk: true, habits: [], scheduled_count: 1 }));
       const banner = screen.getByTestId("at-risk");
       expect(banner).toHaveTextContent("Your 3 days streak is at risk");
       expect(
-        within(banner).getByRole("link", { name: "Add a habit" }),
-      ).toHaveAttribute("href", "/habits/new");
-      expect(
         within(banner).getByRole("link", { name: "Restore a habit" }),
       ).toHaveAttribute("href", "/habits");
-      // No second "Add a habit" from the empty card.
-      expect(screen.getAllByRole("link", { name: "Add a habit" })).toHaveLength(
-        1,
-      );
+      // A habit added now joins late and can't keep the streak (#82).
+      expect(screen.queryByRole("link", { name: "Add a habit" })).toBeNull();
     });
 
     it("warns without links when habits remain", () => {

@@ -3,7 +3,7 @@
 -- count the day for the global streak. Real now(): the habit triggers use it.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(22);
+select plan(23);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -124,15 +124,30 @@ select ok((pg_temp.prof(4)).points_balance = (select bal from a4) and (pg_temp.p
           and pg_temp.balance_ok(4) and not pg_temp.counted(4),
   'undo gives back the points; the streak and the day are untouched');
 
--- ── A5: a lost streak isn't paid or reported on a late habit ────────────────
+-- ── A5: with no live streak, a late joiner counts the day (it can only ────
+-- start a run at 1; review of PR #94)
 select public.get_today_at(pg_temp.u(5), now());
 select pg_temp.unarchive(5, 1);
 create temp table a5 as select public.complete_habit_at(pg_temp.u(5), pg_temp.h(5, 1), now()) as j;
-select ok(((select j from a5) ->> 'current_streak')::int = 0
+select ok(((select j from a5) ->> 'current_streak')::int = 1
           and ((select j from a5) ->> 'multiplier')::numeric = round(1 + (public.economy_value('multiplier_step'))::numeric, 2),
-  'two missed days and no freezes: the late completion reports 0 and pays the base multiplier');
-select ok((pg_temp.prof(5)).current_streak = 5 and (pg_temp.prof(5)).streak_freezes = 0,
-  '(the stored streak only changes on a counted day)');
+  'two missed days and no freezes: the late completion starts a new run at 1, at the base multiplier');
+select ok((pg_temp.prof(5)).current_streak = 1 and (pg_temp.prof(5)).streak_run_started = pg_temp.d()
+          and pg_temp.counted(5),
+  '(the day counts: there was no live streak to protect)');
+
+-- ── A7: a new user's first day (onboarding snapshots before any habit) ─────
+-- Onboarding sets onboarded_at, then step 2 adds habits: today's first
+-- snapshot is empty and every first-day habit joins late.
+insert into auth.users (id, email) values (pg_temp.u(6), 'a6@example.com');
+update public.profiles set onboarded_at = now() where id = pg_temp.u(6);
+insert into public.habits (user_id, title, category) values (pg_temp.u(6), 'First', 'mind');
+create temp table a7 as
+  select public.complete_habit_at(pg_temp.u(6),
+           (select id from public.habits where user_id = pg_temp.u(6)), now()) as j;
+select ok(((select j from a7) ->> 'current_streak')::int = 1 and pg_temp.counted(6)
+          and (pg_temp.prof(6)).last_streak_date = pg_temp.d(),
+  'a new user''s first completion on onboarding day starts the streak at 1');
 
 -- ── A6: structure ───────────────────────────────────────────────────────────
 select col_not_null('public', 'daily_schedule_habits', 'initial', 'initial is NOT NULL');

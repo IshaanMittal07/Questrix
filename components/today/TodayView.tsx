@@ -392,7 +392,8 @@ export function TodayView({
       {today.at_risk ? (
         <AtRiskBanner
           streak={today.current_streak}
-          empty={today.habits.length === 0}
+          // Habits that joined late can't keep the streak (#82).
+          empty={today.habits.every((h) => h.joined_late)}
         />
       ) : null}
       {today.relived ? (
@@ -401,7 +402,9 @@ export function TodayView({
           earn points but don&apos;t change your streak.
         </p>
       ) : null}
-      {today.freezes_needed > 0 && today.current_streak > 0 ? (
+      {today.freezes_needed > 0 &&
+      today.current_streak > 0 &&
+      !today.habits.every((h) => h.joined_late) ? (
         <p className="text-cyan text-sm">
           Your next completion uses{" "}
           {plural(today.freezes_needed, "streak freeze")} to keep your streak.
@@ -451,6 +454,14 @@ export function TodayView({
                   floats={floats.filter((f) => f.habitId === h.id)}
                   onComplete={() => complete(h)}
                   onUndo={(c) => undo(h, c)}
+                  // #82: only while a live streak stands and today isn't
+                  // counted yet does joining late matter.
+                  lateMatters={
+                    h.joined_late &&
+                    today.current_streak > 0 &&
+                    !today.counted_today &&
+                    !today.relived
+                  }
                 />
               </li>
             ))}
@@ -476,14 +487,12 @@ function AtRiskBanner({ streak, empty }: { streak: number; empty: boolean }) {
       {empty ? (
         <>
           <p className="text-muted text-sm">
-            Today&apos;s habits were archived. Add or restore a habit and
-            complete it before midnight to keep your streak.
+            Today&apos;s habits were archived. Restore one and complete it
+            before midnight to keep your streak. Habits added today only count
+            from tomorrow.
           </p>
           <div className="flex flex-wrap gap-2">
             <Button asChild>
-              <Link href="/habits/new">Add a habit</Link>
-            </Button>
-            <Button asChild variant="secondary">
               <Link href="/habits">Restore a habit</Link>
             </Button>
           </div>
@@ -503,12 +512,14 @@ function HabitCard({
   floats,
   onComplete,
   onUndo,
+  lateMatters,
 }: {
   habit: TodayHabit;
   undoTarget: TodayCompletion | undefined;
   floats: Float[];
   onComplete: () => void;
   onUndo: (c: TodayCompletion) => void;
+  lateMatters: boolean;
 }) {
   const done = h.done >= h.target;
   const progress = `${h.done} of ${h.target}`;
@@ -549,7 +560,7 @@ function HabitCard({
           (h.habit_streak > 0
             ? `, ${plural(h.habit_streak, "day")} streak`
             : "") +
-          (h.joined_late ? ", counts toward your streak from tomorrow" : "")
+          (lateMatters ? ", doesn't count toward today's streak" : "")
         }
         className={cn(
           "flex min-h-16 min-w-0 flex-1 items-center gap-3 rounded-2xl p-4 text-left active:scale-[0.99]",
@@ -593,8 +604,8 @@ function HabitCard({
             ) : null}
             {h.target > 1 ? <span>{progress}</span> : null}
             {h.habit_streak > 0 ? <span>🔥 {h.habit_streak}</span> : null}
-            {h.joined_late ? (
-              <span className="text-cyan">Streak from tomorrow</span>
+            {lateMatters ? (
+              <span className="text-cyan">Not for today&apos;s streak</span>
             ) : null}
           </span>
         </span>
