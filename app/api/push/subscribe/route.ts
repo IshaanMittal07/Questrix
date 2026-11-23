@@ -6,9 +6,14 @@ import { subscribeSchema, unsubscribeSchema } from "@/lib/validation/push";
 const MAX_BODY = 4096;
 
 async function readJson(request: Request): Promise<unknown> {
-  const text = await request.text();
-  if (text.length > MAX_BODY) throw new Error("too large");
-  return JSON.parse(text);
+  // Refuse early when the size is declared, then check the bytes read.
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY) {
+    throw new Error("too large");
+  }
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > MAX_BODY) throw new Error("too large");
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 /** Same-origin and signed in, or the error response. */
@@ -49,7 +54,11 @@ export async function POST(request: Request) {
     p_endpoint: endpoint,
     p_p256dh: keys.p256dh,
     p_auth: keys.auth,
-    p_user_agent: request.headers.get("user-agent")?.slice(0, 512) ?? undefined,
+    // Cut by code point (the database caps it at 512 too).
+    p_user_agent:
+      Array.from(request.headers.get("user-agent") ?? "")
+        .slice(0, 512)
+        .join("") || undefined,
   });
   if (error) {
     if (error.code === "QX001") {

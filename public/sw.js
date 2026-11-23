@@ -65,10 +65,10 @@ const FALLBACK = {
 };
 const TAG = /^(habit-[A-Za-z0-9-]{1,64}|streak-saver|questrix)$/;
 
+// Trimmed, and cut by code point so an emoji is never split in half.
 function text(value, fallback, max) {
-  return typeof value === "string" && value.trim()
-    ? value.slice(0, max)
-    : fallback;
+  const t = typeof value === "string" ? value.trim() : "";
+  return t ? Array.from(t).slice(0, max).join("") : fallback;
 }
 
 /** A same-origin path, or /today: never open another site from a click. */
@@ -131,10 +131,13 @@ self.addEventListener("notificationclick", (event) => {
         const own = windows.find(
           (w) => new URL(w.url).origin === self.location.origin,
         );
+        // navigate() only works on a window this worker controls (a tab
+        // opened before it activated isn't); open a new one instead.
         if (own) {
           return own
             .focus()
-            .then((w) => (w && "navigate" in w ? w.navigate(url) : w));
+            .then((w) => (w && "navigate" in w ? w.navigate(url) : w))
+            .catch(() => self.clients.openWindow(url));
         }
         return self.clients.openWindow(url);
       }),

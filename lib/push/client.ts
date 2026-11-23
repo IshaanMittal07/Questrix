@@ -67,19 +67,35 @@ export async function subscribe(
   }
 }
 
-/** Forget this device on the server, then unsubscribe it. */
+/**
+ * Forget this device on the server, then unsubscribe it. The browser side
+ * is unsubscribed even when the server can't be reached: the device must
+ * stop receiving pushes either way (P1), and a row left behind is removed
+ * by the sender's next 404/410. True only when both succeeded.
+ */
 export async function unsubscribe(): Promise<boolean> {
+  let sub: PushSubscription | null;
   try {
     const reg = await registration();
-    const sub = await reg.pushManager.getSubscription();
-    if (!sub) return true;
-    // Server first, while the session is still valid (P1).
-    const res = await post("DELETE", { endpoint: sub.endpoint });
-    await sub.unsubscribe();
-    return res.ok;
+    sub = await reg.pushManager.getSubscription();
   } catch {
     return false;
   }
+  if (!sub) return true;
+  let serverOk = false;
+  try {
+    // Server first, while the session is still valid (P1).
+    const res = await post("DELETE", { endpoint: sub.endpoint });
+    serverOk = res.ok;
+  } catch {
+    serverOk = false;
+  }
+  try {
+    await sub.unsubscribe();
+  } catch {
+    return false;
+  }
+  return serverOk;
 }
 
 /** Is this device subscribed (and allowed) right now? */
