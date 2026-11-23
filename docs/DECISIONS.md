@@ -444,3 +444,14 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - #89 updates `last_success_at` and deletes on 404/410 by id and `user_id`. It keeps web-push's no-redirect behaviour (`redirect: 'manual'` if it ever uses `fetch`). `service_role` has SELECT, INSERT, UPDATE and DELETE on both tables, and tests pin that.
   - #90 log cleanup keeps at least two days of `reminder_log`, so a timezone change can't re-fire a purged reminder.
   - #91 renders the user agent as text only, and maps `QX001` by its message or hint, since the code covers several limits.
+- **P6. `due_reminders(p_now)` (#88).** It is called every minute with the service role. EXECUTE is granted to `service_role` only, and `p_now` is the time seam (D6).
+  - **Window.** A reminder's instant is `(local_date + reminder_time) at time zone tz`. It fires when that instant is in `(trunc_min(now) − 2 min, trunc_min(now)]`. Both the local date of `now` and that of `now − 2 min` are tried, so the window works across local midnight. A time skipped by DST fires once, just after the jump; a repeated time fires once. pgTAP pins both cases for Toronto.
+  - **Scheduled and target.** These come from the day's snapshot when it exists (D1), otherwise from the live habit. It never snapshots, because that would mean writes and locks for every user every minute.
+  - **Skipped:** done for the day, archived, reminders off, `push_enabled` off, not onboarded, and no device. A user with no device isn't logged, so a device added later still gets that day's later reminders.
+  - **At most once.** Each row is logged in the same statement that returns it (`insert … on conflict do nothing returning`), so overlapping runs never send twice. A failed send isn't retried.
+  - The reported `streak` is the stored one only while it's live (counted yesterday or today), otherwise 0, so the copy never claims a lost streak. Points are the base points for the day's difficulty.
+- **P7. `due_streak_savers(p_now)` (#88).** It runs at 20:00 local, once per user and day (`streak_saver_log`, server-only).
+  - **Pre-filter.** It cheaply selects users with both switches on, a device, onboarded, a stored streak of at least 3, and today not yet counted.
+  - **Decision.** It then calls `get_today_at`, and sends only if `at_risk` and the judged streak is at least 3. That reuses every rule: lookback, freezes, relived days (#81), rest days, and late joiners (#82, `at_risk` is computed from the initial snapshot).
+  - **Side effect.** It snapshots today, as any engine call that day would.
+  - **Errors.** Each user runs in its own sub-block, so one failure logs a warning and doesn't stop the batch.
