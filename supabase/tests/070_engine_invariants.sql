@@ -10,7 +10,7 @@
 -- exists (DECISIONS: "Spending before Phase 6"); Phase 6 re-runs this with it.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(17);
+select plan(18);
 
 -- Users 4000000{1..4}; users 2 and 4 start with two freezes.
 insert into auth.users (id, email)
@@ -119,7 +119,8 @@ create temp table mismatches (step int, what text);
 /**
  * Where get_today (taken just before) disagrees with the completion that
  * followed, or null. The completion adds a day to the global streak unless
- * the day is already covered (last_streak_date >= today), and to the habit
+ * the day is already covered (last_streak_date >= today) or relived after a
+ * move west (#81: no change, reported as judged on the floor day), and to the habit
  * streak when it reaches the target on a day after the habit's last_date.
  */
 create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_last date,
@@ -129,7 +130,8 @@ create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_la
     when (p_gt ->> 'local_date') <> (p_c ->> 'local_date') then 'local_date'
     when (p_listed ->> 'target')::int <> (p_c ->> 'target')::int then 'target'
     when (p_c ->> 'current_streak')::int - (p_gt ->> 'current_streak')::int
-         <> case when p_last >= (p_c ->> 'local_date')::date then 0 else 1 end then 'current_streak'
+         <> case when p_last >= (p_c ->> 'local_date')::date or (p_gt ->> 'relived')::boolean
+                 then 0 else 1 end then 'current_streak'
     when (p_gt ->> 'freezes_needed')::int <> p_fb - p_fa or (p_gt ->> 'streak_freezes')::int <> p_fb
       then 'freezes_needed'
     -- This completion reaches the target (occurrences are reused after an
@@ -177,6 +179,9 @@ begin
         v_c := public.complete_habit_at(v_uid, v_habit, v_now);
         v_completion := (v_c ->> 'completion_id')::uuid;
         perform pg_temp.bump('complete');
+        if (v_gt ->> 'relived')::boolean then
+          perform pg_temp.bump('complete relived');
+        end if;
         v_bad := pg_temp.disagreement(v_gt, v_listed, v_c, v_last, v_hlast, v_fb,
                                       (select streak_freezes from public.profiles where id = v_uid));
       exception when others then
@@ -227,10 +232,19 @@ begin
         update public.profiles set points_balance = points_balance - v_amount where id = v_uid;
         perform pg_temp.bump('spend');
       end if;
-    elsif r < 0.88 then
-      -- A relived stretch, as after a move west.
+    elsif r < 0.86 then
+      -- A relived stretch through the seam alone: no floor, so a day relived
+      -- this way counts as usual (a later snapshot never makes it relived).
       v_now := v_now - (30 + floor(random() * 90)) * interval '1 minute';
       perform pg_temp.bump('back');
+    elsif r < 0.88 then
+      -- A move west (#81): the floor is today, as profiles_validate sets it,
+      -- then "now" goes back about a day. Other users just relive the time.
+      update public.profiles
+         set engine_floor_date = greatest(engine_floor_date, public.local_date_in(timezone, v_now))
+       where id = v_uid;
+      v_now := v_now - (20 + floor(random() * 7)) * interval '1 hour';
+      perform pg_temp.bump('west');
     elsif r < 0.92 then
       -- Skip a day or three: misses, freezes and broken streaks.
       v_now := v_now + (1 + floor(random() * 3)) * interval '1 day';
@@ -264,6 +278,7 @@ select cmp_ok(pg_temp.stat('complete'), '>=', 200, 'at least 200 completions');
 select cmp_ok(pg_temp.stat('undo'), '>=', 30, 'at least 30 undos');
 select cmp_ok(pg_temp.stat('spend'), '>=', 20, 'at least 20 spends');
 select cmp_ok(pg_temp.stat('back') + pg_temp.stat('jump'), '>=', 50, 'at least 50 relived stretches or skipped days');
+select cmp_ok(pg_temp.stat('complete relived'), '>=', 5, 'at least 5 completions on relived days after a move west (#81)');
 select cmp_ok((select count(*)::int from public.points_ledger
                where reason = 'streak_milestone' and pg_temp.mine(user_id)), '>=', 1, 'milestones were awarded');
 select cmp_ok((select count(*)::int from public.daily_progress

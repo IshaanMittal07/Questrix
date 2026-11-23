@@ -371,7 +371,8 @@ All of this logic lives in **Postgres functions** (SECURITY DEFINER, single tran
 ### 6.1 Points per completion
 ```
 base_points:  easy = 10, medium = 20, hard = 35
-multiplier  = 1 + 0.01 × min(current_streak_after_today, 50)      → 1.01 … 1.50 (streak after today is always ≥ 1)
+multiplier  = 1 + 0.01 × min(current_streak_after_today, 50)      → 1.01 … 1.50 (streak after today is always ≥ 1;
+              a relived day after a move west uses 1, see §6.2 rule 0b)
 points      = floor(base_points × multiplier)
 ```
 
@@ -380,6 +381,7 @@ points      = floor(base_points × multiplier)
 - A **rest day** is a local day whose `daily_schedule.scheduled_count = 0`. Rest days never break a streak. A day with **no** `daily_schedule` row is filled in lazily (up to 7 days back; DECISIONS § Phase 4, D2), so a gap day that is still missing a row is treated as **not** a rest day (fail closed).
 - On the first completion of a local day `D` (inside `complete_habit`):
   0. If `D < last_streak_date` (the user moved to a timezone further west) → treat `D` as `last_streak_date`: no streak change.
+  0b. If `D` is before `profiles.engine_floor_date` (the old today at the last westward timezone change) and after `last_streak_date` (or there's no streak yet) → a **relived** day: base-multiplier points, no streak, freeze or milestone change, and the day stays uncounted, so it's still a miss (#81, DECISIONS D3).
   1. If `last_streak_date = D` → nothing changes.
   2. Else find the missed days strictly between `last_streak_date` and `D` that were **not** rest days (check at most 7 days back; more than 7 → treat as broken).
   3. If missed = 0 → `current_streak += 1`.
