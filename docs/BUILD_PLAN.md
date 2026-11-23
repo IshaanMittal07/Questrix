@@ -377,7 +377,7 @@ points      = floor(base_points × multiplier)
 ```
 
 ### 6.2 Streak rules (global daily streak)
-- A local day **counts** when the user completes **at least one** scheduled habit that day.
+- A local day **counts** when the user completes **at least one** scheduled habit that day. The habit must have been in the day's first snapshot: a habit added, unarchived or rescheduled later that day earns points but doesn't count the day (#82, DECISIONS D1).
 - A **rest day** is a local day whose `daily_schedule.scheduled_count = 0`. Rest days never break a streak. A day with **no** `daily_schedule` row is filled in lazily (up to 7 days back; DECISIONS § Phase 4, D2), so a gap day that is still missing a row is treated as **not** a rest day (fail closed).
 - On the first completion of a local day `D` (inside `complete_habit`):
   0. If `D < last_streak_date` (the user moved to a timezone further west) → treat `D` as `last_streak_date`: no streak change.

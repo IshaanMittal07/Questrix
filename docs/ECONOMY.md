@@ -41,6 +41,7 @@ Two keys are also bounded by CHECK constraints, so raise the constraint before r
 - **One counted day.** A day counts on its first completion. The rules (plan §6.2) run then, and the day's before-state is saved for undo.
 - **Days.** A day is the user's local date in `profiles.timezone` (Postgres tzdata). Which habits a day requires is fixed by its snapshot (`daily_schedule`), taken on the day's first engine call or before any edit. Edits only affect days that haven't been snapshotted yet.
 - **Rest days.** A day whose snapshot requires nothing doesn't break the streak.
+- **Late joiners.** A habit that joins a day after its first snapshot (added, unarchived or rescheduled) earns points, at the multiplier for the streak as it stands, but doesn't count the day (#82).
 - **Missed days.** A scheduled day with no completion is missed, and so is a day with no snapshot (fail closed). Freezes cover missed days one each, spent by the next counted day. If there are more missed days than freezes, or a gap longer than `streak_lookback_days`, the streak resets to 1 and no freezes are spent.
 - **Per-habit streaks** advance when a day's count first reaches the habit's snapshotted target. They have no freezes.
 - **Timezones.** Moving east keeps the streak without gaining a day (#28). Moving west relives earlier days. A relived day that was already counted changes nothing. One that wasn't (a missed day) earns points at the base multiplier but never counts, so it stays missed (#81). Changes after onboarding are limited by `timezone_change_cooldown_days`.

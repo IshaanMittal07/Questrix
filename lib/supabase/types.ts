@@ -131,6 +131,7 @@ export type Database = {
           added_at: string;
           difficulty: Database["public"]["Enums"]["habit_difficulty"];
           habit_id: string;
+          initial: boolean;
           local_date: string;
           target_per_day: number;
           user_id: string;
@@ -140,6 +141,7 @@ export type Database = {
           added_at?: string;
           difficulty: Database["public"]["Enums"]["habit_difficulty"];
           habit_id: string;
+          initial?: boolean;
           local_date: string;
           target_per_day: number;
           user_id: string;
@@ -148,6 +150,7 @@ export type Database = {
           added_at?: string;
           difficulty?: Database["public"]["Enums"]["habit_difficulty"];
           habit_id?: string;
+          initial?: boolean;
           local_date?: string;
           target_per_day?: number;
           user_id?: string;
