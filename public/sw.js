@@ -1,10 +1,21 @@
 /* Questrix service worker (plan §3, §7.1).
  * Phase 1: offline fallback for page navigations.
+ * After v1: Today viewable offline from its last copy (plan §9).
  * Phase 5: push notifications and notification clicks (DECISIONS P8, #91).
  */
-const CACHE = "questrix-v3";
+const CACHE = "questrix-v4";
 const OFFLINE_URL = "/offline.html";
 const PRECACHE = [OFFLINE_URL, "/icons/icon-192.png"];
+// The last Today page loaded online, for viewing offline (plan §9). Cleared
+// on sign-out and account deletion by the page, and dropped here whenever
+// /today redirects (signed out or not onboarded).
+const PAGES = "questrix-pages";
+const PAGE_PATHS = ["/today"];
+// Hashed build assets the cached page needs (CSS, JS, fonts): immutable, so
+// cache-first. Trimmed to the newest STATIC_MAX entries.
+const STATIC = "questrix-static";
+const STATIC_MAX = 200;
+const KEEP = [CACHE, PAGES, STATIC];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -21,35 +32,76 @@ self.addEventListener("activate", (event) => {
       .keys()
       .then((keys) =>
         Promise.all(
-          keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
+          keys.filter((k) => !KEEP.includes(k)).map((k) => caches.delete(k)),
         ),
       )
       .then(() => self.clients.claim()),
   );
 });
 
-// Network-first for navigations; fall back to the offline page when offline.
-// Precached static assets (the offline page's icon) are served cache-first.
-// Never cache API calls or completions — the server is authoritative.
+async function trimStatic(cache) {
+  const keys = await cache.keys();
+  await Promise.all(
+    keys
+      .slice(0, Math.max(0, keys.length - STATIC_MAX))
+      .map((k) => cache.delete(k)),
+  );
+}
+
+async function staticFirst(request) {
+  const cache = await caches.open(STATIC);
+  const hit = await cache.match(request);
+  if (hit) return hit;
+  const res = await fetch(request);
+  if (res.ok && res.type === "basic") {
+    await cache.put(request, res.clone());
+    await trimStatic(cache);
+  }
+  return res;
+}
+
+/** Network-first; keeps Today's last good copy; offline falls back to it. */
+async function navigate(request, path) {
+  const keep = PAGE_PATHS.includes(path);
+  try {
+    const res = await fetch(request);
+    if (keep) {
+      const cache = await caches.open(PAGES);
+      // Only a real, signed-in Today: a redirect means the session is gone.
+      if (res.ok && !res.redirected && res.type === "basic") {
+        await cache.put(path, res.clone());
+      } else if (res.redirected) {
+        await cache.delete(path);
+      }
+    }
+    return res;
+  } catch {
+    const page = keep ? await caches.match(path, { cacheName: PAGES }) : null;
+    return page || (await caches.match(OFFLINE_URL)) || Response.error();
+  }
+}
+
+// Network-first for navigations: Today falls back to its last copy, other
+// pages to the offline page. Precached and hashed static assets are
+// cache-first. Never cache API calls, Server Actions or completions: the
+// server is authoritative, and nothing is queued offline.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (
-    event.request.method === "GET" &&
-    url.origin === self.location.origin &&
-    PRECACHE.includes(url.pathname) &&
-    event.request.mode !== "navigate"
-  ) {
+  if (event.request.method !== "GET" || url.origin !== self.location.origin) {
+    return;
+  }
+  if (PRECACHE.includes(url.pathname) && event.request.mode !== "navigate") {
     event.respondWith(
       caches.match(url.pathname).then((res) => res || fetch(event.request)),
     );
     return;
   }
+  if (url.pathname.startsWith("/_next/static/")) {
+    event.respondWith(staticFirst(event.request));
+    return;
+  }
   if (event.request.mode !== "navigate") return;
-  event.respondWith(
-    fetch(event.request).catch(() =>
-      caches.match(OFFLINE_URL).then((res) => res || Response.error()),
-    ),
-  );
+  event.respondWith(navigate(event.request, url.pathname));
 });
 
 // ── Push ─────────────────────────────────────────────────────────────────────
