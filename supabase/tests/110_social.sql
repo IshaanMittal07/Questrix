@@ -1,7 +1,7 @@
 -- Phase 7: social tables, RPCs and policies (plan §12 Phase 7 acceptance).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(52);
+select plan(65);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -26,7 +26,9 @@ select ('7000000' || g || '-0000-0000-0000-000000000000')::uuid, 'soc' || g || '
 from generate_series(1, 7) as g;
 update public.profiles set onboarded_at = now(), username = 'soc_' || substr(id::text, 8, 1)
 where id::text like '7000000%' and id::text not like '70000007%';
--- a = 1, b = 2, c = 3 (private), d..f = 4..6 report helpers.
+-- a = 1, b = 2, c = 3 (private), d..f = 4..6 report helpers. All are a week
+-- old, so their reports count toward auto-hide (audit M3).
+update public.profiles set created_at = now() - interval '7 days' where id::text like '7000000%';
 update public.profiles set is_private = true, current_streak = 9 where id = '70000003-0000-0000-0000-000000000000';
 
 -- ── Privileges ────────────────────────────────────────────────────────────────
@@ -40,6 +42,14 @@ select ok(not has_table_privilege('anon', 'public.leaderboard_weekly', 'select')
 select ok(not has_function_privilege('authenticated', 'public.notify(uuid, uuid, text, jsonb)', 'execute'), 'notify is internal');
 select ok(not has_function_privilege('authenticated', 'public.refresh_leaderboard()', 'execute'), 'refresh is internal');
 select ok(not has_function_privilege('anon', 'public.create_post(text, boolean)', 'execute'), 'anon can''t post');
+select ok(not has_function_privilege('authenticated', 'public.is_blocked_between(uuid, uuid)', 'execute'),
+  'third parties'' blocks can''t be probed (audit M1)');
+select ok(has_function_privilege('authenticated', 'public.is_blocked_with_me(uuid)', 'execute'), 'the caller-bound check can be called');
+select ok(not has_table_privilege('authenticated', 'public.leaderboard_weekly', 'select'), 'the leaderboard is read only through the RPC (audit L1)');
+select ok(not has_table_privilege('authenticated', 'public.social_events', 'select'), 'the social event log is server-only');
+select is((select command from cron.job where jobname = 'questrix-leaderboard'), 'select public.refresh_leaderboard()',
+  'pg_cron refreshes the leaderboard');
+select is((select schedule from cron.job where jobname = 'questrix-leaderboard'), '*/10 * * * *', 'every 10 minutes');
 
 -- ── Posting ───────────────────────────────────────────────────────────────────
 select pg_temp.as_user('70000007-0000-0000-0000-000000000000');
@@ -90,7 +100,7 @@ select throws_ok($$select public.create_comment(pg_temp.id('pa'), 'hey')$$, 'P00
 select throws_ok($$insert into public.post_likes (post_id, user_id) values (pg_temp.id('pa'), '70000002-0000-0000-0000-000000000000')$$,
   '42501', null, 'b can''t like a''s post');
 select throws_ok($$select public.get_public_profile('soc_1')$$, 'P0002', null, 'b can''t open a''s profile');
-select lives_ok($$select public.create_post('b here')$$, 'b posts');
+select lives_ok($$select pg_temp.keep('pb', public.create_post('b here'))$$, 'b posts');
 select pg_temp.as_user('70000001-0000-0000-0000-000000000000');
 select is((select count(*)::int from public.posts where author_id = '70000002-0000-0000-0000-000000000000'), 0, 'the other way too: a doesn''t see b''s post');
 select is((select count(*)::int from public.blocks), 1, 'a sees their own block');
@@ -114,14 +124,35 @@ select pg_temp.as_user('70000002-0000-0000-0000-000000000000');
 select throws_ok($$select public.delete_post(pg_temp.id('pa'))$$, 'P0002', null, 'b can''t delete a''s post');
 select pg_temp.as_postgres();
 select is((select comment_count from public.posts where id = pg_temp.id('pa')), 1, 'comment, comment, delete = 1');
-select is((select count(*)::int from public.notifications_inbox where user_id = '70000001-0000-0000-0000-000000000000' and type in ('like', 'comment')), 4,
-  'a is notified of 2 likes and 2 comments');
+select is((select count(*)::int from public.notifications_inbox where user_id = '70000001-0000-0000-0000-000000000000' and type in ('like', 'comment')), 3,
+  'a is notified of 2 likes and 1 comment (a second comment by the same user on the same post is folded)');
+select ok((select bool_and(payload ? 'actor_id' and not payload ? 'actor') from public.notifications_inbox
+           where user_id = '70000001-0000-0000-0000-000000000000'), 'the inbox stores actor ids, not names (audit L2)');
+
+-- Loops can't flood an inbox or dodge a limit (audit H1/H2).
+select pg_temp.as_user('70000004-0000-0000-0000-000000000000');
+select lives_ok($q$do $d$ begin for i in 1..5 loop
+    insert into public.post_likes (post_id, user_id) values (pg_temp.id('pa'), '70000004-0000-0000-0000-000000000000');
+    delete from public.post_likes where post_id = pg_temp.id('pa') and user_id = '70000004-0000-0000-0000-000000000000';
+  end loop; end $d$$q$, 'd likes and unlikes five times');
+select pg_temp.as_postgres();
+select is((select count(*)::int from public.notifications_inbox where user_id = '70000001-0000-0000-0000-000000000000'
+           and type = 'like' and payload ->> 'actor_id' = '70000004-0000-0000-0000-000000000000'), 1,
+  'and a hears about it once');
+select pg_temp.as_user('70000005-0000-0000-0000-000000000000');
+select throws_ok($q$do $d$ begin for i in 1..101 loop
+    insert into public.follows (follower_id, followee_id) values ('70000005-0000-0000-0000-000000000000', '70000006-0000-0000-0000-000000000000');
+    delete from public.follows where follower_id = '70000005-0000-0000-0000-000000000000';
+  end loop; end $d$$q$, 'QX301', null, 'a follow/unfollow loop hits the 100-a-day limit');
+select throws_ok($$select public.create_comment(pg_temp.id('pb'), 'c' || g) from generate_series(1, 31) g$$,
+  'QX301', null, 'the 31st comment in an hour is refused');
 
 -- ── Private profile ───────────────────────────────────────────────────────────
 select pg_temp.as_user('70000001-0000-0000-0000-000000000000');
 select is(public.get_public_profile('soc_3') -> 'current_streak', 'null'::jsonb, 'a private profile hides its streak');
 select is(public.get_public_profile('soc_3') -> 'heatmap', 'null'::jsonb, 'and its heatmap');
 select is(public.get_public_profile('soc_3') ->> 'username', 'soc_3', 'but shows the username');
+select is(public.get_public_profile('soc_3') -> 'today', 'null'::jsonb, 'and doesn''t hint at its timezone');
 select pg_temp.as_user('70000003-0000-0000-0000-000000000000');
 select is((public.get_public_profile('soc_3') ->> 'current_streak')::int, 9, 'the owner still sees it');
 
@@ -143,6 +174,23 @@ select pg_temp.as_user('70000006-0000-0000-0000-000000000000');
 select public.report_content('post', pg_temp.id('pa'));
 select pg_temp.as_postgres();
 select ok((select deleted_at is not null from public.posts where id = pg_temp.id('pa')), 'the fifth distinct reporter hides it');
+select pg_temp.as_postgres();
+update public.profiles set created_at = now() where id::text like '7000000%' and id::text not like '70000001%';
+select pg_temp.as_user('70000002-0000-0000-0000-000000000000');
+select pg_temp.keep('pc', public.create_post('fresh target'));
+select pg_temp.as_user('70000003-0000-0000-0000-000000000000');
+select public.report_content('post', pg_temp.id('pc'));
+select pg_temp.as_user('70000004-0000-0000-0000-000000000000');
+select public.report_content('post', pg_temp.id('pc'));
+select pg_temp.as_user('70000005-0000-0000-0000-000000000000');
+select public.report_content('post', pg_temp.id('pc'));
+select pg_temp.as_user('70000006-0000-0000-0000-000000000000');
+select public.report_content('post', pg_temp.id('pc'));
+select pg_temp.as_user('70000007-0000-0000-0000-000000000000');
+select public.report_content('post', pg_temp.id('pc'));
+select pg_temp.as_postgres();
+select ok((select deleted_at is null from public.posts where id = pg_temp.id('pc')),
+  'five brand-new accounts can''t hide a post');
 select pg_temp.as_user('70000001-0000-0000-0000-000000000000');
 select throws_ok($$select public.report_content('user', '70000001-0000-0000-0000-000000000000')$$, 'P0002', null, 'you can''t report yourself');
 
@@ -153,7 +201,8 @@ select ('7000000' || g || '-0000-0000-0000-000000000000')::uuid, 100 * g, 'compl
 from generate_series(1, 3) g;
 refresh materialized view public.leaderboard_weekly;
 select pg_temp.as_user('70000001-0000-0000-0000-000000000000');
-select is((select count(*)::int from public.leaderboard_weekly where user_id = '70000003-0000-0000-0000-000000000000'), 0,
+select ok(not exists (select 1 from jsonb_array_elements(public.get_leaderboard('global') -> 'rows') r
+                  where r ->> 'user_id' = '70000003-0000-0000-0000-000000000000'),
   'the private user is left off the leaderboard');
 select is((public.get_leaderboard('global') -> 'me' ->> 'rank')::int, 2, 'a is ranked #2 behind b');
 

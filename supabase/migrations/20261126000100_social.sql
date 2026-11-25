@@ -47,8 +47,22 @@ as $$
     select 1 from public.blocks
     where (blocker_id = a and blocked_id = b) or (blocker_id = b and blocked_id = a));
 $$;
-revoke all on function public.is_blocked_between(uuid, uuid) from public, anon;
-grant execute on function public.is_blocked_between(uuid, uuid) to authenticated;
+-- Internal: with arbitrary arguments it would reveal third parties' blocks
+-- (audit M1). Policies use is_blocked_with_me, bound to the caller.
+revoke all on function public.is_blocked_between(uuid, uuid) from public, anon, authenticated;
+
+/** True when the caller and p_other have blocked each other either way. */
+create function public.is_blocked_with_me(p_other uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select public.is_blocked_between(p_other, (select auth.uid()));
+$$;
+revoke all on function public.is_blocked_with_me(uuid) from public, anon;
+grant execute on function public.is_blocked_with_me(uuid) to authenticated;
 
 -- ── Follows ───────────────────────────────────────────────────────────────────
 create table public.follows (
@@ -62,8 +76,8 @@ create index follows_followee_idx on public.follows (followee_id);
 alter table public.follows enable row level security;
 -- Follow lists are public (counts on profiles), except across a block.
 create policy "follows: readable unless blocked" on public.follows for select to authenticated
-  using (not public.is_blocked_between(follower_id, (select auth.uid()))
-         and not public.is_blocked_between(followee_id, (select auth.uid())));
+  using (not public.is_blocked_with_me(follower_id)
+         and not public.is_blocked_with_me(followee_id));
 create policy "follows: owner inserts" on public.follows for insert to authenticated
   with check (follower_id = (select auth.uid()));
 create policy "follows: owner deletes" on public.follows for delete to authenticated
@@ -86,7 +100,7 @@ create index posts_author_idx on public.posts (author_id, created_at desc);
 create index posts_feed_idx on public.posts (created_at desc, id desc) where deleted_at is null;
 alter table public.posts enable row level security;
 create policy "posts: visible unless deleted or blocked" on public.posts for select to authenticated
-  using (deleted_at is null and not public.is_blocked_between(author_id, (select auth.uid())));
+  using (deleted_at is null and not public.is_blocked_with_me(author_id));
 -- No client writes: create_post / delete_post only (DECISIONS F2).
 revoke all on public.posts from anon, authenticated;
 grant select on public.posts to authenticated;
@@ -125,7 +139,7 @@ create index comments_author_idx on public.comments (author_id, created_at desc)
 alter table public.comments enable row level security;
 create policy "comments: visible unless deleted or blocked" on public.comments for select to authenticated
   using (deleted_at is null
-         and not public.is_blocked_between(author_id, (select auth.uid()))
+         and not public.is_blocked_with_me(author_id)
          and exists (select 1 from public.posts p where p.id = post_id));
 revoke all on public.comments from anon, authenticated;
 grant select on public.comments to authenticated;
@@ -167,7 +181,12 @@ revoke all on public.notifications_inbox from anon, authenticated;
 grant select on public.notifications_inbox to authenticated;
 grant update (read_at) on public.notifications_inbox to authenticated;
 
-/** Inbox row for p_user about p_actor; never to yourself or across a block. */
+/**
+ * Inbox row for p_user about p_actor; never to yourself or across a block.
+ * The same (type, actor, post) goes out at most once a day, so a like/unlike
+ * or follow/unfollow loop can't flood an inbox (audit H1/H2). The payload
+ * holds actor_id; the name is read at display time (audit L2).
+ */
 create function public.notify(p_user uuid, p_actor uuid, p_type text, p_payload jsonb)
 returns void
 language plpgsql
@@ -175,17 +194,62 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_name text;
+  v_payload jsonb := p_payload || jsonb_build_object('actor_id', p_actor);
 begin
   if p_user = p_actor or public.is_blocked_between(p_user, p_actor) then
     return;
   end if;
-  select username into v_name from public.profiles where id = p_actor;
+  if exists (select 1 from public.notifications_inbox n
+             where n.user_id = p_user and n.type = p_type and n.payload = v_payload
+               and n.created_at > now() - interval '1 day') then
+    return;
+  end if;
   insert into public.notifications_inbox (user_id, type, payload)
-  values (p_user, p_type, p_payload || jsonb_build_object('actor', v_name));
+  values (p_user, p_type, v_payload);
 end;
 $$;
 revoke all on function public.notify(uuid, uuid, text, jsonb) from public, anon, authenticated;
+
+-- ── Social event log: limits count attempts, not surviving rows ─────────────
+-- Unfollowing or unliking deletes the row, so counting follows or likes would
+-- let a loop run forever (audit H1/H2). Server-only; pruned daily.
+create table public.social_events (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  kind text not null constraint social_events_kind check (kind in ('follow', 'like')),
+  created_at timestamptz not null default now()
+);
+create index social_events_user_idx on public.social_events (user_id, kind, created_at desc);
+alter table public.social_events enable row level security;
+revoke all on public.social_events from anon, authenticated;
+
+create function public.social_event(p_uid uuid, p_kind text, p_limit int, p_window interval)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if (select count(*) from public.social_events e
+      where e.user_id = p_uid and e.kind = p_kind and e.created_at > now() - p_window) >= p_limit then
+    raise exception 'Too many % actions', p_kind using errcode = 'QX301';
+  end if;
+  insert into public.social_events (user_id, kind) values (p_uid, p_kind);
+end;
+$$;
+revoke all on function public.social_event(uuid, text, int, interval) from public, anon, authenticated;
+
+create function public.cleanup_social_events()
+returns void
+language sql
+security definer
+set search_path = ''
+as $$
+  delete from public.social_events where created_at < now() - interval '2 days';
+$$;
+revoke all on function public.cleanup_social_events() from public, anon, authenticated;
+grant execute on function public.cleanup_social_events() to service_role;
+select cron.schedule('questrix-social-events-cleanup', '23 3 * * *', 'select public.cleanup_social_events()');
 
 -- ── Rate limits (plan §6.6) ───────────────────────────────────────────────────
 /** The limit for p_kind; constants here so they're easy to find (DECISIONS F3). */
@@ -198,7 +262,7 @@ as $$
   select case p_kind
     when 'posts_hour' then 10 when 'posts_day' then 50
     when 'comments_hour' then 30 when 'follows_day' then 100
-    when 'reports_day' then 20 end;
+    when 'reports_day' then 20 when 'likes_hour' then 300 end;
 $$;
 revoke all on function public.social_limit(text) from public, anon, authenticated;
 
@@ -237,11 +301,7 @@ begin
   end if;
   -- Serialise this user's follows so the count can't race.
   perform 1 from public.profiles where id = new.follower_id for no key update;
-  if (select count(*) from public.follows
-      where follower_id = new.follower_id and created_at > now() - interval '1 day')
-     >= public.social_limit('follows_day') then
-    raise exception 'Too many follows today' using errcode = 'QX301';
-  end if;
+  perform public.social_event(new.follower_id, 'follow', public.social_limit('follows_day'), interval '1 day');
   return new;
 end;
 $$;
@@ -303,6 +363,23 @@ begin
 end;
 $$;
 revoke all on function public.post_likes_count() from public, anon, authenticated;
+
+create function public.post_likes_before_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  perform public.require_onboarded(new.user_id);
+  perform 1 from public.profiles where id = new.user_id for no key update;
+  perform public.social_event(new.user_id, 'like', public.social_limit('likes_hour'), interval '1 hour');
+  return new;
+end;
+$$;
+revoke all on function public.post_likes_before_insert() from public, anon, authenticated;
+create trigger post_likes_before_insert before insert on public.post_likes
+  for each row execute function public.post_likes_before_insert();
 create trigger post_likes_count after insert or delete on public.post_likes
   for each row execute function public.post_likes_count();
 
@@ -483,13 +560,21 @@ begin
      >= public.social_limit('reports_day') then
     raise exception 'Too many reports today' using errcode = 'QX301';
   end if;
+  if p_target_type = 'post' then
+    -- Serialise reports on one post so concurrent 5th reports can't each see 4.
+    perform 1 from public.posts where id = p_target_id for no key update;
+  end if;
   insert into public.reports (reporter_id, target_type, target_id, reason)
   values (v_uid, p_target_type, p_target_id, btrim(coalesce(p_reason, '')))
   on conflict (reporter_id, target_type, target_id) do nothing;
 
+  -- Only accounts at least 3 days old count, so five fresh sign-ups can't
+  -- hide a post (audit M3). Hidden posts keep their reports for review.
   if p_target_type = 'post' and (
-       select count(distinct reporter_id) from public.reports
-       where target_type = 'post' and target_id = p_target_id and status = 'open') >= 5 then
+       select count(distinct r.reporter_id) from public.reports r
+       join public.profiles rp on rp.id = r.reporter_id
+       where r.target_type = 'post' and r.target_id = p_target_id and r.status = 'open'
+         and rp.created_at < now() - interval '3 days') >= 5 then
     update public.posts set deleted_at = now() where id = p_target_id and deleted_at is null;
   end if;
 end;
@@ -578,7 +663,7 @@ begin
     'following', (select count(*) from public.follows f where f.follower_id = p.id),
     'i_follow', exists (select 1 from public.follows f where f.follower_id = v_me and f.followee_id = p.id),
     'i_blocked', false,
-    'today', v_today,
+    'today', case when v_show then v_today end,
     'heatmap', case when v_show then (
       select coalesce(jsonb_object_agg(d.local_date, d.completed_count), '{}'::jsonb)
       from public.daily_progress d
@@ -616,8 +701,9 @@ group by p.id, p.username, p.display_name
 having sum(l.delta) > 0;
 create unique index leaderboard_weekly_user_idx on public.leaderboard_weekly (user_id);
 create index leaderboard_weekly_points_idx on public.leaderboard_weekly (week_points desc);
+-- Read only through get_leaderboard, which applies blocks and re-checks
+-- privacy (a matview has no RLS; audit L1).
 revoke all on public.leaderboard_weekly from anon, authenticated;
-grant select on public.leaderboard_weekly to authenticated;
 
 create function public.refresh_leaderboard()
 returns void
@@ -642,11 +728,14 @@ stable
 security definer
 set search_path = ''
 as $$
-  with ranked as (
+  with ranked_all as (
     select lb.user_id, lb.username, lb.display_name, lb.week_points,
            rank() over (order by lb.week_points desc) as rank
     from public.leaderboard_weekly lb
-    where not public.is_blocked_between(lb.user_id, (select auth.uid()))
+    join public.profiles pr on pr.id = lb.user_id and not pr.is_private
+  ), ranked as (
+    select * from ranked_all r
+    where not public.is_blocked_between(r.user_id, (select auth.uid()))
   ), scoped as (
     select * from ranked r
     where p_scope <> 'friends' or r.user_id = (select auth.uid()) or exists (
@@ -662,8 +751,9 @@ revoke all on function public.get_leaderboard(text) from public, anon, service_r
 grant execute on function public.get_leaderboard(text) to authenticated;
 
 -- ── Social proof (plan §8.2 rule 5): aggregated counts only ──────────────────
--- A template counts only when at least 2 people I follow use it, so a count
--- can't reveal one person's habit.
+-- A template counts only when at least 2 mutual follows with public profiles
+-- use it (audit M2): one-way follows would let a sock puppet isolate a
+-- target's habits.
 create function public.popular_templates_among_following()
 returns table (template_key text, followers_using int)
 language sql
@@ -673,6 +763,8 @@ set search_path = ''
 as $$
   select h.template_key, count(distinct h.user_id)::int
   from public.follows f
+  join public.follows back on back.follower_id = f.followee_id and back.followee_id = f.follower_id
+  join public.profiles pr on pr.id = f.followee_id and not pr.is_private
   join public.habits h on h.user_id = f.followee_id
   where f.follower_id = (select auth.uid())
     and h.template_key is not null and h.archived_at is null
@@ -689,3 +781,19 @@ begin
     alter publication supabase_realtime add table public.posts;
   end if;
 end $$;
+
+-- ── Blocked users for Settings (blocks are owner-only; usernames are public) ─
+create function public.my_blocked_users()
+returns table (user_id uuid, username text)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select b.blocked_id, p.username::text
+  from public.blocks b join public.profiles p on p.id = b.blocked_id
+  where b.blocker_id = (select auth.uid())
+  order by b.created_at desc;
+$$;
+revoke all on function public.my_blocked_users() from public, anon, service_role;
+grant execute on function public.my_blocked_users() to authenticated;
