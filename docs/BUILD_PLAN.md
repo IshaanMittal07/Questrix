@@ -383,7 +383,7 @@ points      = floor(base_points × multiplier)
 - A **rest day** is a local day whose `daily_schedule.scheduled_count = 0`. Rest days never break a streak. A day with **no** `daily_schedule` row is filled in lazily (up to 7 days back; DECISIONS § Phase 4, D2), so a gap day that is still missing a row is treated as **not** a rest day (fail closed).
 - On the first completion of a local day `D` (inside `complete_habit`):
   0. If `D < last_streak_date` (the user moved to a timezone further west) → treat `D` as `last_streak_date`: no streak change.
-  0b. If `D` is before `profiles.engine_floor_date` (the old today at the last westward timezone change) and after `last_streak_date` (or there's no streak yet) → a **relived** day: base-multiplier points, no streak, freeze or milestone change, and the day stays uncounted, so it's still a miss (#81, DECISIONS D3).
+  0b. If `D` is before `profiles.engine_floor_date` (the old today at the last westward timezone change) and after `last_streak_date` (or there's no streak yet) → a **relived** day: base-multiplier points, no streak, freeze or milestone change, nor any per-habit streak change (#85, DECISIONS H9), and the day stays uncounted, so it's still a miss (#81, DECISIONS D3).
   1. If `last_streak_date = D` → nothing changes.
   2. Else find the missed days strictly between `last_streak_date` and `D` that were **not** rest days (check at most 7 days back; more than 7 → treat as broken).
   3. If missed = 0 → `current_streak += 1`.

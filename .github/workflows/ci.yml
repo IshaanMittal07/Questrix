@@ -55,7 +55,7 @@ jobs:
       # VM; one clean retry clears it.
       - run: |
           supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,postgres-meta || {
-            supabase stop --no-backup; sleep 5
+            supabase stop --no-backup || true; sleep 5
             supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,postgres-meta
           }
       - run: supabase db reset
@@ -85,7 +85,7 @@ jobs:
       # VM; one clean retry clears it.
       - run: |
           supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,postgres-meta || {
-            supabase stop --no-backup; sleep 5
+            supabase stop --no-backup || true; sleep 5
             supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,postgres-meta
           }
       - name: Write .env.local from the local stack
