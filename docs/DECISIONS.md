@@ -556,3 +556,35 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - Posts on the profile come in Phase 7.
 - **S6. The E2E credits points through SQL** (`tests/e2e/helpers/db.ts`, run with `docker exec` as postgres), because clients can never credit points. The credit goes through the ledger, so balance = sum(ledger) still holds.
 - **S7. Invariant walk.** `070_engine_invariants.sql` still spends through `admin_adjust`. `100_shop.sql` covers `purchase_item` directly, including balance = ledger after purchases. Swapping the walk's spend step over to `purchase_item` is left as a follow-up.
+
+## Phase 7
+
+- **F1. Visibility.**
+  - `posts` and `comments` are readable when they aren't deleted and neither user has blocked the other. The check is `is_blocked_between`, a SECURITY DEFINER function, because `blocks` is owner-only.
+  - The feed (`get_feed`) runs as the caller, so the posts policy applies. Author names come from `public_profiles`, because `profiles` shows each user only their own row.
+  - Comments also need their post to be visible.
+  - Liking a hidden or blocked post fails the insert policy (`42501`).
+- **F2. No client writes to posts or comments.** Plan §5 gives authors an `update (body, deleted_at)` grant. We drop it: posts and comments are created and soft-deleted only through `create_post`, `delete_post`, `create_comment` and `delete_comment`. That keeps `attachment` and the counters untouchable, and avoids a policy edge where a soft-deleted row fails the select policy on its own `UPDATE … RETURNING`. Posts can't be edited, which matches the screens in plan §9.
+- **F3. Rate limits (plan §6.6)** live in `social_limit()` as constants, because `economy_config` validates a fixed set of keys. Each check takes the profile row `for no key update` first, so a user's concurrent posts can't race past the count.
+  - Follows: checked in a BEFORE INSERT trigger, along with the block and onboarding checks.
+  - Posts, comments and reports: checked in their RPCs.
+- **F4. Word filter.**
+  - `text_is_clean()` in SQL is authoritative. `lib/moderation/blocklist.ts` mirrors it for instant feedback.
+  - It matches whole words with prefixes, so "Scunthorpe" passes.
+  - Flagged text is refused with `QX302`.
+- **F5. Counters and the inbox.**
+  - `like_count` is kept by a trigger on `post_likes`. `comment_count` is kept by the comment RPCs.
+  - `notify()` writes the inbox for likes, comments and follows. It never notifies you about yourself, and never across a block.
+  - The Activity page lists the inbox and marks it read.
+  - The `milestone` type is reserved: milestones already show as a toast and confetti on Today.
+- **F6. Reports.** You can't report yourself. A post is auto-hidden (`deleted_at`) once 5 distinct reporters have open reports on it. The reports stay for review.
+- **F7. Public profile.** `/u/[username]` uses `get_public_profile`, a SECURITY DEFINER RPC. This settles the Phase 2 `public_profiles` scan note.
+  - An unknown user, a user who hasn't finished onboarding, and a block either way all return the same not-found.
+  - Private profiles show the username, avatar, title and posts, but null stats and no heatmap.
+- **F8. Leaderboard.**
+  - `leaderboard_weekly` is a materialized view of this ISO week's (UTC) completion, milestone and undo points. It leaves out private profiles and users who haven't onboarded.
+  - It's refreshed `concurrently` by pg_cron every 10 minutes through `refresh_leaderboard()`, which only `service_role` can run.
+  - `get_leaderboard` returns the top 100 and the caller's rank. The Friends scope lists you plus the people you follow, but keeps the global ranks.
+- **F9. Social proof (plan §8.2 rule 5).** `popular_templates_among_following()` returns template keys that at least 2 people you follow use. Using two as the floor means a count can't reveal one person's habit. Those keys add the +10 "Popular with friends" score.
+- **F10. Realtime.** `posts` is in the `supabase_realtime` publication, so Realtime applies RLS to what each user receives. A new post only shows a "New posts" button; the feed is never streamed. The public profile doesn't subscribe.
+- **F11. E2E data.** The social E2E inserts older posts as postgres, spaced an hour or more apart so the hourly limit still lets it post. It tests pagination on Following, because Everyone holds other test users' posts.
