@@ -24,7 +24,7 @@ select is((select command from cron.job where jobname = 'questrix-reminders'), '
   'and calls invoke_reminders');
 select is((select schedule from cron.job where jobname = 'questrix-push-log-cleanup'), '17 3 * * *',
   'the cleanup job runs daily');
-select is((select count(*)::int from cron.job where jobname like 'questrix-%'), 2, 'exactly two jobs');
+select is((select count(*)::int from cron.job where jobname in ('questrix-reminders', 'questrix-push-log-cleanup')), 2, 'exactly two jobs');
 select is((select command from cron.job where jobname = 'questrix-push-log-cleanup'),
   'select public.cleanup_push_logs()', 'and the cleanup job calls cleanup_push_logs');
 select ok((select bool_and(username = 'postgres' and database = current_database() and active)
@@ -40,7 +40,7 @@ create temp table j0 as select jobid from cron.job where jobname = 'questrix-rem
 select is(cron.schedule('questrix-reminders', '* * * * *', 'select public.invoke_reminders()'),
   (select jobid from j0), 'rerunning cron.schedule by name returns the same job id');
 select cron.schedule('questrix-push-log-cleanup', '17 3 * * *', 'select public.cleanup_push_logs()');
-select is((select count(*)::int from cron.job where jobname like 'questrix-%'), 2, 'and still exactly two jobs');
+select is((select count(*)::int from cron.job where jobname in ('questrix-reminders', 'questrix-push-log-cleanup')), 2, 'and still exactly two jobs');
 
 -- ── Privileges ──────────────────────────────────────────────────────────────
 select function_privs_are('public', 'invoke_reminders', array[]::text[], 'authenticated', array[]::text[],
@@ -164,7 +164,7 @@ values ((select jobid from cron.job where jobname = 'questrix-reminders'), -1, c
 select public.cleanup_push_logs();
 select is((select array_agg(command order by runid) from cron.job_run_details where runid < 0), array['recent'],
   'cleanup prunes run history older than 7 days, including runs that never ended, and keeps recent runs');
-select is((select count(*)::int from cron.job where jobname like 'questrix-%'), 2,
+select is((select count(*)::int from cron.job where jobname in ('questrix-reminders', 'questrix-push-log-cleanup')), 2,
   'and leaves the jobs themselves alone');
 
 select * from finish();

@@ -34,6 +34,125 @@ export type Database = {
   };
   public: {
     Tables: {
+      blocks: {
+        Row: {
+          blocked_id: string;
+          blocker_id: string;
+          created_at: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          blocked_id: string;
+          blocker_id: string;
+          created_at?: string;
+        };
+        Update: {
+          blocked_id?: string;
+          blocker_id?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "blocks_blocked_id_fkey";
+            columns: ["blocked_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "blocks_blocked_id_fkey";
+            columns: ["blocked_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "blocks_blocked_id_fkey";
+            columns: ["blocked_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "blocks_blocker_id_fkey";
+            columns: ["blocker_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "blocks_blocker_id_fkey";
+            columns: ["blocker_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "blocks_blocker_id_fkey";
+            columns: ["blocker_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      comments: {
+        Row: {
+          author_id: string;
+          body: string;
+          created_at: string;
+          deleted_at: string | null;
+          id: string;
+          post_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          author_id: string;
+          body: string;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          post_id: string;
+        };
+        Update: {
+          author_id?: string;
+          body?: string;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          post_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "comments_author_id_fkey";
+            columns: ["author_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "comments_author_id_fkey";
+            columns: ["author_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "comments_author_id_fkey";
+            columns: ["author_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "comments_post_id_fkey";
+            columns: ["post_id"];
+            isOneToOne: false;
+            referencedRelation: "posts";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       daily_progress: {
         Row: {
           completed_count: number;
@@ -77,6 +196,13 @@ export type Database = {
             foreignKeyName: "daily_progress_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "daily_progress_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -110,6 +236,13 @@ export type Database = {
           user_id?: string;
         };
         Relationships: [
+          {
+            foreignKeyName: "daily_schedule_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
           {
             foreignKeyName: "daily_schedule_user_id_fkey";
             columns: ["user_id"];
@@ -287,6 +420,13 @@ export type Database = {
             foreignKeyName: "equipped_cosmetics_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: true;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "equipped_cosmetics_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -294,6 +434,68 @@ export type Database = {
             foreignKeyName: "equipped_cosmetics_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: true;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      follows: {
+        Row: {
+          created_at: string;
+          followee_id: string;
+          follower_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          followee_id: string;
+          follower_id: string;
+        };
+        Update: {
+          created_at?: string;
+          followee_id?: string;
+          follower_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "follows_followee_id_fkey";
+            columns: ["followee_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "follows_followee_id_fkey";
+            columns: ["followee_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "follows_followee_id_fkey";
+            columns: ["followee_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "follows_follower_id_fkey";
+            columns: ["follower_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "follows_follower_id_fkey";
+            columns: ["follower_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "follows_follower_id_fkey";
+            columns: ["follower_id"];
+            isOneToOne: false;
             referencedRelation: "public_profiles";
             referencedColumns: ["id"];
           },
@@ -454,6 +656,13 @@ export type Database = {
             foreignKeyName: "habits_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "habits_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -509,6 +718,56 @@ export type Database = {
         };
         Relationships: [];
       };
+      notifications_inbox: {
+        Row: {
+          created_at: string;
+          id: string;
+          payload: NonNullable<Json>;
+          read_at: string | null;
+          type: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          id?: string;
+          payload?: NonNullable<Json>;
+          read_at?: string | null;
+          type: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          payload?: NonNullable<Json>;
+          read_at?: string | null;
+          type?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notifications_inbox_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "notifications_inbox_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "notifications_inbox_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       points_ledger: {
         Row: {
           created_at: string;
@@ -540,12 +799,123 @@ export type Database = {
             foreignKeyName: "points_ledger_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "points_ledger_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
           {
             foreignKeyName: "points_ledger_user_id_fkey";
             columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      post_likes: {
+        Row: {
+          created_at: string;
+          post_id: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          post_id: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          post_id?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "post_likes_post_id_fkey";
+            columns: ["post_id"];
+            isOneToOne: false;
+            referencedRelation: "posts";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "post_likes_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "post_likes_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "post_likes_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      posts: {
+        Row: {
+          attachment: Json | null;
+          author_id: string;
+          body: string;
+          comment_count: number;
+          created_at: string;
+          deleted_at: string | null;
+          id: string;
+          like_count: number;
+        };
+        ComputedFields: never;
+        Insert: {
+          attachment?: Json | null;
+          author_id: string;
+          body: string;
+          comment_count?: number;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          like_count?: number;
+        };
+        Update: {
+          attachment?: Json | null;
+          author_id?: string;
+          body?: string;
+          comment_count?: number;
+          created_at?: string;
+          deleted_at?: string | null;
+          id?: string;
+          like_count?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "posts_author_id_fkey";
+            columns: ["author_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "posts_author_id_fkey";
+            columns: ["author_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "posts_author_id_fkey";
+            columns: ["author_id"];
             isOneToOne: false;
             referencedRelation: "public_profiles";
             referencedColumns: ["id"];
@@ -656,6 +1026,13 @@ export type Database = {
             foreignKeyName: "push_subscriptions_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "push_subscriptions_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -703,12 +1080,72 @@ export type Database = {
             foreignKeyName: "reminder_log_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "reminder_log_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
           {
             foreignKeyName: "reminder_log_user_id_fkey";
             columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      reports: {
+        Row: {
+          created_at: string;
+          id: string;
+          reason: string;
+          reporter_id: string;
+          status: Database["public"]["Enums"]["report_status"];
+          target_id: string;
+          target_type: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          id?: string;
+          reason?: string;
+          reporter_id: string;
+          status?: Database["public"]["Enums"]["report_status"];
+          target_id: string;
+          target_type: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          reason?: string;
+          reporter_id?: string;
+          status?: Database["public"]["Enums"]["report_status"];
+          target_id?: string;
+          target_type?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "reports_reporter_id_fkey";
+            columns: ["reporter_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "reports_reporter_id_fkey";
+            columns: ["reporter_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "reports_reporter_id_fkey";
+            columns: ["reporter_id"];
             isOneToOne: false;
             referencedRelation: "public_profiles";
             referencedColumns: ["id"];
@@ -749,6 +1186,13 @@ export type Database = {
             foreignKeyName: "streak_milestones_awarded_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "streak_milestones_awarded_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -779,6 +1223,13 @@ export type Database = {
           user_id?: string;
         };
         Relationships: [
+          {
+            foreignKeyName: "streak_saver_log_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
           {
             foreignKeyName: "streak_saver_log_user_id_fkey";
             columns: ["user_id"];
@@ -824,6 +1275,13 @@ export type Database = {
             foreignKeyName: "user_items_user_id_fkey";
             columns: ["user_id"];
             isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "user_items_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
@@ -838,6 +1296,16 @@ export type Database = {
       };
     };
     Views: {
+      leaderboard_weekly: {
+        Row: {
+          display_name: string | null;
+          user_id: string;
+          username: string;
+          week_points: number | null;
+        };
+        ComputedFields: never;
+        Relationships: [];
+      };
       public_profiles: {
         Row: {
           bio: string | null;
@@ -887,6 +1355,16 @@ export type Database = {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
         Returns: Json;
       };
+      create_comment: {
+        Args: { p_body: string; p_post_id: string };
+        Returns: string;
+      };
+      create_post: {
+        Args: { p_attach_summary?: boolean; p_body: string };
+        Returns: string;
+      };
+      delete_comment: { Args: { p_comment_id: string }; Returns: undefined };
+      delete_post: { Args: { p_post_id: string }; Returns: undefined };
       due_reminders: {
         Args: { p_limit?: number; p_now: string };
         Returns: {
@@ -924,6 +1402,18 @@ export type Database = {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
+      get_feed: {
+        Args: {
+          p_author?: string;
+          p_before_created?: string;
+          p_before_id?: string;
+          p_limit?: number;
+          p_tab?: string;
+        };
+        Returns: Json;
+      };
+      get_leaderboard: { Args: { p_scope?: string }; Returns: Json };
+      get_public_profile: { Args: { p_username: string }; Returns: Json };
       get_today: { Args: Record<PropertyKey, never>; Returns: Json };
       get_today_at: { Args: { p_now: string; p_uid: string }; Returns: Json };
       habit_missed_days: {
@@ -938,6 +1428,7 @@ export type Database = {
       habits_clean_text: { Args: { p_text: string }; Returns: string };
       habits_lock: { Args: { p_user_id: string }; Returns: undefined };
       invoke_reminders: { Args: Record<PropertyKey, never>; Returns: number };
+      is_blocked_between: { Args: { a: string; b: string }; Returns: boolean };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
       jsonb_num_between: {
         Args: { hi: number; lo: number; v: Json; whole: boolean };
@@ -945,8 +1436,33 @@ export type Database = {
       };
       level_for: { Args: { p_lifetime: number }; Returns: number };
       local_date_in: { Args: { p_at: string; p_tz: string }; Returns: string };
+      notify: {
+        Args: {
+          p_actor: string;
+          p_payload: Json;
+          p_type: string;
+          p_user: string;
+        };
+        Returns: undefined;
+      };
+      popular_templates_among_following: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          followers_using: number;
+          template_key: string;
+        }[];
+      };
       purchase_item: { Args: { p_item_id: string }; Returns: Json };
+      refresh_leaderboard: {
+        Args: Record<PropertyKey, never>;
+        Returns: undefined;
+      };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
+      report_content: {
+        Args: { p_reason?: string; p_target_id: string; p_target_type: string };
+        Returns: undefined;
+      };
+      require_onboarded: { Args: { p_uid: string }; Returns: undefined };
       save_push_subscription: {
         Args: {
           p_auth: string;
@@ -960,6 +1476,7 @@ export type Database = {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
         Returns: undefined;
       };
+      social_limit: { Args: { p_kind: string }; Returns: number };
       streak_as_of: {
         Args: {
           p_freezes: number;
@@ -974,6 +1491,7 @@ export type Database = {
         Args: { p_from: string; p_to: string; p_uid: string };
         Returns: number;
       };
+      text_is_clean: { Args: { p_text: string }; Returns: boolean };
       unarchive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       undo_completion: { Args: { p_completion_id: string }; Returns: Json };
       undo_completion_at: {
@@ -981,6 +1499,7 @@ export type Database = {
         Returns: Json;
       };
       username_available: { Args: { p_username: string }; Returns: boolean };
+      weekly_summary: { Args: { p_uid: string }; Returns: Json };
     };
     Enums: {
       habit_category:
