@@ -51,7 +51,13 @@ jobs:
         with:
           version: 3.1.0
       # Only the services the DB tests need (postgres, auth, API gateway).
-      - run: supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,postgres-meta
+      # #64: a startup race sometimes reports port 55322 in use on a fresh
+      # VM; one clean retry clears it.
+      - run: |
+          supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,postgres-meta || {
+            supabase stop --no-backup; sleep 5
+            supabase start -x studio,imgproxy,mailpit,edge-runtime,logflare,vector,supavisor,postgres-meta
+          }
       - run: supabase db reset
       - run: supabase test db
 
@@ -75,7 +81,13 @@ jobs:
           version: 3.1.0
       - run: pnpm install --frozen-lockfile
       # Mailpit stays on: the E2E reads sign-in codes from it.
-      - run: supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,postgres-meta
+      # #64: a startup race sometimes reports port 55322 in use on a fresh
+      # VM; one clean retry clears it.
+      - run: |
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,postgres-meta || {
+            supabase stop --no-backup; sleep 5
+            supabase start -x studio,imgproxy,edge-runtime,logflare,vector,supavisor,postgres-meta
+          }
       - name: Write .env.local from the local stack
         run: |
           eval "$(supabase status -o env)"
