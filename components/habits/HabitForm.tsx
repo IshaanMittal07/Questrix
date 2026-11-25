@@ -244,7 +244,12 @@ export function HabitForm(props: Props) {
       days_of_week: values.days_of_week,
       target_per_day: values.target_per_day,
       reminder_times: reminderTimes.filter(Boolean),
-      reminders_enabled: values.reminders_enabled,
+      // On edit, send it only if changed here: Settings can toggle it while
+      // this form is open, and resending the old value would undo that (#102).
+      ...((props.mode === "create" ||
+        values.reminders_enabled !== initial.reminders_enabled) && {
+        reminders_enabled: values.reminders_enabled,
+      }),
     };
     startTransition(async () => {
       const res =
