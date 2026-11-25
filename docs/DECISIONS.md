@@ -602,3 +602,38 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - If load grows, move to a trigger that broadcasts INSERTs only.
   - The weekly summary is off by default in the composer, because it shares the streak and level that a private profile hides.
 - **F11. E2E data.** The social E2E inserts older posts as postgres, spaced an hour or more apart so the hourly limit still lets it post. It tests pagination on Following, because Everyone holds other test users' posts.
+
+## Phase 8
+
+- **H1. Engine rate limit (#79).** A BEFORE INSERT trigger on `points_ledger` refuses a 31st completion or undo row within a minute for the same user (`QX109`, "Too fast"). Today maps it to a retry message.
+  - Why a trigger: every completion and undo writes exactly one such row while holding the profile lock, so the count is serialised per user, and the large engine functions stay as they are.
+  - Only requests that carry a user JWT are limited. Internal callers (the pgTAP walks, cron, service jobs) run hundreds in one transaction, where `now()` doesn't move.
+  - The limit is a constant, like the social limits (F3).
+- **H2. `admin_adjust_points` (#83)** is the only `service_role` path into the ledger. It writes the entry and moves `points_balance` in one transaction, under the profile lock. Direct INSERT on `points_ledger` is revoked from `service_role`, and RUNBOOK §7 documents the RPC.
+- **H3. Monitoring.**
+  - `instrumentation.ts` `onRequestError` writes one JSON line per uncaught server error. It logs the message, digest, method, path and route, never headers, cookies or bodies, and Vercel's runtime logs index it.
+  - That's the plan's "Vercel monitoring" option. Sentry needs an account and a DSN, so it can be added later behind the same hook.
+  - `app/(app)/error.tsx` keeps the tab bar on errors. `global-error.tsx` and `not-found.tsx` cover the rest.
+- **H4. Performance.**
+  - The splash's scanline and grid loops animate `transform` instead of `background-position`, so they run on the compositor.
+  - The wordmark is painted from the first frame. The scramble is skipped if hydration happens after 1.6 s, because on a slow phone a late scramble would still be running as the splash fades.
+  - The login form loads supabase-js and zod when it's submitted, not with the page. That's about 330 KB of eager JavaScript gone (unused JS went from 113 KiB to 26 KiB).
+  - **Lighthouse (local, mobile, `next start`):**
+    - Accessibility is 100 and Best Practices is 100.
+    - Performance is 71–82 across runs. That's below the plan's ≥ 90.
+  - The local machine is shared with the Docker Supabase stack, and the same build swings 10 points or more between runs. On localhost every script also finishes before first paint, so Lighthouse's simulated throttling charges all of them to the LCP.
+  - Measuring on the deployed Vercel build, and closing any real gap, is a launch follow-up issue.
+- **H5. Account deletion and export.**
+  - `POST /api/account/delete` is same-origin only and takes the user from verified claims. The form has to repeat the username. It then calls `auth.admin.deleteUser`, which cascades through `profiles` to everything the user owns, and signs out.
+  - `GET /api/account/export` returns `export_my_data()`, the caller's own rows, as a JSON download. It's same-origin too, like every API route.
+  - Settings also has the private-profile switch.
+- **H6. #102.** The habit form sends `reminders_enabled` only when it was changed in the form, so it can't undo a Settings toggle made while the form was open.
+- **H7. RLS audit.** `120_hardening.sql` checks across the whole schema that:
+  - every public table has RLS
+  - every SECURITY DEFINER function pins `search_path`
+  - `anon` can't execute any of them
+- **H8. Deferred.**
+  - #85 (relived days and per-habit streaks): per-habit streaks still feed no reward, card or leaderboard.
+  - #52 (a private schema for internal helpers): they're revoked from clients, and the H7 sweep guards the rule.
+  - #64 and #100 (CI and test flakes).
+  - The real-iPhone checklist (#104) runs on the production deploy (RUNBOOK §5).
