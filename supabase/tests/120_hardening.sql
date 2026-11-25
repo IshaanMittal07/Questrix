@@ -2,7 +2,7 @@
 -- and an RLS audit sweep over every public table.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(18);
+select plan(20);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -74,6 +74,16 @@ select is(public.export_my_data() -> 'profile' ->> 'username', 'hard_1', 'the ex
 select is(jsonb_array_length(public.export_my_data() -> 'ledger'), 1, 'and only my ledger');
 select pg_temp.as_postgres();
 select is(public.export_my_data(), null, 'with no user there''s nothing to export');
+
+-- ── Push subscription churn limit (#79, RUNBOOK §5) ─────────────────────────
+select pg_temp.as_user('80000002-0000-0000-0000-000000000000');
+select lives_ok($q$select public.save_push_subscription('https://fcm.googleapis.com/fcm/send/churn',
+    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY') from generate_series(1, 20) g$q$,
+  'twenty saves of one device in an hour are fine');
+select throws_ok($q$select public.save_push_subscription('https://fcm.googleapis.com/fcm/send/churn',
+    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY')$q$,
+  'QX001', 'Too many notification sign-ups', 'the 21st is refused with the rate-limit message');
+select pg_temp.as_postgres();
 
 -- ── Account deletion leaves nothing behind (audit L5) ───────────────────────
 insert into public.habits (user_id, title, category) values ('80000001-0000-0000-0000-000000000000', 'H', 'mind');

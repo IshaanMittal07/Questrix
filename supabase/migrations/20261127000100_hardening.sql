@@ -7,7 +7,9 @@
 -- A trigger on the ledger instead of edits to complete_habit_at and
 -- undo_completion_at: every completion and undo writes one such row while
 -- holding the profile lock, so this count is serialised per user, and the
--- engine functions stay as they are (DECISIONS H1). 30 a minute is far above
+-- engine functions stay as they are (DECISIONS H1). It counts ledger rows,
+-- not actions: an undo that also revokes a milestone writes two, and the
+-- whole undo then rolls back with "wait a minute". 30 a minute is far above
 -- what a person tapping habits does, and stops a complete/undo loop.
 create function public.ledger_rate_limit()
 returns trigger
@@ -99,3 +101,35 @@ as $$
 $$;
 revoke all on function public.export_my_data() from public, anon, service_role;
 grant execute on function public.export_my_data() to authenticated;
+
+-- ── #79 (push): save_push_subscription churn limit ──────────────────────────
+-- The 10-device cap counts live rows, so it can't stop a client cycling
+-- garbage endpoints (RUNBOOK §5, push audit S2). Every save is an INSERT
+-- (upserts included: BEFORE INSERT fires before conflict handling), counted
+-- in the social event log. save_push_subscription already holds the profile
+-- lock, so the count is serialised per user. QX001 with its own hint: the
+-- subscribe route answers it as 429 "rate" (P5).
+alter table public.social_events drop constraint social_events_kind;
+alter table public.social_events add constraint social_events_kind
+  check (kind in ('follow', 'like', 'push_save'));
+
+create function public.push_subscriptions_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if (select count(*) from public.social_events e
+      where e.user_id = new.user_id and e.kind = 'push_save'
+        and e.created_at > now() - interval '1 hour') >= 20 then
+    raise exception 'Too many notification sign-ups'
+      using errcode = 'QX001', hint = 'Try again in an hour.';
+  end if;
+  insert into public.social_events (user_id, kind) values (new.user_id, 'push_save');
+  return new;
+end;
+$$;
+revoke all on function public.push_subscriptions_rate_limit() from public, anon, authenticated, service_role;
+create trigger push_subscriptions_rate_limit before insert on public.push_subscriptions
+  for each row execute function public.push_subscriptions_rate_limit();
