@@ -444,16 +444,18 @@ html[data-splash="seen"] .qx-splash {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+/* Styles keep the equipped colour: they never set one themselves. */
 .name-style-outline {
-  color: transparent;
-  -webkit-text-stroke: 1.5px var(--neon-cyan);
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 1.5px currentColor;
 }
+/* drop-shadow, not text-shadow: gradient colours make currentColor transparent. */
 .name-style-glow {
-  text-shadow:
-    0 0 6px currentColor,
-    0 0 16px currentColor;
+  filter: drop-shadow(0 0 4px rgb(34 229 255 / 0.8))
+    drop-shadow(0 0 10px rgb(139 92 255 / 0.6));
 }
 .name-style-glitch {
+  display: inline-block;
   position: relative;
   animation: qx-name-glitch 2.4s steps(1) infinite;
 }
@@ -479,15 +481,12 @@ html[data-splash="seen"] .qx-splash {
 }
 .name-style-matrix {
   font-family: var(--font-mono, ui-monospace, monospace);
-  color: #3dff9a;
-  text-shadow: 0 0 8px #3dff9a;
+  filter: drop-shadow(0 0 6px rgb(61 255 154 / 0.8));
   animation: qx-matrix 1.2s steps(2) infinite;
 }
 @keyframes qx-matrix {
   50% {
-    text-shadow:
-      0 0 2px #3dff9a,
-      0 -3px 6px #3dff9a88;
+    filter: drop-shadow(0 -3px 4px rgb(61 255 154 / 0.5));
   }
 }
 

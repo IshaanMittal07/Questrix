@@ -77,6 +77,7 @@ export function ShopView({ data }: { data: ShopData }) {
       ? { ...equipped, [selected.category]: selected.id }
       : equipped;
   const layers = layersFor(byId, preview);
+  const worn = layersFor(byId, equipped);
   const nameColor = preview.name_color
     ? byId.get(preview.name_color)?.css
     : null;
@@ -204,7 +205,7 @@ export function ShopView({ data }: { data: ShopData }) {
                       }
                       locked={data.level < item.levelRequired}
                       selected={selected?.id === item.id}
-                      base={layersFor(byId, equipped)}
+                      base={worn}
                       onSelect={() => {
                         setSelected(item);
                         setError("");

@@ -46,7 +46,8 @@ export async function loadShop(): Promise<ShopData | null> {
       .eq("key", "streak_freezes_max")
       .maybeSingle(),
   ]);
-  if (items.error || !profile.data) return null;
+  if (items.error || owned.error || equipped.error || !profile.data)
+    return null;
 
   const eq: Equipped = {};
   if (equipped.data) {

@@ -56,6 +56,14 @@ Two keys are also bounded by CHECK constraints, so raise the constraint before r
 - **Dropping a habit below its target** restores that habit's streak.
 - **QX108.** After a move west, an undo that a later day was built on is refused.
 
+## Purchases (`purchase_item`, DECISIONS § Phase 6)
+
+- A purchase writes a negative `purchase` ledger entry whose `ref_id` is the item id, and lowers `points_balance` by the same amount in the same transaction.
+- Free items write no ledger entry.
+- Spending never changes `lifetime_points`, so buying can't lower your level.
+- The Streak Freeze costs 400 and adds to `profiles.streak_freezes` up to `streak_freezes_max` (2). Freezes that today's completions spent count toward that cap, because undo can hand them back.
+- Level-gated items check `level_for(lifetime_points)` on the server.
+
 ## Invariants (pgTAP `070_engine_invariants`, after every step of a randomized sequence)
 
 - `points_balance = sum(points_ledger.delta)`, and `lifetime_points = sum(delta)` over `completion`, `streak_milestone` and `undo` entries.
