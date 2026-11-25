@@ -316,15 +316,18 @@ describe("EnableNotifications detect()", () => {
     );
   });
 
-  it("treats a 'none' claim as on (the subscription vanished meanwhile)", async () => {
+  it("treats a 'none' claim as off (the subscription vanished meanwhile)", async () => {
     client.isSubscribed.mockResolvedValue(true);
     client.claimSubscription.mockResolvedValue("none");
     render(<EnableNotifications publicKey={KEY} />);
     expect(
-      await screen.findByRole("button", {
+      await screen.findByRole("button", { name: "Enable notifications" }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("button", {
         name: "Turn off notifications on this device",
       }),
-    ).toBeInTheDocument();
+    ).toBeNull();
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
@@ -346,6 +349,124 @@ describe("EnableNotifications detect()", () => {
       await screen.findByRole("button", { name: "Enable notifications" }),
     ).toBeInTheDocument();
     expect(client.activeRegistration).toHaveBeenCalledTimes(2);
+  });
+
+  function fakeWorker() {
+    const sw = new EventTarget();
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: sw,
+    });
+    return () =>
+      act(async () => {
+        sw.dispatchEvent(new Event("controllerchange"));
+      });
+  }
+
+  it("skips the controllerchange re-check while an action is in progress", async () => {
+    const controllerchange = fakeWorker();
+    let finish!: (v: unknown) => void;
+    client.subscribe.mockReturnValue(new Promise((r) => (finish = r)));
+    render(<EnableNotifications publicKey={KEY} />);
+    const btn = await screen.findByRole("button", {
+      name: "Enable notifications",
+    });
+    expect(client.activeRegistration).toHaveBeenCalledTimes(1);
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled();
+    await controllerchange();
+    expect(client.activeRegistration).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ ok: true }));
+    expect(
+      await screen.findByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Notifications are on for this device.",
+    );
+    // Idle again: the next controllerchange re-checks.
+    client.isSubscribed.mockResolvedValue(true);
+    await controllerchange();
+    expect(client.activeRegistration).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a re-check's result when an action starts before it lands", async () => {
+    const controllerchange = fakeWorker();
+    render(<EnableNotifications publicKey={KEY} />);
+    const btn = await screen.findByRole("button", {
+      name: "Enable notifications",
+    });
+    // The re-check starts, and hangs on the worker lookup.
+    let registered!: (v: ServiceWorkerRegistration | null) => void;
+    client.activeRegistration.mockReturnValueOnce(
+      new Promise((r) => (registered = r)),
+    );
+    await controllerchange();
+    expect(client.activeRegistration).toHaveBeenCalledTimes(2);
+    // The user taps Enable meanwhile.
+    let finish!: (v: unknown) => void;
+    client.subscribe.mockReturnValue(new Promise((r) => (finish = r)));
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled();
+    // The stale re-check now says "unavailable"; it must not win.
+    await act(async () => registered(null));
+    expect(
+      screen.queryByText("Notifications aren't available right now."),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Enable notifications" }),
+    ).toBeDisabled();
+    await act(async () => finish({ ok: true }));
+    expect(
+      await screen.findByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Notifications are on for this device.",
+    );
+  });
+
+  it("clears an earlier note when a re-check has none", async () => {
+    const controllerchange = fakeWorker();
+    client.isSubscribed.mockResolvedValue(true);
+    client.claimSubscription.mockResolvedValueOnce("failed");
+    render(<EnableNotifications publicKey={KEY} />);
+    await screen.findByText(
+      "Couldn't link this device's notifications to your account. Turn them off and on again.",
+    );
+    // The claim succeeds on the re-check.
+    await controllerchange();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toBeEmptyDOMElement(),
+    );
+    expect(client.claimSubscription).toHaveBeenCalledTimes(2);
+    expect(
+      screen.getByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeEnabled();
+  });
+
+  it("replaces an earlier note with the re-check's own note", async () => {
+    const controllerchange = fakeWorker();
+    client.isSubscribed.mockResolvedValue(true);
+    client.claimSubscription
+      .mockResolvedValueOnce("failed")
+      .mockResolvedValueOnce("stale");
+    render(<EnableNotifications publicKey={KEY} />);
+    await screen.findByText(/Couldn't link this device/);
+    await controllerchange();
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Notifications need turning on again on this device.",
+      ),
+    );
+    expect(screen.queryByText(/Couldn't link this device/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Enable notifications" }),
+    ).toBeEnabled();
   });
 
   it("stops listening for controllerchange after unmount", async () => {

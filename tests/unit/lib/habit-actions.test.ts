@@ -611,3 +611,107 @@ describe("deadlocks", () => {
     });
   });
 });
+
+describe("setHabitReminders", () => {
+  it.each([
+    ["a non-uuid", "h1"],
+    ["a number", 42],
+    ["undefined", undefined],
+    ["an injection attempt", `${ID},user_id.neq.u1`],
+  ])("rejects %s as the id without touching the database", async (_, id) => {
+    const res = await actions.setHabitReminders(id, true);
+    // As updateHabit and the archive RPCs: a malformed id is a missing habit.
+    expect(res).toEqual({
+      ok: false,
+      code: "not_found",
+      error: "That habit doesn't exist.",
+    });
+    expect(calls).toEqual([]);
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a string", "true"],
+    ["a number", 1],
+    ["null", null],
+    ["undefined", undefined],
+  ])("rejects %s as the flag", async (_, enabled) => {
+    expect(await actions.setHabitReminders(ID, enabled)).toEqual({
+      ok: false,
+      code: "invalid",
+      error: "Couldn't save. Try again.",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses when signed out", async () => {
+    userId = null;
+    expect(await actions.setHabitReminders(ID, false)).toEqual({
+      ok: false,
+      code: "signed_out",
+      error: "You're signed out.",
+    });
+    expect(op("update")).toBeUndefined();
+  });
+
+  it("updates only reminders_enabled on the caller's own habit", async () => {
+    results = [{ data: [{ id: ID }] }];
+    expect(await actions.setHabitReminders(ID.toUpperCase(), false)).toEqual({
+      ok: true,
+      data: undefined,
+    });
+    expect(calls).toEqual([
+      ["from", "habits"],
+      ["update", { reminders_enabled: false }],
+      ["eq", "id", ID],
+      ["eq", "user_id", "u1"],
+      ["select", "id"],
+    ]);
+    expect(revalidatePath.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "/habits",
+      "/settings",
+      "/today",
+    ]);
+  });
+
+  it.each([
+    ["no rows", []],
+    ["null data", null],
+  ])(
+    "is not_found with %s (RLS hides other users' habits)",
+    async (_, data) => {
+      results = [{ data }];
+      expect(await actions.setHabitReminders(ID, true)).toEqual({
+        ok: false,
+        code: "not_found",
+        error: "That habit doesn't exist.",
+      });
+      expect(revalidatePath).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    [
+      { code: "40P01", message: "deadlock detected" },
+      {
+        code: "failed",
+        error: "Something else was saving at the same time. Try again.",
+      },
+    ],
+    [
+      { code: "42501", message: "permission denied for table habits" },
+      { code: "failed", error: "Couldn't save. Try again." },
+    ],
+    [
+      { code: "28000", message: "not signed in" },
+      { code: "signed_out", error: "You're signed out." },
+    ],
+  ])("maps error %o through fromDb", async (error, expected) => {
+    results = [{ error }];
+    expect(await actions.setHabitReminders(ID, true)).toEqual({
+      ok: false,
+      ...expected,
+    });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+});

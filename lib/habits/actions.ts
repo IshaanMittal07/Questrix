@@ -171,7 +171,8 @@ export async function setHabitReminders(
   enabled: unknown,
 ): Promise<ActionResult> {
   const parsedId = habitIdSchema.safeParse(id);
-  if (!parsedId.success) return invalid(parsedId.error);
+  // As updateHabit and the archive RPCs: a malformed id is a missing habit.
+  if (!parsedId.success) return fail("not_found", "That habit doesn't exist.");
   if (typeof enabled !== "boolean") {
     return fail("invalid", "Couldn't save. Try again.");
   }

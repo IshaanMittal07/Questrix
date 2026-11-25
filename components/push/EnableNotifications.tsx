@@ -83,6 +83,8 @@ export function EnableNotifications({
   const [busy, setBusy] = useState(false);
   // Read by the re-check: an action in progress owns the state and message.
   const busyRef = useRef(false);
+  // Bumped when an action starts: a check begun before it is stale.
+  const actionSeq = useRef(0);
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
@@ -92,8 +94,9 @@ export function EnableNotifications({
     let live = true;
     const run = () => {
       if (busyRef.current) return;
+      const seq = actionSeq.current;
       void detect(publicKey).then(({ state: next, note }) => {
-        if (!live || busyRef.current) return;
+        if (!live || busyRef.current || seq !== actionSeq.current) return;
         setState(next);
         // A fresh check replaces any earlier note.
         setMessage(note ?? null);
@@ -131,6 +134,7 @@ export function EnableNotifications({
   }
 
   async function turnOn() {
+    actionSeq.current += 1;
     setBusy(true);
     setMessage(null);
     const res = await subscribe(publicKey);
@@ -146,6 +150,7 @@ export function EnableNotifications({
   }
 
   async function turnOff() {
+    actionSeq.current += 1;
     setBusy(true);
     setMessage(null);
     const ok = await unsubscribe();

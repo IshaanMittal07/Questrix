@@ -24,12 +24,16 @@ export function Switch({
   id,
 }: SwitchProps) {
   const descId = description && id ? `${id}-desc` : undefined;
+  const labelId = id ? `${id}-label` : undefined;
   return (
     <button
       type="button"
       role="switch"
       id={id}
       aria-checked={checked}
+      // The name is the label alone; the description is read once, as a
+      // description (not twice, as part of the name too).
+      aria-labelledby={labelId}
       aria-describedby={descId}
       aria-disabled={disabled || undefined}
       onClick={() => {
@@ -42,7 +46,9 @@ export function Switch({
       )}
     >
       <span className="min-w-0">
-        <span className="block font-medium">{label}</span>
+        <span id={labelId} className="block font-medium">
+          {label}
+        </span>
         {description ? (
           <span id={descId} className="text-muted block text-sm">
             {description}
