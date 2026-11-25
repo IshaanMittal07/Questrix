@@ -14,6 +14,7 @@ import {
 import { suggestHabits } from "@/lib/habits/suggestions";
 import type { HabitCategory } from "@/lib/habits/templates";
 import { getMyProfile } from "@/lib/profile/queries";
+import { createClient } from "@/lib/supabase/server";
 
 export const SUGGESTIONS_SHOWN = 6;
 
@@ -35,13 +36,21 @@ export async function coachingContext(
   };
 }
 
-/** Suggestions for the Add form (rules 1-4; rule 5 arrives in Phase 7). */
+/** Template keys at least 2 people I follow use (rule 5); empty on error. */
+async function popularAmongFollowing(): Promise<Set<string>> {
+  const supabase = await createClient();
+  const { data } = await supabase.rpc("popular_templates_among_following");
+  return new Set((data ?? []).map((r) => r.template_key));
+}
+
+/** Suggestions for the Add form (rules 1-5). */
 export async function suggestionsForMe(): Promise<SuggestionView[]> {
-  const [active, archived] = await Promise.all([
+  const [active, archived, popularKeys] = await Promise.all([
     listActiveHabits(),
     listArchivedHabits(),
+    popularAmongFollowing(),
   ]);
-  return suggestHabits([...active, ...archived])
+  return suggestHabits([...active, ...archived], { popularKeys })
     .slice(0, SUGGESTIONS_SHOWN)
     .map((s) => ({
       key: s.template.key,
