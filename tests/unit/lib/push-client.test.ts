@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  claimSubscription,
   isSubscribed,
   subscribe,
   unsubscribe,
@@ -344,5 +345,118 @@ describe("isSubscribed", () => {
     permission = "granted";
     pushManager.getSubscription.mockRejectedValueOnce(new Error("x"));
     expect(await isSubscribed()).toBe(false);
+  });
+});
+
+describe("claimSubscription", () => {
+  const getRegistration = () =>
+    navigator.serviceWorker.getRegistration as ReturnType<typeof vi.fn>;
+
+  it.each(["default", "denied"] as const)(
+    "is none without granted permission (%s), even with a subscription",
+    async (p) => {
+      permission = p;
+      current = fakeSub(KEY_BYTES.slice().buffer);
+      expect(await claimSubscription(KEY)).toBe("none");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("is none with permission but no subscription", async () => {
+    permission = "granted";
+    expect(await claimSubscription(KEY)).toBe("none");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("is none with no registration", async () => {
+    permission = "granted";
+    getRegistration().mockResolvedValueOnce(undefined);
+    expect(await claimSubscription(KEY)).toBe("none");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("re-saves a subscription for the current key and reports ok", async () => {
+    permission = "granted";
+    current = fakeSub(KEY_BYTES.slice().buffer);
+    expect(await claimSubscription(KEY)).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/push/subscribe");
+    expect(init).toMatchObject({
+      method: "POST",
+      redirect: "error",
+      credentials: "same-origin",
+    });
+    expect(JSON.parse(init.body as string)).toEqual(current.toJSON());
+    // Claiming never touches the browser subscription.
+    expect(current.unsubscribe).not.toHaveBeenCalled();
+    expect(pushManager.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("re-saves when the browser hides the subscription's key", async () => {
+    permission = "granted";
+    current = fakeSub(null);
+    expect(await claimSubscription(KEY)).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [
+      "a different key",
+      () => {
+        const other = KEY_BYTES.slice();
+        other[0] ^= 0x01;
+        return other.buffer;
+      },
+    ],
+    ["a shorter key", () => KEY_BYTES.slice(0, 64).buffer],
+  ])(
+    "is stale for %s, with no POST and no unsubscribe",
+    async (_label, key) => {
+      permission = "granted";
+      current = fakeSub(key());
+      expect(await claimSubscription(KEY)).toBe("stale");
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(current.unsubscribe).not.toHaveBeenCalled();
+      expect(pushManager.subscribe).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([400, 401, 403, 429, 500])(
+    "is failed for a %i from the POST",
+    async (s) => {
+      permission = "granted";
+      current = fakeSub(KEY_BYTES.slice().buffer);
+      status = s;
+      expect(await claimSubscription(KEY)).toBe("failed");
+    },
+  );
+
+  it("is failed when the POST throws", async () => {
+    permission = "granted";
+    current = fakeSub(KEY_BYTES.slice().buffer);
+    fetchMock.mockRejectedValueOnce(new TypeError("offline"));
+    expect(await claimSubscription(KEY)).toBe("failed");
+  });
+
+  it("is failed when getSubscription throws", async () => {
+    permission = "granted";
+    pushManager.getSubscription.mockRejectedValueOnce(new Error("x"));
+    expect(await claimSubscription(KEY)).toBe("failed");
+  });
+
+  it.each([undefined, ""])(
+    "is failed with a subscription but no public key (%j), without a POST",
+    async (key) => {
+      permission = "granted";
+      current = fakeSub(KEY_BYTES.slice().buffer);
+      expect(await claimSubscription(key)).toBe("failed");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("is none without a subscription even when the key is missing", async () => {
+    permission = "granted";
+    expect(await claimSubscription(undefined)).toBe("none");
   });
 });

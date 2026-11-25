@@ -80,6 +80,46 @@ function withUserAgent(r: Request, ua: string) {
   return r;
 }
 
+/**
+ * A chunked request: a ReadableStream body and no Content-Length. Records
+ * how many chunks were pulled and whether the reader was cancelled.
+ */
+function streamed(
+  method: "POST" | "DELETE",
+  chunks: Uint8Array[],
+  headers: Record<string, string> = {},
+) {
+  const seen = { pulled: 0, cancelled: false };
+  let i = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i >= chunks.length) {
+        controller.close();
+        return;
+      }
+      seen.pulled++;
+      controller.enqueue(chunks[i++]);
+    },
+    cancel() {
+      seen.cancelled = true;
+    },
+  });
+  const r = new Request(URL_, {
+    method,
+    headers: {
+      origin: ORIGIN,
+      "content-type": "application/json",
+      ...headers,
+    },
+    body,
+    // @ts-expect-error -- Node's fetch requires duplex for a stream body.
+    duplex: "half",
+  });
+  return { r, seen };
+}
+
+const bytesOf = (s: string) => new TextEncoder().encode(s);
+
 function req(
   method: "POST" | "DELETE",
   body: unknown,
@@ -312,6 +352,139 @@ describe("POST /api/push/subscribe validation", () => {
   });
 });
 
+describe("content type and chunked bodies", () => {
+  it.each([
+    ["text/plain", "text/plain"],
+    ["text/plain with charset", "text/plain;charset=UTF-8"],
+    ["application/json-patch+json", "application/json-patch+json"],
+    ["application/jsonx", "application/jsonx"],
+    ["multipart/form-data", "multipart/form-data; boundary=x"],
+    ["a json type later in the value", "text/plain, application/json"],
+  ])("POST returns 415 for %s", async (_label, type) => {
+    const res = await POST(
+      req("POST", valid, { origin: ORIGIN, "content-type": type }),
+    );
+    expect(res.status).toBe(415);
+    expect(await res.json()).toEqual({ error: "Send JSON" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("POST returns 415 with no content type at all", async () => {
+    const r = req("POST", valid);
+    r.headers.delete("content-type");
+    expect(r.headers.get("content-type")).toBeNull();
+    const res = await POST(r);
+    expect(res.status).toBe(415);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("DELETE returns 415 for text/plain", async () => {
+    const res = await DELETE(
+      req(
+        "DELETE",
+        { endpoint: ENDPOINT },
+        { origin: ORIGIN, "content-type": "text/plain" },
+      ),
+    );
+    expect(res.status).toBe(415);
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "application/json",
+    "application/json; charset=utf-8",
+    "application/json;charset=UTF-8",
+    "Application/JSON",
+  ])("POST accepts %j", async (type) => {
+    const res = await POST(
+      req("POST", valid, { origin: ORIGIN, "content-type": type }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("checks the guard before the content type (403, 401 win over 415)", async () => {
+    const cross = await POST(
+      req("POST", valid, {
+        origin: "https://evil.com",
+        "content-type": "text/plain",
+      }),
+    );
+    expect(cross.status).toBe(403);
+    claims = null;
+    const signedOut = await POST(
+      req("POST", valid, { origin: ORIGIN, "content-type": "text/plain" }),
+    );
+    expect(signedOut.status).toBe(401);
+  });
+
+  it("cuts off a chunked body over 4096 bytes and cancels the reader", async () => {
+    const chunk = new Uint8Array(1500).fill(0x20);
+    const { r, seen } = streamed(
+      "POST",
+      Array.from({ length: 20 }, () => chunk),
+    );
+    expect(r.headers.get("content-length")).toBeNull();
+    const res = await POST(r);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "Invalid request" });
+    expect(seen.cancelled).toBe(true);
+    // Stops at the chunk that crosses the limit; the rest is never read.
+    // (The stream may have queued one chunk ahead of the reader.)
+    expect(seen.pulled).toBeLessThanOrEqual(5);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("cuts off a chunked DELETE over 4096 bytes too", async () => {
+    const { r, seen } = streamed("DELETE", [
+      new Uint8Array(4000).fill(0x20),
+      new Uint8Array(200).fill(0x20),
+      // Still pending when the limit is hit, so the cancel is observable.
+      new Uint8Array(10).fill(0x20),
+      new Uint8Array(10).fill(0x20),
+    ]);
+    const res = await DELETE(r);
+    expect(res.status).toBe(400);
+    expect(seen.cancelled).toBe(true);
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("refuses a single chunk of 4097 bytes", async () => {
+    const { r, seen } = streamed("POST", [
+      new Uint8Array(4097).fill(0x20),
+      new Uint8Array(10).fill(0x20),
+      new Uint8Array(10).fill(0x20),
+    ]);
+    expect((await POST(r)).status).toBe(400);
+    expect(seen.cancelled).toBe(true);
+  });
+
+  it("refuses an oversized chunked body even when it is the last chunk", async () => {
+    // The stream has already closed, so there is nothing left to cancel.
+    const { r } = streamed("POST", [new Uint8Array(4097).fill(0x20)]);
+    expect((await POST(r)).status).toBe(400);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("reassembles a chunked body of exactly 4096 bytes in order", async () => {
+    const all = bytesOf(sized(4096, "x"));
+    const chunks = [all.slice(0, 1), all.slice(1, 2000), all.slice(2000)];
+    const { r, seen } = streamed("POST", chunks);
+    const res = await POST(r);
+    expect(res.status).toBe(200);
+    expect(seen.cancelled).toBe(false);
+    expect(rpc).toHaveBeenCalledOnce();
+  });
+
+  it("decodes a multi-byte character split across chunks", async () => {
+    const all = bytesOf(sized(3000, E_ACUTE));
+    // Find a 2-byte character and split it between two chunks.
+    const at = all.indexOf(0xc3) + 1;
+    expect(at).toBeGreaterThan(0);
+    const { r } = streamed("POST", [all.slice(0, at), all.slice(at)]);
+    expect((await POST(r)).status).toBe(200);
+  });
+});
+
 describe("POST /api/push/subscribe save", () => {
   it("saves through the RPC with the user agent", async () => {
     const res = await POST(
@@ -403,6 +576,36 @@ describe("POST /api/push/subscribe save", () => {
       error: "Too many tries; try again later",
       limit: "rate",
     });
+  });
+
+  it.each([
+    ["contains 'device'", "Too many device changes; try again later."],
+    [
+      "is the device hint with extra text",
+      "Turn notifications off on a device you no longer use. Or wait.",
+    ],
+    [
+      "is the device hint in another case",
+      "turn notifications off on a device you no longer use.",
+    ],
+    ["is missing", undefined],
+  ])("treats a QX001 whose hint %s as the rate limit", async (_l, hint) => {
+    rpcError = { code: "QX001", message: "device limit", hint };
+    const res = await POST(req("POST", valid));
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({
+      error: "Too many tries; try again later",
+      limit: "rate",
+    });
+  });
+
+  it("matches the device hint only on QX001", async () => {
+    rpcError = {
+      code: "P0001",
+      hint: "Turn notifications off on a device you no longer use.",
+    };
+    const res = await POST(req("POST", valid));
+    expect(res.status).toBe(500);
   });
 
   it("returns a generic 500 and never logs the endpoint or keys", async () => {
