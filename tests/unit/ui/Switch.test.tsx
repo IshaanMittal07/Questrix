@@ -62,7 +62,7 @@ describe("Switch", () => {
     expect(sw).toHaveAttribute("aria-checked", "false");
   });
 
-  it("links the description with aria-describedby", () => {
+  it("links the description with aria-describedby; the name is the label alone", () => {
     render(
       <Switch
         id="streak-saver"
@@ -72,28 +72,79 @@ describe("Switch", () => {
         onCheckedChange={vi.fn()}
       />,
     );
-    const sw = screen.getByRole("switch", { name: /^Streak saver/ });
+    const sw = screen.getByRole("switch", { name: "Streak saver" });
     expect(sw).toHaveAttribute("id", "streak-saver");
+    expect(sw).toHaveAttribute("aria-labelledby", "streak-saver-label");
     expect(sw).toHaveAttribute("aria-describedby", "streak-saver-desc");
+    expect(sw).toHaveAccessibleName("Streak saver");
     expect(sw).toHaveAccessibleDescription("A nudge at 20:00.");
   });
 
-  it("has no aria-describedby without a description or without an id", () => {
+  it("generates an id when none is passed, so labelling still works", () => {
     render(
       <>
-        <Switch id="a" label="A" checked={false} onCheckedChange={vi.fn()} />
         <Switch
           label="B"
-          description="No id to link by"
+          description="Linked by a generated id"
+          checked={false}
+          onCheckedChange={vi.fn()}
+        />
+        <Switch
+          label="C"
+          description="Another"
           checked={false}
           onCheckedChange={vi.fn()}
         />
       </>,
     );
-    for (const sw of screen.getAllByRole("switch")) {
-      expect(sw).not.toHaveAttribute("aria-describedby");
-    }
-    // The description still shows, just unlinked.
-    expect(screen.getByText("No id to link by")).toBeInTheDocument();
+    const [b, c] = screen.getAllByRole("switch");
+    expect(b!.id).not.toBe("");
+    expect(b!.id).not.toBe(c!.id);
+    expect(b).toHaveAttribute("aria-labelledby", `${b!.id}-label`);
+    expect(b).toHaveAttribute("aria-describedby", `${b!.id}-desc`);
+    expect(b).toHaveAccessibleName("B");
+    expect(b).toHaveAccessibleDescription("Linked by a generated id");
+    expect(c).toHaveAccessibleName("C");
+    expect(c).toHaveAccessibleDescription("Another");
+  });
+
+  it("has no aria-describedby without a description", () => {
+    render(
+      <Switch id="a" label="A" checked={false} onCheckedChange={vi.fn()} />,
+    );
+    const sw = screen.getByRole("switch", { name: "A" });
+    expect(sw).not.toHaveAttribute("aria-describedby");
+    expect(sw).toHaveAttribute("aria-labelledby", "a-label");
+  });
+
+  it("shows an icon outside the name, hidden from assistive tech", () => {
+    const { container } = render(
+      <Switch
+        id="w"
+        label="Water"
+        icon="W"
+        checked={false}
+        onCheckedChange={vi.fn()}
+      />,
+    );
+    const sw = screen.getByRole("switch", { name: "Water" });
+    expect(sw).toHaveTextContent(/^W\s*Water/);
+    const icon = container.querySelector('[aria-hidden="true"]');
+    expect(icon).toHaveTextContent("W");
+    expect(icon).not.toContainElement(document.getElementById("w-label"));
+  });
+
+  it.each([null, undefined, ""])("renders no icon for %o", (icon) => {
+    const { container } = render(
+      <Switch
+        label="Read"
+        icon={icon}
+        checked={false}
+        onCheckedChange={vi.fn()}
+      />,
+    );
+    // Only the track is aria-hidden.
+    expect(container.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1);
+    expect(screen.getByRole("switch")).toHaveTextContent(/^Read$/);
   });
 });

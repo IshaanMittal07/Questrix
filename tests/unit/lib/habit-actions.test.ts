@@ -665,13 +665,23 @@ describe("setHabitReminders", () => {
       ["update", { reminders_enabled: false }],
       ["eq", "id", ID],
       ["eq", "user_id", "u1"],
+      ["is", "archived_at", null],
       ["select", "id"],
     ]);
-    expect(revalidatePath.mock.calls.map((c) => c[0]).sort()).toEqual([
-      "/habits",
-      "/settings",
-      "/today",
-    ]);
+    // Only Settings shows the flag; /habits and /today refresh on next visit.
+    expect(revalidatePath).toHaveBeenCalledExactlyOnceWith("/settings");
+  });
+
+  it("is not_found for an archived habit (filtered out, so no row)", async () => {
+    // The archived_at filter excludes the row: PostgREST returns [].
+    results = [{ data: [] }];
+    expect(await actions.setHabitReminders(ID, true)).toEqual({
+      ok: false,
+      code: "not_found",
+      error: "That habit doesn't exist.",
+    });
+    expect(op("is")).toEqual(["is", "archived_at", null]);
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 
   it.each([

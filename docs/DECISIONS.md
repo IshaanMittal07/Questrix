@@ -517,7 +517,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - **Habit reminders** (`profiles.push_enabled`), which pauses every reminder on all devices;
     - **Streak saver** (`profiles.streak_saver_enabled`), disabled while reminders are off;
     - **Per habit**: a switch for each active habit that has reminder times (`habits.reminders_enabled`). Habits without times get a link to edit one.
-  - Every switch saves at once, optimistically, through a Server Action (`setNotificationPrefs`, `setHabitReminders`). Each re-checks the session and validates its input; a failure rolls back with an alert. RLS and the column grants stay authoritative (P3).
+  - Every switch saves at once, optimistically, through a Server Action (`setNotificationPrefs`, `setHabitReminders`). Each re-checks the session and validates its input; a failure rolls back with an alert. RLS and the column grants stay authoritative (P3). Results apply in the order the answers arrive, which is click order today because Next.js runs one client's Server Actions one at a time; parallel actions would need a sequence number per save.
   - Switches are `<button role="switch" aria-checked>` with a 44 px row.
   - **Onboarding step 3** (`/onboarding/notifications`) comes after step 2's Add and Skip. It offers Enable notifications (the install sheet on an iPhone tab), and **Continue** goes to Today. It's skippable, as DECISIONS § Phase 3 anticipated.
   - **Deep link.** A notification opens `/today?habit=<id>`. Today scrolls that habit's card into view (no smooth scroll under reduced motion), focuses it once, and drops the parameter so a reload doesn't jump again. An unknown id is ignored.
