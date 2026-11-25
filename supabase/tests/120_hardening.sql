@@ -2,7 +2,7 @@
 -- and an RLS audit sweep over every public table.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(17);
+select plan(18);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -74,6 +74,30 @@ select is(public.export_my_data() -> 'profile' ->> 'username', 'hard_1', 'the ex
 select is(jsonb_array_length(public.export_my_data() -> 'ledger'), 1, 'and only my ledger');
 select pg_temp.as_postgres();
 select is(public.export_my_data(), null, 'with no user there''s nothing to export');
+
+-- ── Account deletion leaves nothing behind (audit L5) ───────────────────────
+insert into public.habits (user_id, title, category) values ('80000001-0000-0000-0000-000000000000', 'H', 'mind');
+insert into public.user_items (user_id, item_id) select '80000001-0000-0000-0000-000000000000', id from public.items where slug = 'neon-hoodie';
+insert into public.posts (id, author_id, body) values ('8a000000-0000-0000-0000-000000000001', '80000001-0000-0000-0000-000000000000', 'bye');
+insert into public.comments (post_id, author_id, body) values ('8a000000-0000-0000-0000-000000000001', '80000002-0000-0000-0000-000000000000', 'hi');
+insert into public.post_likes (post_id, user_id) values ('8a000000-0000-0000-0000-000000000001', '80000002-0000-0000-0000-000000000000');
+insert into public.follows (follower_id, followee_id) values ('80000002-0000-0000-0000-000000000000', '80000001-0000-0000-0000-000000000000');
+insert into public.blocks (blocker_id, blocked_id) values ('80000001-0000-0000-0000-000000000000', '80000002-0000-0000-0000-000000000000');
+delete from auth.users where id = '80000001-0000-0000-0000-000000000000';
+set constraints all immediate;
+select is((
+  (select count(*) from public.profiles where id = '80000001-0000-0000-0000-000000000000')
+  + (select count(*) from public.habits where user_id = '80000001-0000-0000-0000-000000000000')
+  + (select count(*) from public.points_ledger where user_id = '80000001-0000-0000-0000-000000000000')
+  + (select count(*) from public.user_items where user_id = '80000001-0000-0000-0000-000000000000')
+  + (select count(*) from public.equipped_cosmetics where user_id = '80000001-0000-0000-0000-000000000000')
+  + (select count(*) from public.posts where author_id = '80000001-0000-0000-0000-000000000000')
+  + (select count(*) from public.comments where post_id = '8a000000-0000-0000-0000-000000000001')
+  + (select count(*) from public.post_likes where post_id = '8a000000-0000-0000-0000-000000000001')
+  + (select count(*) from public.follows where '80000001-0000-0000-0000-000000000000' in (follower_id, followee_id))
+  + (select count(*) from public.blocks where '80000001-0000-0000-0000-000000000000' in (blocker_id, blocked_id))
+  + (select count(*) from public.notifications_inbox where user_id = '80000001-0000-0000-0000-000000000000'))::int,
+  0, 'deleting the account removes its profile, habits, ledger, items, posts (with their likes and comments), follows, blocks and inbox');
 
 select * from finish();
 rollback;

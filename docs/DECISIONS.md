@@ -611,7 +611,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - The limit is a constant, like the social limits (F3).
 - **H2. `admin_adjust_points` (#83)** is the only `service_role` path into the ledger. It writes the entry and moves `points_balance` in one transaction, under the profile lock. Direct INSERT on `points_ledger` is revoked from `service_role`, and RUNBOOK §7 documents the RPC.
 - **H3. Monitoring.**
-  - `instrumentation.ts` `onRequestError` writes one JSON line per uncaught server error. It logs the message, digest, method, path and route, never headers, cookies or bodies, and Vercel's runtime logs index it.
+  - `instrumentation.ts` `onRequestError` writes one JSON line per uncaught server error. It logs the error name, digest, method, path and route, never messages (they can carry values; audit L1), headers, cookies or bodies, and Vercel's runtime logs index it.
   - That's the plan's "Vercel monitoring" option. Sentry needs an account and a DSN, so it can be added later behind the same hook.
   - `app/(app)/error.tsx` keeps the tab bar on errors. `global-error.tsx` and `not-found.tsx` cover the rest.
 - **H4. Performance.**
@@ -627,6 +627,10 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - `POST /api/account/delete` is same-origin only and takes the user from verified claims. The form has to repeat the username. It then calls `auth.admin.deleteUser`, which cascades through `profiles` to everything the user owns, and signs out.
   - `GET /api/account/export` returns `export_my_data()`, the caller's own rows, as a JSON download. It's same-origin too, like every API route.
   - Settings also has the private-profile switch.
+  - After deletion, the old access token stays valid until it expires (`getClaims` checks it locally), but the account's data is gone, so it reaches nothing (audit L4).
+  - Reports about a deleted user, and other users' inbox rows that name them, keep the dangling id as a moderation trail. The inbox shows "Someone" (audit L6).
+  - Export and delete have no extra throttle. Each is one RPC or call for the signed-in user, and Supabase's API rate limits apply (audit L3).
+  - pgTAP checks that deletion leaves nothing behind across the profile, habits, ledger, items, posts, likes, comments, follows, blocks and inbox.
 - **H6. #102.** The habit form sends `reminders_enabled` only when it was changed in the form, so it can't undo a Settings toggle made while the form was open.
 - **H7. RLS audit.** `120_hardening.sql` checks across the whole schema that:
   - every public table has RLS
