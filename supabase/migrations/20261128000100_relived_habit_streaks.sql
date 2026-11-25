@@ -191,7 +191,7 @@ begin
 
   -- 8. Per-habit streak: advances when the day's count first reaches the
   --    snapshotted target. Every completion of the day stores the pre-day
-  --    state (the pin below enforces it after a relived day), so undoing
+  --    state (the pin below is a backstop; relived days no longer advance it, #85), so undoing
   --    any one of them restores it exactly.
   select * into hs from public.habit_streaks where habit_id = p_habit_id;
   -- Reported as-is unless the target is reached below.
@@ -230,7 +230,7 @@ begin
     on conflict (habit_id) do update
       set current = excluded.current, longest = excluded.longest, last_date = excluded.last_date;
     -- Completions of this day saved the streak as it stood at their insert;
-    -- a relived earlier day (after a move west) may have advanced it since.
+    -- since #85 a relived day can't advance it, so this is only a backstop.
     -- Pin them all to the pre-advance state, which is what undo restores.
     update public.habit_completions
        set habit_current_before = hs.current,
@@ -378,9 +378,14 @@ begin
   -- #85: a relived day (before the floor, uncounted, after the streak's
   -- last day) never advanced the habit streak, so undoing one of its
   -- completions has nothing to restore, and no later day built on it.
+  -- The floor can move after a completion (a move west past midnight), so
+  -- also require that this day really didn't advance it: a relived day
+  -- never sets the habit's last_date to itself.
   if c.local_date < p.engine_floor_date
      and not coalesce(d.counted_for_streak, false)
-     and (p.last_streak_date is null or c.local_date > p.last_streak_date) then
+     and (p.last_streak_date is null or c.local_date > p.last_streak_date)
+     and (select s.last_date from public.habit_streaks s where s.habit_id = c.habit_id)
+         is distinct from c.local_date then
     v_drops := false;
   end if;
   select * into hs from public.habit_streaks where habit_id = c.habit_id;
