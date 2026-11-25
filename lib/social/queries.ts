@@ -148,7 +148,7 @@ export async function loadInbox(): Promise<InboxItem[] | null> {
     .limit(50);
   if (error) return null;
   // Names are read now, not stored: a renamed user's old name could be
-  // claimed by someone else (audit L2). Blocked or unknown → "Someone".
+  // claimed by someone else (audit L2). Unknown → "Someone".
   const actorOf = (r: { payload: unknown }) => {
     const a = ((r.payload ?? {}) as Row).actor_id;
     return typeof a === "string" ? a : null;

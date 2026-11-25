@@ -475,6 +475,9 @@ declare
   v_id uuid;
 begin
   perform public.require_onboarded(v_uid);
+  -- Profile first, then the post: the same order as likes (profile lock in
+  -- the trigger, then the post counter), so the two can't deadlock.
+  perform 1 from public.profiles where id = v_uid for no key update;
   select author_id into v_author from public.posts
   where id = p_post_id and deleted_at is null for no key update;
   if not found then
@@ -489,7 +492,6 @@ begin
   if not public.text_is_clean(v_body) then
     raise exception 'Please keep it friendly' using errcode = 'QX302';
   end if;
-  perform 1 from public.profiles where id = v_uid for no key update;
   if (select count(*) from public.comments where author_id = v_uid and created_at > now() - interval '1 hour')
        >= public.social_limit('comments_hour') then
     raise exception 'You''re commenting too fast' using errcode = 'QX301';
