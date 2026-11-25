@@ -184,13 +184,15 @@ export async function setHabitReminders(
     .update({ reminders_enabled: enabled })
     .eq("id", parsedId.data)
     .eq("user_id", session.userId)
+    // Only active habits are offered (and archived ones get no reminders).
+    .is("archived_at", null)
     .select("id");
   if (error) return fromDb(error);
   if (!data || data.length === 0) {
     return fail("not_found", "That habit doesn't exist.");
   }
+  // Refreshes this page now and the others on their next visit.
   revalidatePath("/settings");
-  revalidateHabits();
   return { ok: true, data: undefined };
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useOptimistic, useState, useTransition } from "react";
+import { useLayoutEffect, useOptimistic, useState, useTransition } from "react";
 import { EnableNotifications } from "@/components/push/EnableNotifications";
 import { Switch } from "@/components/ui/Switch";
 import { setHabitReminders } from "@/lib/habits/actions";
@@ -28,10 +28,16 @@ const hhmm = (t: string) => t.slice(0, 5);
 export function NotificationsCard({
   prefs,
   habits,
+  habitsError = false,
 }: {
   prefs: Prefs;
   habits: ReminderHabit[];
+  /** The habits couldn't be loaded: the rest of the card still works. */
+  habitsError?: boolean;
 }) {
+  // A new server render (revalidation, navigation back under Activity)
+  // replaces local state, as TodayView does (review of PR #101).
+  const [from, setFrom] = useState({ prefs, habits });
   const [saved, setSaved] = useState(prefs);
   // Reducers, so saves in flight together each keep their own change.
   const [optimistic, patchOptimistic] = useOptimistic(
@@ -39,6 +45,11 @@ export function NotificationsCard({
     (s: Prefs, patch: Partial<Prefs>) => ({ ...s, ...patch }),
   );
   const [habitState, setHabitState] = useState(habits);
+  if (from.prefs !== prefs || from.habits !== habits) {
+    setFrom({ prefs, habits });
+    setSaved(prefs);
+    setHabitState(habits);
+  }
   const [optimisticHabits, patchHabit] = useOptimistic(
     habitState,
     (hs: ReminderHabit[], p: { id: string; value: boolean }) =>
@@ -46,6 +57,8 @@ export function NotificationsCard({
   );
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+  // Hidden (not unmounted) on navigation: don't bring back an old alert.
+  useLayoutEffect(() => () => setError(null), []);
 
   function setPref(key: keyof Prefs, value: boolean) {
     setError(null);
@@ -115,7 +128,11 @@ export function NotificationsCard({
         <h3 id="habit-reminders" className="text-sm font-semibold">
           Per habit
         </h3>
-        {withTimes.length === 0 ? (
+        {habitsError ? (
+          <p className="text-muted text-sm">
+            Couldn&apos;t load your habits. Reload to manage their reminders.
+          </p>
+        ) : withTimes.length === 0 ? (
           <p className="text-muted text-sm">
             None of your habits has a reminder time yet. Add one when you{" "}
             <Link href="/habits" className="text-cyan underline">
@@ -129,7 +146,8 @@ export function NotificationsCard({
               <li key={h.id}>
                 <Switch
                   id={`habit-${h.id}`}
-                  label={`${h.icon ? `${h.icon} ` : ""}${h.title}`}
+                  label={h.title}
+                  icon={h.icon}
                   description={h.reminderTimes.map(hhmm).join(", ")}
                   checked={h.remindersEnabled}
                   disabled={off}

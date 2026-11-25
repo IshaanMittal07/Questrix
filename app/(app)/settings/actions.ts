@@ -64,12 +64,17 @@ export async function setNotificationPrefs(
   const userId = claims?.claims?.sub;
   if (!userId) return { ok: false, error: "You're signed out." };
 
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("profiles")
     .update(parsed.data)
-    .eq("id", userId);
+    .eq("id", userId)
+    .select("id");
   if (error) {
     if (error.code === DEADLOCK) return { ok: false, error: RETRY_MESSAGE };
+    return { ok: false, error: "Couldn't save. Try again." };
+  }
+  // No row changed (no profile, or RLS): nothing was saved.
+  if (!data || data.length === 0) {
     return { ok: false, error: "Couldn't save. Try again." };
   }
   revalidatePath("/settings");

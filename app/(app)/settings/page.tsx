@@ -38,7 +38,9 @@ async function SettingsContent() {
   if (!me) return null;
   const [lockedUntil, habits] = await Promise.all([
     timezoneLock(me.profile),
-    listActiveHabits(),
+    // A failure here costs only the per-habit list, not Settings (and
+    // Sign out) as a whole.
+    listActiveHabits().catch(() => null),
   ]);
   return (
     <>
@@ -51,7 +53,8 @@ async function SettingsContent() {
             push_enabled: me.profile.push_enabled,
             streak_saver_enabled: me.profile.streak_saver_enabled,
           }}
-          habits={habits.map((h) => ({
+          habitsError={habits === null}
+          habits={(habits ?? []).map((h) => ({
             id: h.id,
             title: h.title,
             icon: h.icon,
