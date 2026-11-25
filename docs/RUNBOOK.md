@@ -126,7 +126,7 @@ The daily `questrix-push-log-cleanup` job (03:17 UTC) deletes reminder and strea
 
 - **Never expose `net`, `vault` or `cron` through the API** (`[api] schemas` in `supabase/config.toml`, or the dashboard's exposed schemas). pg_net's `net.http_request_queue` holds each queued request's headers, including the bearer secret, and Supabase grants every role access to it. It's safe only because PostgREST can't reach it. A unit test pins the local config.
 
-- **#79's rate limit on `save_push_subscription` must ship first** (security audit S2). Without it, a user can churn garbage endpoints, and every run would spend the app's standing with the push services.
+- **The `save_push_subscription` churn limit** (security audit S2) shipped in Phase 8: 20 saves an hour per user (DECISIONS H1). Without it, a user could churn garbage endpoints, and every run would spend the app's standing with the push services.
 - **Timezone names.** `due_reminders` is one statement for every user. If a tzdata upgrade ever drops a timezone name a profile stores, it would fail for everyone. tzdata keeps backward links, so this is unlikely. If `due_reminders` errors start appearing, check `select distinct timezone from profiles` against `pg_timezone_names`.
 
 ### 6. Testing on a real iPhone (no hosted Supabase)
@@ -159,7 +159,7 @@ Do these once, in order. Nothing here is automated, and no secret ever goes in g
 
 1. Authentication → URL Configuration:
    - Site URL: `https://<your-domain>`.
-   - Redirect URLs: `https://<your-domain>/auth/callback` and `https://<your-domain>/auth/confirm`.
+   - Redirect URLs: `https://<your-domain>/auth/callback**` (the `**` lets `?next=` through) and `https://<your-domain>/auth/confirm`.
 2. Providers:
    - Email: on, with the email-code template (see "Production auth settings" above).
    - Google: on, with the client ID and secret from Google Cloud. In Google, add `https://<ref>.supabase.co/auth/v1/callback` as an authorized redirect URI.
@@ -184,7 +184,7 @@ Do these once, in order. Nothing here is automated, and no secret ever goes in g
 
 ### 4. Reminders (Vault + pg_cron)
 
-Follow "Reminders and push notifications", steps 2 to 5 above, against the production database. Set `app_url` to the deployed origin and `cron_secret` to the same value as `CRON_SECRET`. Then confirm the jobs:
+Follow "Reminders and push notifications", steps 2, 3 and 5 above (step 4 is for pausing later), against the production database. Set `app_url` to the deployed origin and `cron_secret` to the same value as `CRON_SECRET`. Then confirm the jobs:
 
 ```sql
 select jobname, schedule, active from cron.job order by jobname;
