@@ -1152,6 +1152,50 @@ export type Database = {
           },
         ];
       };
+      social_events: {
+        Row: {
+          created_at: string;
+          id: number;
+          kind: string;
+          user_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          id?: never;
+          kind: string;
+          user_id: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: never;
+          kind?: string;
+          user_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "social_events_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "social_events_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "social_events_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       streak_milestones_awarded: {
         Row: {
           awarded_on: string;
@@ -1350,6 +1394,10 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: undefined;
       };
+      cleanup_social_events: {
+        Args: Record<PropertyKey, never>;
+        Returns: undefined;
+      };
       complete_habit: { Args: { p_habit_id: string }; Returns: Json };
       complete_habit_at: {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
@@ -1429,6 +1477,7 @@ export type Database = {
       habits_lock: { Args: { p_user_id: string }; Returns: undefined };
       invoke_reminders: { Args: Record<PropertyKey, never>; Returns: number };
       is_blocked_between: { Args: { a: string; b: string }; Returns: boolean };
+      is_blocked_with_me: { Args: { p_other: string }; Returns: boolean };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
       jsonb_num_between: {
         Args: { hi: number; lo: number; v: Json; whole: boolean };
@@ -1436,6 +1485,13 @@ export type Database = {
       };
       level_for: { Args: { p_lifetime: number }; Returns: number };
       local_date_in: { Args: { p_at: string; p_tz: string }; Returns: string };
+      my_blocked_users: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          user_id: string;
+          username: string;
+        }[];
+      };
       notify: {
         Args: {
           p_actor: string;
@@ -1474,6 +1530,15 @@ export type Database = {
       };
       snapshot_add_habit: {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
+        Returns: undefined;
+      };
+      social_event: {
+        Args: {
+          p_kind: string;
+          p_limit: number;
+          p_uid: string;
+          p_window: string;
+        };
         Returns: undefined;
       };
       social_limit: { Args: { p_kind: string }; Returns: number };
