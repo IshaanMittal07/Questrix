@@ -7,7 +7,7 @@
 -- profiles_validate would, then "now" runs back. R5 makes a real change.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(53);
+select plan(55);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -186,22 +186,23 @@ select ok((select (j ->> 'relived')::boolean and not (j ->> 'at_risk')::boolean
   'R6: relived at 20:00, not at risk, the habit streak still shown');
 select pg_temp.done(6, 3);
 create temp table r6a as select pg_temp.done(6, 3, 1) as j;
-select ok(((select j from r6a) ->> 'habit_streak')::int = 3
+select ok(((select j from r6a) ->> 'habit_streak')::int = 2
+          and (select current = 2 and last_date = pg_temp.day(2) from public.habit_streaks where habit_id = pg_temp.h(6))
           and (pg_temp.prof(6)).current_streak = 2 and (pg_temp.prof(6)).last_streak_date = pg_temp.day(2)
           and not pg_temp.counted(6, pg_temp.day(3)),
-  'R6: reaching the target on a relived day advances the habit streak only (DECISIONS D3)');
+  'R6: reaching the target on a relived day advances neither streak (#85)');
 select ok(((select j from r6a) ->> 'points_awarded')::int > 0 and pg_temp.balance_ok(6),
   'R6: the relived points are in the ledger');
-select is((pg_temp.today(6, 4) -> 'habits' -> 0 ->> 'habit_streak')::int, 3,
-  'R6: the reached day shows the habit streak carried by the relived day');
+select is((pg_temp.today(6, 4) -> 'habits' -> 0 ->> 'habit_streak')::int, 0,
+  'R6: the reached day sees the habit streak broken: the relived day doesn''t bridge it (#85)');
 create temp table r6 as select 1 as occ, pg_temp.done(6, 4) as j;
 insert into r6 select 2, pg_temp.done(6, 4, 1);
 select ok(((select j from r6 where occ = 2) ->> 'current_streak')::int = 1
-          and ((select j from r6 where occ = 2) ->> 'habit_streak')::int = 4,
-  'R6: on the reached day the missed day breaks the global streak; the habit streak goes on');
-select ok((select bool_and(habit_current_before = 3 and habit_last_date_before = pg_temp.day(3))
+          and ((select j from r6 where occ = 2) ->> 'habit_streak')::int = 1,
+  'R6: on the reached day the missed day breaks both streaks (#85)');
+select ok((select bool_and(habit_current_before = 2 and habit_last_date_before = pg_temp.day(2))
            from public.habit_completions where habit_id = pg_temp.h(6) and local_date = pg_temp.day(4)),
-  'R6: both reached-day completions saved the post-relived habit state');
+  'R6: both reached-day completions saved the habit state from before the relived day');
 select lives_ok($$
   select public.undo_completion_at(pg_temp.u(6), ((select j from r6 where occ = 2) ->> 'completion_id')::uuid, pg_temp.t(4, 2));
   select public.undo_completion_at(pg_temp.u(6), ((select j from r6 where occ = 1) ->> 'completion_id')::uuid, pg_temp.t(4, 2))$$,
@@ -210,9 +211,14 @@ select ok((pg_temp.prof(6)).current_streak = 2 and (pg_temp.prof(6)).last_streak
           and (pg_temp.prof(6)).streak_run_started = pg_temp.day(1)
           and not pg_temp.counted(6, pg_temp.day(4)) and not pg_temp.counted(6, pg_temp.day(3)),
   'R6: undo restores the pre-reached-day streak; neither day is counted');
-select ok((select current = 3 and longest = 3 and last_date = pg_temp.day(3)
+select ok((select current = 2 and longest = 2 and last_date = pg_temp.day(2)
            from public.habit_streaks where habit_id = pg_temp.h(6)) and pg_temp.balance_ok(6),
-  'R6: the habit streak goes back to the relived day''s state; the ledger matches');
+  'R6: the habit streak goes back to day 2; the ledger matches');
+select lives_ok($$select public.undo_completion_at(pg_temp.u(6), ((select j from r6a) ->> 'completion_id')::uuid, pg_temp.t(3, 2))$$,
+  'R6: a relived-day completion can still be undone (no false QX108, #85)');
+select ok((select current = 2 and last_date = pg_temp.day(2) from public.habit_streaks where habit_id = pg_temp.h(6))
+          and pg_temp.balance_ok(6),
+  'R6: and that undo leaves the habit streak alone');
 select ok((pg_temp.today(6, 3) ->> 'relived')::boolean,
   'R6: with the reached day undone, the missed day is relived again');
 create temp table gt6r as select pg_temp.today(6, 4) as j;
