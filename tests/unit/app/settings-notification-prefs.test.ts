@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /** Every builder call on the fake client, in order. */
 const calls: Array<[string, ...unknown[]]> = [];
-let result: { error: unknown } = { error: null };
+const ROW = [{ id: "u1" }];
+let result: { data: unknown; error: unknown } = { data: ROW, error: null };
 let claims: { claims?: { sub?: string } } | null = { claims: { sub: "u1" } };
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -15,9 +16,14 @@ vi.mock("@/lib/supabase/server", () => ({
         update: (v: unknown) => {
           calls.push(["update", v]);
           return {
-            eq: async (col: string, val: unknown) => {
+            eq: (col: string, val: unknown) => {
               calls.push(["eq", col, val]);
-              return result;
+              return {
+                select: async (cols: string) => {
+                  calls.push(["select", cols]);
+                  return result;
+                },
+              };
             },
           };
         },
@@ -34,7 +40,7 @@ const GENERIC = { ok: false, error: "Couldn't save. Try again." };
 
 beforeEach(() => {
   calls.length = 0;
-  result = { error: null };
+  result = { data: ROW, error: null };
   claims = { claims: { sub: "u1" } };
   revalidatePath.mockReset();
 });
@@ -77,6 +83,7 @@ describe("setNotificationPrefs", () => {
       ["from", "profiles"],
       ["update", { push_enabled: false }],
       ["eq", "id", "u1"],
+      ["select", "id"],
     ]);
     expect(revalidatePath).toHaveBeenCalledExactlyOnceWith("/settings");
   });
@@ -96,7 +103,10 @@ describe("setNotificationPrefs", () => {
   });
 
   it("asks to retry after a deadlock, without revalidating", async () => {
-    result = { error: { code: "40P01", message: "deadlock detected" } };
+    result = {
+      data: null,
+      error: { code: "40P01", message: "deadlock detected" },
+    };
     expect(await setNotificationPrefs({ push_enabled: true })).toEqual({
       ok: false,
       error: "Something else was saving at the same time. Try again.",
@@ -109,8 +119,20 @@ describe("setNotificationPrefs", () => {
     ["a QX001 server message", { code: "QX001", message: "Too many" }],
     ["an error without a code", { message: "boom" }],
   ])("maps %s to a generic message, never raw SQL", async (_, error) => {
-    result = { error };
+    result = { data: null, error };
     expect(await setNotificationPrefs({ push_enabled: true })).toEqual(GENERIC);
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no rows (no profile, or hidden by RLS)", []],
+    ["null data", null],
+  ])("fails without revalidating when %s changed", async (_, data) => {
+    result = { data, error: null };
+    expect(await setNotificationPrefs({ streak_saver_enabled: true })).toEqual(
+      GENERIC,
+    );
+    expect(calls.at(-1)).toEqual(["select", "id"]);
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 });
