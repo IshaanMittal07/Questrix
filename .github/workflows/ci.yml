@@ -82,6 +82,9 @@ jobs:
           {
             echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL"
             echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY"
+            # The local stack's well-known demo service key (not a secret):
+            # the account-deletion E2E calls auth.admin.deleteUser.
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
             echo "NEXT_PUBLIC_APP_URL=http://localhost:3000"
             # A real public VAPID key (public by design; its private half was
             # discarded): the notifications E2E needs a well-formed one.
