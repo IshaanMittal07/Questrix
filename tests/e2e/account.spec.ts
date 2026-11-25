@@ -19,16 +19,21 @@ test("export my data, then delete the account", async ({ page }, testInfo) => {
 
   await page.goto("/settings");
   const download = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Export my data (JSON)" }).click();
+  await page
+    .getByRole("link", { name: "Export my data (JSON)" })
+    .first()
+    .click();
   const file = await (await download).path();
   const data = JSON.parse(readFileSync(file, "utf8"));
   expect(data.profile.username).toBe(username);
   expect(Array.isArray(data.habits)).toBe(true);
 
   // The button stays disabled until the username is typed exactly.
-  await page.getByText("Delete account", { exact: true }).click();
-  const confirm = page.getByLabel("Type your username to confirm");
-  const del = page.getByRole("button", { name: "Delete my account forever" });
+  // Scoped to the visible card: React streaming can briefly hold a hidden copy.
+  const card = page.getByRole("region", { name: "Privacy & data" }).first();
+  await card.locator("summary").click();
+  const confirm = card.getByLabel("Type your username to confirm");
+  const del = card.getByRole("button", { name: "Delete my account forever" });
   await confirm.fill("not-my-name");
   await expect(del).toBeDisabled();
   await confirm.fill(username);
