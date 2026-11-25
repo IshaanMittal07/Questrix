@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { SignOutButton } from "@/components/push/SignOutButton";
+import { AccountCard } from "@/components/settings/AccountCard";
 import { BlockedList } from "@/components/social/BlockedList";
 import { Card } from "@/components/ui/Card";
 import { loadBlocked } from "@/lib/social/queries";
@@ -64,6 +65,12 @@ async function SettingsContent() {
             reminderTimes: h.reminder_times,
             remindersEnabled: h.reminders_enabled,
           }))}
+        />
+      </Card>
+      <Card>
+        <AccountCard
+          username={me.profile.username}
+          isPrivate={me.profile.is_private}
         />
       </Card>
       <Card>
