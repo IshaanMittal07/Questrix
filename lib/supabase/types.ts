@@ -1389,6 +1389,10 @@ export type Database = {
       };
     };
     Functions: {
+      admin_adjust_points: {
+        Args: { p_delta: number; p_note?: string; p_user_id: string };
+        Returns: number;
+      };
       archive_habit: { Args: { p_habit_id: string }; Returns: undefined };
       cleanup_push_logs: {
         Args: Record<PropertyKey, never>;
@@ -1450,6 +1454,7 @@ export type Database = {
         Args: { p_item_id: string; p_slot: string };
         Returns: undefined;
       };
+      export_my_data: { Args: Record<PropertyKey, never>; Returns: Json };
       get_feed: {
         Args: {
           p_author?: string;
