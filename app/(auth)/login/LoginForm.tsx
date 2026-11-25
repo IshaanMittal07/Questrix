@@ -5,8 +5,16 @@ import { useState, type FormEvent } from "react";
 import { TURNSTILE_SITE_KEY, Turnstile } from "@/components/auth/Turnstile";
 import { Button } from "@/components/ui/Button";
 import { authCallbackUrl, nextFromSearch } from "@/lib/auth/next";
-import { createClient } from "@/lib/supabase/client";
-import { emailSchema } from "@/lib/validation/profile";
+
+/**
+ * supabase-js and zod load on first use, not with the page: together they
+ * are most of the login page's JavaScript, and the form needs neither until
+ * it's submitted (DECISIONS H4, Lighthouse TBT).
+ */
+const supabase = async () =>
+  (await import("@/lib/supabase/client")).createClient();
+const emailSchema = async () =>
+  (await import("@/lib/validation/profile")).emailSchema;
 
 type Status =
   | { kind: "idle" }
@@ -32,7 +40,7 @@ export function LoginForm() {
 
   async function sendMagicLink(e: FormEvent) {
     e.preventDefault();
-    const parsed = emailSchema.safeParse(email);
+    const parsed = (await emailSchema()).safeParse(email);
     if (!parsed.success) {
       setStatus({ kind: "error", message: parsed.error.issues[0].message });
       return;
@@ -42,7 +50,9 @@ export function LoginForm() {
       return;
     }
     setStatus({ kind: "sending" });
-    const { error } = await createClient().auth.signInWithOtp({
+    const { error } = await (
+      await supabase()
+    ).auth.signInWithOtp({
       email: parsed.data,
       options: {
         emailRedirectTo: callbackUrl(),
@@ -60,7 +70,9 @@ export function LoginForm() {
 
   async function signInWithGoogle() {
     setStatus({ kind: "sending" });
-    const { error } = await createClient().auth.signInWithOAuth({
+    const { error } = await (
+      await supabase()
+    ).auth.signInWithOAuth({
       provider: "google",
       options: { redirectTo: callbackUrl() },
     });
@@ -161,7 +173,9 @@ function CodeStep({ email, onBack }: { email: string; onBack: () => void }) {
     }
     setBusy(true);
     setError(null);
-    const { error } = await createClient().auth.verifyOtp({
+    const { error } = await (
+      await supabase()
+    ).auth.verifyOtp({
       email,
       token,
       type: "email",
