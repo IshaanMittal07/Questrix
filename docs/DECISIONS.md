@@ -560,13 +560,13 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
 ## Phase 7
 
 - **F1. Visibility.**
-  - `posts` and `comments` are readable when they aren't deleted and neither user has blocked the other. The check is `is_blocked_between`, a SECURITY DEFINER function, because `blocks` is owner-only.
+  - `posts` and `comments` are readable when they aren't deleted and neither user has blocked the other. The check is `is_blocked_with_me(other)`, a SECURITY DEFINER function bound to the caller, because `blocks` is owner-only. The two-argument `is_blocked_between` is internal; granting it would reveal other people's blocks (audit M1).
   - The feed (`get_feed`) runs as the caller, so the posts policy applies. Author names come from `public_profiles`, because `profiles` shows each user only their own row.
   - Comments also need their post to be visible.
   - Liking a hidden or blocked post fails the insert policy (`42501`).
 - **F2. No client writes to posts or comments.** Plan §5 gives authors an `update (body, deleted_at)` grant. We drop it: posts and comments are created and soft-deleted only through `create_post`, `delete_post`, `create_comment` and `delete_comment`. That keeps `attachment` and the counters untouchable, and avoids a policy edge where a soft-deleted row fails the select policy on its own `UPDATE … RETURNING`. Posts can't be edited, which matches the screens in plan §9.
-- **F3. Rate limits (plan §6.6)** live in `social_limit()` as constants, because `economy_config` validates a fixed set of keys. Each check takes the profile row `for no key update` first, so a user's concurrent posts can't race past the count.
-  - Follows: checked in a BEFORE INSERT trigger, along with the block and onboarding checks.
+- **F3. Rate limits (plan §6.6)** live in `social_limit()`, including likes at 300 an hour, as constants, because `economy_config` validates a fixed set of keys. Each check takes the profile row `for no key update` first, so a user's concurrent posts can't race past the count.
+  - Follows and likes: checked in BEFORE INSERT triggers, along with the block and onboarding checks. These count attempts in `social_events`, a server-only table pruned daily by pg_cron, not surviving rows. Unfollowing or unliking deletes the row, so a loop would otherwise never reach the limit (audit H1/H2).
   - Posts, comments and reports: checked in their RPCs.
 - **F4. Word filter.**
   - `text_is_clean()` in SQL is authoritative. `lib/moderation/blocklist.ts` mirrors it for instant feedback.
@@ -575,16 +575,30 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
 - **F5. Counters and the inbox.**
   - `like_count` is kept by a trigger on `post_likes`. `comment_count` is kept by the comment RPCs.
   - `notify()` writes the inbox for likes, comments and follows. It never notifies you about yourself, and never across a block.
+  - The same (type, actor, post) is sent at most once a day.
+  - The payload stores `actor_id`, and the name is read through `public_profiles` when the inbox is shown, because a renamed user's old name could be claimed by someone else (audit L2).
   - The Activity page lists the inbox and marks it read.
   - The `milestone` type is reserved: milestones already show as a toast and confetti on Today.
-- **F6. Reports.** You can't report yourself. A post is auto-hidden (`deleted_at`) once 5 distinct reporters have open reports on it. The reports stay for review.
+- **F6. Reports.** You can't report yourself. A post is auto-hidden (`deleted_at`) once 5 distinct reporters have open reports on it.
+  - Only accounts at least 3 days old count, so a handful of fresh sign-ups can't censor a post (audit M3).
+  - The post row is locked while counting, so concurrent reports can't race past the threshold.
+  - The reports stay for review.
 - **F7. Public profile.** `/u/[username]` uses `get_public_profile`, a SECURITY DEFINER RPC. This settles the Phase 2 `public_profiles` scan note.
   - An unknown user, a user who hasn't finished onboarding, and a block either way all return the same not-found.
-  - Private profiles show the username, avatar, title and posts, but null stats and no heatmap.
+  - Because a blocked profile can't be opened, Settings lists your blocks, with Unblock (`my_blocked_users`).
+  - Private profiles show the username, avatar, title and posts, but null stats, no heatmap and no `today`, which would hint at the user's timezone (audit L4).
 - **F8. Leaderboard.**
   - `leaderboard_weekly` is a materialized view of this ISO week's (UTC) completion, milestone and undo points. It leaves out private profiles and users who haven't onboarded.
   - It's refreshed `concurrently` by pg_cron every 10 minutes through `refresh_leaderboard()`, which only `service_role` can run.
-  - `get_leaderboard` returns the top 100 and the caller's rank. The Friends scope lists you plus the people you follow, but keeps the global ranks.
-- **F9. Social proof (plan §8.2 rule 5).** `popular_templates_among_following()` returns template keys that at least 2 people you follow use. Using two as the floor means a count can't reveal one person's habit. Those keys add the +10 "Popular with friends" score.
+  - Clients can't read the view directly. `get_leaderboard` re-checks privacy, ranks over the whole board, and then hides blocked users (audit L1). It returns the top 100 and the caller's rank.
+  - The Friends scope lists you plus the people you follow, but keeps the global ranks.
+- **F9. Social proof (plan §8.2 rule 5).** `popular_templates_among_following()` returns template keys used by at least 2 **mutual** follows with **public** profiles. Those keys add the +10 "Popular with friends" score.
+  - With one-way follows, someone could follow a target plus a sock-puppet account that uses every template, which would isolate the target's habits (audit M2).
+  - Residual risk: a mutual follower can still make the same deduction. That needs the target to follow the attacker back, and only reveals template keys from public profiles. Accepted.
 - **F10. Realtime.** `posts` is in the `supabase_realtime` publication, so Realtime applies RLS to what each user receives. A new post only shows a "New posts" button; the feed is never streamed. The public profile doesn't subscribe.
+  - Accepted costs (audit L3):
+    - Counter UPDATEs are published too, and checked per subscriber.
+    - The hard DELETEs from account deletion broadcast the old id.
+  - If load grows, move to a trigger that broadcasts INSERTs only.
+  - The weekly summary is off by default in the composer, because it shares the streak and level that a private profile hides.
 - **F11. E2E data.** The social E2E inserts older posts as postgres, spaced an hour or more apart so the hourly limit still lets it post. It tests pagination on Following, because Everyone holds other test users' posts.
