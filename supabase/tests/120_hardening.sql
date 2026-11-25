@@ -2,7 +2,7 @@
 -- and an RLS audit sweep over every public table.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(21);
+select plan(23);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -72,6 +72,10 @@ select ok(not has_function_privilege('anon', 'public.export_my_data()', 'execute
 select pg_temp.as_user('80000001-0000-0000-0000-000000000000');
 select is(public.export_my_data() -> 'profile' ->> 'username', 'hard_1', 'the export holds my profile');
 select is(jsonb_array_length(public.export_my_data() -> 'ledger'), 1, 'and only my ledger');
+select ok((select bool_and(public.export_my_data() ? k) from unnest(array['daily_progress', 'streak_milestones',
+             'equipped', 'likes', 'blocked']) k),
+  'the export also covers daily progress, milestones, equipped items, likes and blocks');
+select is(public.export_my_data() -> 'equipped' ->> 'outfit', 'starter-tee', 'with equipped items by slug');
 select pg_temp.as_postgres();
 select is(public.export_my_data(), null, 'with no user there''s nothing to export');
 
