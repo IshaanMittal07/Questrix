@@ -54,7 +54,10 @@ export function AccountCard({
         </a>
       </Button>
 
-      <details className="rounded-xl border border-white/10 p-3">
+      <details
+        open={!!deleteState}
+        className="rounded-xl border border-white/10 p-3"
+      >
         <summary className="text-danger min-h-11 cursor-pointer content-center font-semibold">
           Delete account
         </summary>

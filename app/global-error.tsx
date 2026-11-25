@@ -1,12 +1,18 @@
 "use client";
 
+import { useEffect } from "react";
+
 /** Last-resort boundary: replaces the root layout, so it brings its own html. */
 export default function GlobalError({
+  error,
   retry,
 }: {
   error: unknown;
   retry: () => void;
 }) {
+  useEffect(() => {
+    console.error(error);
+  }, [error]);
   return (
     <html lang="en">
       <body
