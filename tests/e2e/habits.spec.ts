@@ -103,6 +103,6 @@ test("create, edit, reorder, archive and restore habits", async ({
   // An unknown or malformed id shows the not-found page, not a crash.
   await page.goto("/habits/not-a-uuid/edit");
   await expect(
-    page.getByText("This page could not be found.").first(),
+    page.getByRole("heading", { name: "Not found" }).first(),
   ).toBeVisible();
 });
