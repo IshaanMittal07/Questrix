@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -47,7 +53,7 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     ).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("link", { name: "Skip for now" })).toHaveAttribute(
       "href",
-      "/today",
+      "/onboarding/notifications",
     );
   });
 
@@ -81,7 +87,7 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     await user.click(screen.getByRole("checkbox", { name: /Floss/ }));
     await user.click(screen.getByRole("button", { name: "Add 2 habits" }));
     expect(addStarterHabits).toHaveBeenCalledWith(["meditate", "floss"]);
-    expect(push).toHaveBeenCalledWith("/today");
+    expect(push).toHaveBeenCalledWith("/onboarding/notifications");
   });
 
   it("shows a server error and stays", async () => {
@@ -160,7 +166,9 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(push).not.toHaveBeenCalled();
 
     resolve({ ok: true, data: { count: 1 } });
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/today"));
+    await vi.waitFor(() =>
+      expect(push).toHaveBeenCalledWith("/onboarding/notifications"),
+    );
   });
 
   it("clears a server error when the picks change", async () => {
@@ -175,6 +183,8 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     await user.click(boxes[0]);
     await user.click(screen.getByRole("button", { name: "Add 1 habit" }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
+    // The alert can land before the transition ends; picks are locked till then.
+    await waitFor(() => expect(boxes[1]).not.toHaveAttribute("aria-disabled"));
     await user.click(boxes[1]);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
@@ -252,7 +262,9 @@ describe("StarterHabitsForm", { timeout: 20_000 }, () => {
     expect(fireEvent.click(skip)).toBe(false);
 
     resolve({ ok: true, data: { count: 1 } });
-    await vi.waitFor(() => expect(push).toHaveBeenCalledWith("/today"));
+    await vi.waitFor(() =>
+      expect(push).toHaveBeenCalledWith("/onboarding/notifications"),
+    );
   });
 
   it("skips unknown suggestion keys", () => {

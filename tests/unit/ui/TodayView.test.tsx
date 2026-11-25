@@ -1025,3 +1025,115 @@ describe("TodayView", () => {
     });
   });
 });
+
+describe("TodayView deep link (?habit=<id>)", () => {
+  let scrollIntoView: ReturnType<typeof vi.fn>;
+  let reduceMotion = false;
+  let replaceState: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    reduceMotion = false;
+    scrollIntoView = vi.fn();
+    // jsdom has neither scrollIntoView nor matchMedia.
+    Element.prototype.scrollIntoView =
+      scrollIntoView as unknown as Element["scrollIntoView"];
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)" && reduceMotion,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })),
+    );
+    replaceState = vi.spyOn(window.history, "replaceState");
+  });
+
+  afterEach(() => {
+    replaceState.mockRestore();
+    window.history.replaceState(null, "", "/");
+    // @ts-expect-error -- remove the test double from jsdom's prototype.
+    delete Element.prototype.scrollIntoView;
+    vi.unstubAllGlobals();
+  });
+
+  const visit = (search: string) =>
+    window.history.replaceState({ k: "nav" }, "", `/today${search}`);
+
+  it("scrolls the habit's card into view, focuses it, and drops the param", () => {
+    visit("?habit=h2&tab=x");
+    replaceState.mockClear();
+    renderView(day());
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    expect(scrollIntoView.mock.contexts[0]).toBe(card("h2"));
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: "center",
+      behavior: "smooth",
+    });
+    expect(document.activeElement).toBe(card("h2").querySelector("button"));
+    expect(replaceState).toHaveBeenCalledOnce();
+    // History state is kept; only the habit param goes.
+    expect(replaceState.mock.calls[0]![0]).toEqual({ k: "nav" });
+    expect(window.location.pathname).toBe("/today");
+    expect(window.location.search).toBe("?tab=x");
+  });
+
+  it("scrolls without animation under prefers-reduced-motion", () => {
+    reduceMotion = true;
+    visit("?habit=h1");
+    renderView(day());
+    expect(scrollIntoView).toHaveBeenCalledWith({
+      block: "center",
+      behavior: "auto",
+    });
+    expect(document.activeElement).toBe(card("h1").querySelector("button"));
+    expect(window.location.search).toBe("");
+  });
+
+  it("only jumps once: a re-render doesn't scroll again", () => {
+    visit("?habit=h1");
+    const { rerender } = renderView(day());
+    rerender(day({ points_balance: 1300 }));
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+  });
+
+  it("ignores an unknown id without throwing, but still drops the param", () => {
+    visit("?habit=nope");
+    replaceState.mockClear();
+    expect(() => renderView(day())).not.toThrow();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+    expect(replaceState).toHaveBeenCalledOnce();
+    expect(window.location.search).toBe("");
+  });
+
+  it("doesn't match a selector-like id", () => {
+    visit(`?habit=${encodeURIComponent('h1"],[data-habit')}`);
+    expect(() => renderView(day())).not.toThrow();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("does nothing without the param", () => {
+    visit("?tab=x");
+    replaceState.mockClear();
+    renderView(day());
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(replaceState).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(document.body);
+    expect(window.location.search).toBe("?tab=x");
+  });
+
+  it("works where scrollIntoView and matchMedia are missing", () => {
+    // @ts-expect-error -- simulate an engine without it.
+    delete Element.prototype.scrollIntoView;
+    vi.unstubAllGlobals();
+    const mm = window.matchMedia;
+    // @ts-expect-error -- jsdom has none; make sure of it.
+    delete window.matchMedia;
+    visit("?habit=h2");
+    expect(() => renderView(day())).not.toThrow();
+    expect(document.activeElement).toBe(card("h2").querySelector("button"));
+    if (mm) window.matchMedia = mm;
+  });
+});

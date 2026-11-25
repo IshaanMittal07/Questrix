@@ -33,16 +33,24 @@ export function NotificationsCard({
   habits: ReminderHabit[];
 }) {
   const [saved, setSaved] = useState(prefs);
-  const [optimistic, setOptimistic] = useOptimistic(saved);
+  // Reducers, so saves in flight together each keep their own change.
+  const [optimistic, patchOptimistic] = useOptimistic(
+    saved,
+    (s: Prefs, patch: Partial<Prefs>) => ({ ...s, ...patch }),
+  );
   const [habitState, setHabitState] = useState(habits);
-  const [optimisticHabits, setOptimisticHabits] = useOptimistic(habitState);
+  const [optimisticHabits, patchHabit] = useOptimistic(
+    habitState,
+    (hs: ReminderHabit[], p: { id: string; value: boolean }) =>
+      hs.map((h) => (h.id === p.id ? { ...h, remindersEnabled: p.value } : h)),
+  );
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
 
   function setPref(key: keyof Prefs, value: boolean) {
     setError(null);
     startTransition(async () => {
-      setOptimistic({ ...saved, [key]: value });
+      patchOptimistic({ [key]: value });
       const res = await setNotificationPrefs({ [key]: value }).catch(() => ({
         ok: false as const,
         error: "Couldn't save. Try again.",
@@ -55,11 +63,7 @@ export function NotificationsCard({
   function setHabit(id: string, value: boolean) {
     setError(null);
     startTransition(async () => {
-      setOptimisticHabits(
-        habitState.map((h) =>
-          h.id === id ? { ...h, remindersEnabled: value } : h,
-        ),
-      );
+      patchHabit({ id, value });
       const res = await setHabitReminders(id, value).catch(() => ({
         ok: false as const,
         error: "Couldn't save. Try again.",
