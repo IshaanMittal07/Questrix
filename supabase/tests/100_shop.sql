@@ -1,7 +1,7 @@
 -- Phase 6: purchase_item and equip_item (plan §12 Phase 6 acceptance).
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(40);
+select plan(44);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -46,7 +46,7 @@ select is((select count(*)::int from public.items where category = 'background')
 select is((select count(*)::int from public.items where category = 'border'), 6, '6 borders');
 select is((select price from public.items where slug = 'streak-freeze'), 400, 'Streak Freeze costs 400');
 select is((select count(*)::int from public.items where not is_default and is_active and (
-    (rarity = 'common' and price not between 150 and 400) or (rarity = 'rare' and price not between 500 and 900)
+    (rarity = 'common' and category <> 'consumable' and price not between 150 and 300) or (rarity = 'rare' and price not between 500 and 900)
     or (rarity = 'epic' and price not between 1500 and 2500) or (rarity = 'legendary' and price not between 5000 and 8000))),
   0, 'every paid price sits in its rarity band');
 
@@ -55,6 +55,13 @@ select ok(not has_function_privilege('anon', 'public.purchase_item(uuid)', 'exec
 select ok(has_function_privilege('authenticated', 'public.purchase_item(uuid)', 'execute'), 'authenticated can');
 select ok(not has_table_privilege('authenticated', 'public.user_items', 'insert'), 'clients can''t insert user_items');
 select ok(not has_table_privilege('authenticated', 'public.equipped_cosmetics', 'update'), 'clients can''t update equipped_cosmetics');
+
+-- Concurrency (DECISIONS S1): two purchases at once can't both pass the
+-- balance check because the profile row lock serialises them. pgTAP runs in
+-- one session, so it pins the lock; the two-session run is in S1.
+select ok(pg_get_functiondef('public.purchase_item(uuid)'::regprocedure)
+          ~ 'from public\.profiles where id = v_uid for no key update',
+  'purchase_item locks the profile row before any check');
 
 -- ── Refusals ─────────────────────────────────────────────────────────────────
 select set_config('role', 'authenticated', true);
@@ -106,6 +113,22 @@ select ok(not exists (select 1 from public.user_items where item_id = pg_temp.it
 select is((select points_balance from public.profiles where id = '60000001-0000-0000-0000-000000000000'),
           (select sum(delta)::int from public.points_ledger where user_id = '60000001-0000-0000-0000-000000000000'),
   'balance still equals the ledger sum');
+
+-- ── Audit L1: freezes an undo could hand back count toward the cap ─────────
+select pg_temp.as_postgres();
+update public.profiles set streak_freezes = 1 where id = '60000001-0000-0000-0000-000000000000';
+insert into public.daily_progress (user_id, local_date, completed_count, counted_for_streak, streak_freezes_used)
+values ('60000001-0000-0000-0000-000000000000', (now() at time zone 'UTC')::date, 1, true, 1);
+select pg_temp.as_user('60000001-0000-0000-0000-000000000000');
+select throws_ok($$select public.purchase_item(pg_temp.item('streak-freeze'))$$, 'QX204', null,
+  'a freeze is refused while today''s undo could restore one up to the cap');
+select pg_temp.as_postgres();
+update public.daily_progress set local_date = local_date - 1
+ where user_id = '60000001-0000-0000-0000-000000000000';
+select pg_temp.as_user('60000001-0000-0000-0000-000000000000');
+select is((public.purchase_item(pg_temp.item('streak-freeze')) ->> 'streak_freezes')::int, 2,
+  'a past day''s spent freeze doesn''t count (it can''t be undone)');
+select is(pg_temp.bal('60000001-0000-0000-0000-000000000000'), 0, 'and it was paid for');
 
 -- ── equip_item ───────────────────────────────────────────────────────────────
 select pg_temp.as_user('60000001-0000-0000-0000-000000000000');

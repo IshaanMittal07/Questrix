@@ -77,6 +77,7 @@ declare
   p public.profiles%rowtype;
   v_item public.items%rowtype;
   v_max int;
+  v_pending int;
 begin
   if v_uid is null then
     raise exception 'Not signed in' using errcode = '28000';
@@ -104,7 +105,14 @@ begin
       raise exception 'Unknown consumable' using errcode = '22023';
     end if;
     v_max := (public.economy_value('streak_freezes_max'))::int;
-    if p.streak_freezes >= v_max then
+    -- Undo can hand back freezes today's completions spent (capped at the
+    -- max), so count those too: otherwise buy-then-undo would cap away a
+    -- freeze the user paid for (audit L1). Only today's day can be undone.
+    select coalesce(d.streak_freezes_used, 0) into v_pending
+    from public.daily_progress d
+    where d.user_id = v_uid
+      and d.local_date = (now() at time zone p.timezone)::date;
+    if p.streak_freezes + coalesce(v_pending, 0) >= v_max then
       raise exception 'You already hold % streak freezes', v_max using errcode = 'QX204';
     end if;
   elsif exists (select 1 from public.user_items ui
