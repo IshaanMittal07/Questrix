@@ -36,6 +36,14 @@ async function installedWithFakePush(page: Page) {
           } as MediaQueryList)
         : realMatchMedia(query);
     Object.defineProperty(navigator, "standalone", { get: () => true });
+    // Notification permission as an allowed, installed app sees it. CI's
+    // headless Chromium reports "denied" after a reload even with
+    // grantPermissions, so the state is faked here; asking only inside the
+    // tap is covered by the unit tests (EnableNotifications, client).
+    Object.defineProperty(Notification, "permission", {
+      get: () => "granted",
+    });
+    Notification.requestPermission = async () => "granted";
 
     type Stored = { endpoint: string; key: number[] };
     const read = (): Stored | null => {
@@ -71,8 +79,9 @@ async function installedWithFakePush(page: Page) {
     proto.subscribe = async function (opts: {
       applicationServerKey: ArrayBuffer | Uint8Array;
     }) {
+      const raw = opts.applicationServerKey;
       const key = Array.from(
-        new Uint8Array(opts.applicationServerKey as ArrayBuffer),
+        raw instanceof Uint8Array ? raw : new Uint8Array(raw),
       );
       const s = {
         endpoint: `https://fcm.googleapis.com/fcm/send/e2e-${crypto.randomUUID()}`,
@@ -93,6 +102,24 @@ async function expectNoOverflow(page: Page) {
   );
   expect(overflow).toBeLessThanOrEqual(0);
 }
+
+/** A Server Action's response (the switches save through them). */
+const actionDone = (page: Page) =>
+  page.waitForResponse(
+    (r) =>
+      r.request().method() === "POST" &&
+      Boolean(r.request().headers()["next-action"]),
+  );
+
+/** The device's subscription saved (or re-claimed) on the server. */
+const subscribeSaved = (page: Page) =>
+  page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/api/push/subscribe") &&
+      r.request().method() === "POST",
+  );
+
+const saveError = (page: Page) => page.getByText("Couldn't save. Try again.");
 
 const sw = (page: Page, name: string) =>
   page.getByRole("switch", { name, exact: true });
@@ -122,13 +149,16 @@ test("enable notifications and keep settings on iPhone 13", async ({
   // Settings is linked from Profile; go straight there.
   await page.goto("/settings");
   await expect(page).toHaveURL(/\/settings$/);
-  await expectNoOverflow(page);
 
   // The service worker activates, then Enable is offered; permission is
   // granted, the fake push service subscribes, and the server saves it.
   const enable = page.getByRole("button", { name: "Enable notifications" });
   await expect(enable).toBeVisible({ timeout: 20_000 });
+  // Measured on the loaded page, not the Suspense skeleton.
+  await expectNoOverflow(page);
+  const saved = subscribeSaved(page);
   await enable.tap();
+  expect((await saved).status()).toBe(200);
   await expect(
     page.getByText("Notifications are on for this device."),
   ).toBeVisible();
@@ -142,6 +172,9 @@ test("enable notifications and keep settings on iPhone 13", async ({
     "aria-checked",
     "true",
   );
+  // The switches are optimistic: wait for each save before reloading, or
+  // the reload can overtake it (as in habits.spec.ts).
+  let done = actionDone(page);
   await sw(page, "Habit reminders").tap();
   await expect(sw(page, "Habit reminders")).toHaveAttribute(
     "aria-checked",
@@ -151,28 +184,41 @@ test("enable notifications and keep settings on iPhone 13", async ({
     "aria-disabled",
     "true",
   );
-  await expect(page.getByRole("alert")).toBeEmpty();
+  await done;
+  await expect(saveError(page)).toBeHidden();
 
+  // Still subscribed after the reload, and re-claimed for this user.
+  const claimed = subscribeSaved(page);
   await page.reload();
   await expect(sw(page, "Habit reminders")).toHaveAttribute(
     "aria-checked",
     "false",
   );
-  // Still subscribed after the reload (and re-claimed for this user).
   await expect(
     page.getByRole("button", { name: "Turn off notifications on this device" }),
   ).toBeVisible({ timeout: 20_000 });
+  expect((await claimed).status()).toBe(200);
+  await expect(
+    page.getByText("Couldn't link this device's notifications", {
+      exact: false,
+    }),
+  ).toBeHidden();
 
+  done = actionDone(page);
   await sw(page, "Habit reminders").tap();
   await expect(sw(page, "Habit reminders")).toHaveAttribute(
     "aria-checked",
     "true",
   );
+  await done;
+  done = actionDone(page);
   await sw(page, "Streak saver").tap();
   await expect(sw(page, "Streak saver")).toHaveAttribute(
     "aria-checked",
     "false",
   );
+  await done;
+  await expect(saveError(page)).toBeHidden();
   await page.reload();
   await expect(sw(page, "Streak saver")).toHaveAttribute(
     "aria-checked",
