@@ -284,11 +284,34 @@ describe("HabitForm (edit)", { timeout: 20_000 }, () => {
     );
     await user.clear(screen.getByLabelText(/Notes/));
     await user.click(screen.getByRole("button", { name: "Save changes" }));
+    // reminders_enabled is unchanged, so it isn't sent (#102).
+    const { reminders_enabled: _unchanged, ...rest } = initial;
+    void _unchanged;
     expect(updateHabit).toHaveBeenCalledWith("h1", {
-      ...initial,
+      ...rest,
       description: null,
     });
     expect(push).toHaveBeenCalledWith("/habits");
+  });
+
+  it("sends reminders_enabled only when it was changed here (#102)", async () => {
+    const user = userEvent.setup();
+    render(
+      <HabitForm
+        mode="edit"
+        habitId="h1"
+        initial={initial}
+        coaching={coaching(1)}
+      />,
+    );
+    await user.click(screen.getByRole("checkbox", { name: "Remind me" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(updateHabit).toHaveBeenCalledWith(
+      "h1",
+      expect.objectContaining({
+        reminders_enabled: !initial.reminders_enabled,
+      }),
+    );
   });
 });
 
