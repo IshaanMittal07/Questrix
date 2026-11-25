@@ -609,6 +609,8 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - Why a trigger: every completion and undo writes exactly one such row while holding the profile lock, so the count is serialised per user, and the large engine functions stay as they are.
   - Only requests that carry a user JWT are limited. Internal callers (the pgTAP walks, cron, service jobs) run hundreds in one transaction, where `now()` doesn't move.
   - The limit is a constant, like the social limits (F3).
+  - It counts ledger rows, not actions: an undo that also revokes a milestone writes two rows, so near the limit the whole undo rolls back with "wait a minute".
+  - **Push churn (the rest of #79).** A BEFORE INSERT trigger on `push_subscriptions` allows 20 saves an hour per user. It's logged in `social_events` as `push_save`, so upserts count too. It raises `QX001` with its own hint, which the subscribe route answers as 429 "rate" (P5). That meets the RUNBOOK §5 prerequisite for turning reminders on.
 - **H2. `admin_adjust_points` (#83)** is the only `service_role` path into the ledger. It writes the entry and moves `points_balance` in one transaction, under the profile lock. Direct INSERT on `points_ledger` is revoked from `service_role`, and RUNBOOK §7 documents the RPC.
 - **H3. Monitoring.**
   - `instrumentation.ts` `onRequestError` writes one JSON line per uncaught server error. It logs the error name, digest, method, path and route, never messages (they can carry values; audit L1), headers, cookies or bodies, and Vercel's runtime logs index it.
