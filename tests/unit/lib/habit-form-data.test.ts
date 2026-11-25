@@ -15,6 +15,10 @@ const getMyProfile = vi.fn();
 vi.mock("@/lib/profile/queries", () => ({
   getMyProfile: () => getMyProfile(),
 }));
+const rpc = vi.fn();
+vi.mock("@/lib/supabase/server", () => ({
+  createClient: async () => ({ rpc: (...a: unknown[]) => rpc(...a) }),
+}));
 const suggestHabits = vi.fn();
 vi.mock("@/lib/habits/suggestions", () => ({
   suggestHabits: (...a: unknown[]) => suggestHabits(...a),
@@ -112,9 +116,18 @@ describe("suggestionsForMe", () => {
       })),
     );
 
+    rpc.mockResolvedValue({
+      data: [{ template_key: "walk", followers_using: 2 }],
+      error: null,
+    });
+
     const suggestions = await suggestionsForMe();
 
-    expect(suggestHabits).toHaveBeenCalledWith([...active, ...archived]);
+    // Rule 5: keys popular among people I follow (aggregated in SQL).
+    expect(rpc).toHaveBeenCalledWith("popular_templates_among_following");
+    expect(suggestHabits).toHaveBeenCalledWith([...active, ...archived], {
+      popularKeys: new Set(["walk"]),
+    });
     expect(suggestions).toHaveLength(SUGGESTIONS_SHOWN);
     expect(suggestions[0]).toEqual({
       key: "t0",
@@ -124,6 +137,17 @@ describe("suggestionsForMe", () => {
     // No pairedWith key at all, not `pairedWith: undefined`.
     expect(suggestions[1]).toEqual({ key: "t1", reasons: ["category_gap"] });
     expect("pairedWith" in suggestions[1]).toBe(false);
+  });
+});
+
+describe("suggestionsForMe without social data", () => {
+  it("still suggests when the social-proof query fails", async () => {
+    listActiveHabits.mockResolvedValue([]);
+    listArchivedHabits.mockResolvedValue([]);
+    rpc.mockResolvedValue({ data: null, error: { code: "XX000" } });
+    suggestHabits.mockReturnValue([]);
+    await suggestionsForMe();
+    expect(suggestHabits).toHaveBeenCalledWith([], { popularKeys: new Set() });
   });
 });
 
