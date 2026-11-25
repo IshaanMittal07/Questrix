@@ -2,7 +2,7 @@
 -- and an RLS audit sweep over every public table.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(20);
+select plan(21);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -77,12 +77,18 @@ select is(public.export_my_data(), null, 'with no user there''s nothing to expor
 
 -- ── Push subscription churn limit (#79, RUNBOOK §5) ─────────────────────────
 select pg_temp.as_user('80000002-0000-0000-0000-000000000000');
-select lives_ok($q$select public.save_push_subscription('https://fcm.googleapis.com/fcm/send/churn',
-    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY') from generate_series(1, 20) g$q$,
-  'twenty saves of one device in an hour are fine');
-select throws_ok($q$select public.save_push_subscription('https://fcm.googleapis.com/fcm/send/churn',
+select lives_ok($q$select public.save_push_subscription('https://fcm.googleapis.com/fcm/send/mine',
+    'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY') from generate_series(1, 30) g$q$,
+  're-saving a device you own (every Settings visit) is never limited');
+-- Churn: 20 new endpoints, each removed again (stays under the 10-device cap).
+select lives_ok($q$do $d$ begin for g in 1..19 loop
+    perform public.save_push_subscription('https://fcm.googleapis.com/fcm/send/churn' || g,
+      'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY');
+    delete from public.push_subscriptions where endpoint = 'https://fcm.googleapis.com/fcm/send/churn' || g;
+  end loop; end $d$$q$, 'twenty new devices in an hour are fine (the first save counted too)');
+select throws_ok($q$select public.save_push_subscription('https://fcm.googleapis.com/fcm/send/churn-next',
     'BOr8z6W6Lm5vB9sF0QkPzXxkTqD8Lh9n3a1b2c3d4e5f6g7h8i9j0kLmNoPqRsTuVwXyZ0123456789abcdefgh', 'k3yAuthSecret01_abc-XY')$q$,
-  'QX001', 'Too many notification sign-ups', 'the 21st is refused with the rate-limit message');
+  'QX001', 'Too many notification sign-ups', 'the 21st new endpoint in an hour is refused');
 select pg_temp.as_postgres();
 
 -- ── Account deletion leaves nothing behind (audit L5) ───────────────────────
