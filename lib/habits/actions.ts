@@ -191,8 +191,10 @@ export async function setHabitReminders(
   if (!data || data.length === 0) {
     return fail("not_found", "That habit doesn't exist.");
   }
-  // Refreshes this page now and the others on their next visit.
+  // Settings, and Habits with its edit pages (they show reminder times only
+  // when reminders are on). Today doesn't show reminders.
   revalidatePath("/settings");
+  revalidatePath("/habits", "layout");
   return { ok: true, data: undefined };
 }
 
