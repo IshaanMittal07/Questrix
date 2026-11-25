@@ -25,6 +25,8 @@ const SCRAMBLE_TICK_MS = 40;
 const FIRST_LOCK_MS = 300; // after scramble start
 const LOCK_STAGGER_MS = 50;
 const SCRAMBLE_END_MS = FIRST_LOCK_MS + (WORD.length - 1) * LOCK_STAGGER_MS;
+/** The scramble only starts if it can finish well before the fade-out. */
+export const SCRAMBLE_LATEST_START_MS = 1600;
 
 /** Wordmark text `elapsed` ms after the scramble started. Exported for tests. */
 export function scrambleFrame(elapsed: number, rand = Math.random): string {
@@ -60,6 +62,10 @@ export function LaunchSplash() {
   /** Started by the wordmark's CSS reveal, so it stays in sync with paint. */
   const startScramble = useCallback(() => {
     if (scrambleRef.current !== undefined || prefersReducedMotion()) return;
+    // Hydrated too late (a slow phone): the scramble would still be running
+    // as the splash fades, and each late repaint becomes the page's LCP.
+    // Keep the static wordmark instead (DECISIONS H4).
+    if (performance.now() > SCRAMBLE_LATEST_START_MS) return;
     let elapsed = 0;
     setText(scrambleFrame(0));
     scrambleRef.current = setInterval(() => {

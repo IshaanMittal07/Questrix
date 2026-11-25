@@ -107,7 +107,8 @@ html[data-splash="seen"] .qx-splash {
 
 .qx-splash__scanlines {
   position: absolute;
-  inset: 0;
+  inset: -8px 0 0 0;
+  will-change: transform;
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
@@ -122,7 +123,7 @@ html[data-splash="seen"] .qx-splash {
   left: -50%;
   right: -50%;
   bottom: -10%;
-  height: 55%;
+  height: calc(55% + 48px);
   pointer-events: none;
   background-image:
     linear-gradient(rgb(34 229 255 / 0.18) 1px, transparent 1px),
@@ -131,6 +132,7 @@ html[data-splash="seen"] .qx-splash {
   transform: perspective(300px) rotateX(60deg);
   transform-origin: bottom;
   mask-image: linear-gradient(to top, #000 10%, transparent 90%);
+  will-change: transform;
   animation: qx-grid 1.6s linear infinite;
 }
 
@@ -182,7 +184,9 @@ html[data-splash="seen"] .qx-splash {
   letter-spacing: 0.3em;
   margin-right: -0.3em; /* optically centre the tracked word */
   color: var(--text);
-  opacity: 0;
+  /* Visible from the first frame (the scramble plays on it), so it's the
+     largest paint at first paint, not after a hidden delay (DECISIONS H4). */
+  /* qx-in now only times the scramble's start (onAnimationStart). */
   animation:
     qx-in 1ms linear 1100ms forwards,
     qx-glitch 100ms steps(1) 1800ms 1;
@@ -196,15 +200,20 @@ html[data-splash="seen"] .qx-splash {
   animation: qx-fade-in 200ms ease-out 1900ms forwards;
 }
 
+/* transform, not background-position: runs on the compositor, so the
+   splash adds no per-frame paint to the main thread (Lighthouse TBT). */
 @keyframes qx-scan {
   to {
-    background-position: 0 8px;
+    transform: translateY(8px);
   }
 }
 
 @keyframes qx-grid {
+  from {
+    transform: perspective(300px) rotateX(60deg) translateY(-48px);
+  }
   to {
-    background-position: 0 48px;
+    transform: perspective(300px) rotateX(60deg) translateY(0);
   }
 }
 
