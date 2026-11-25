@@ -37,6 +37,7 @@ export function PostCard({
   const [likes, setLikes] = useState(post.likeCount);
   const [commentCount, setCommentCount] = useState(post.commentCount);
   const [comments, setComments] = useState<CommentView[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -64,8 +65,10 @@ export function PostCard({
     if (next && comments === null) {
       start(async () => {
         const res = await loadComments(post.id);
-        if (res.ok) setComments(res.comments);
-        else setError(res.error);
+        if (res.ok) {
+          setComments(res.comments);
+          setTruncated(res.truncated);
+        } else setError(res.error);
       });
     }
   }
@@ -83,7 +86,10 @@ export function PostCard({
       setDraft("");
       setCommentCount((n) => n + 1);
       const fresh = await loadComments(post.id);
-      if (fresh.ok) setComments(fresh.comments);
+      if (fresh.ok) {
+        setComments(fresh.comments);
+        setTruncated(fresh.truncated);
+      }
       onAnnounce("Comment posted.");
     });
   }
@@ -206,6 +212,11 @@ export function PostCard({
             <p className="text-muted text-sm">No comments yet.</p>
           ) : (
             <ul className="flex flex-col gap-2">
+              {truncated ? (
+                <li className="text-muted text-xs">
+                  Showing the latest {comments.length} comments.
+                </li>
+              ) : null}
               {comments.map((c) => (
                 <li key={c.id} className="bg-surface-2 rounded-xl p-2 text-sm">
                   <span className="font-semibold">@{c.author.username}</span>{" "}

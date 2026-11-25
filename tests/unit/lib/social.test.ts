@@ -154,6 +154,13 @@ describe("social actions", () => {
     expect(from).not.toHaveBeenCalled();
   });
 
+  it("marks the inbox read only up to a valid timestamp", async () => {
+    const { markInboxRead } = await import("@/lib/social/actions");
+    expect((await markInboxRead("not a date")).ok).toBe(false);
+    expect((await markInboxRead(undefined)).ok).toBe(false);
+    expect(from).not.toHaveBeenCalled();
+  });
+
   it("is signed out without a session", async () => {
     signedIn = false;
     const { addComment } = await import("@/lib/social/actions");
