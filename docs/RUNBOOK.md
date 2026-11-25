@@ -141,4 +141,74 @@ iOS push needs HTTPS and an installed PWA. Without a hosted project:
 
 ## Production setup
 
-_Phase 8 adds hosting. Phase 5's VAPID keys, cron secret, Vault secrets and pg_cron jobs are described under "Reminders and push notifications" above; the same steps apply in production with the deployed origin as `app_url`._
+Do these once, in order. Nothing here is automated, and no secret ever goes in git.
+
+### 1. Supabase project
+
+1. Create a project (choose a region close to your users). Note the project URL, the `anon` key and the `service_role` key (Project Settings → API).
+2. Link and push the schema from a clean `main` checkout:
+   ```bash
+   pnpm exec supabase link --project-ref <ref>
+   pnpm exec supabase db push        # applies supabase/migrations in order
+   ```
+   The migrations include the production shop catalogue and all pg_cron jobs. `seed.sql` is local-only and isn't pushed.
+3. Database → Extensions: check that `pg_cron`, `pg_net` and `supabase_vault` are enabled. The migrations enable them, but some plans need them switched on in the dashboard first.
+4. Realtime: check that `public.posts` is in the `supabase_realtime` publication (Database → Publications). The migration adds it, and it drives the "New posts" button.
+
+### 2. Auth
+
+1. Authentication → URL Configuration:
+   - Site URL: `https://<your-domain>`.
+   - Redirect URLs: `https://<your-domain>/auth/callback` and `https://<your-domain>/auth/confirm`.
+2. Providers:
+   - Email: on, with the email-code template (see "Production auth settings" above).
+   - Google: on, with the client ID and secret from Google Cloud. In Google, add `https://<ref>.supabase.co/auth/v1/callback` as an authorized redirect URI.
+3. Work through the auth hardening checklist above: rate limits, CAPTCHA (Turnstile) and the minimum password settings.
+4. Set up SMTP (Authentication → SMTP). The built-in mailer has a very low hourly limit.
+
+### 3. Vercel
+
+1. Import the GitHub repo. The framework preset is Next.js and the install command is `pnpm install --frozen-lockfile`. Set the Node version to match `.nvmrc`.
+2. Environment variables (Production, plus Preview if you use it). The names are in `.env.example`:
+
+   | Name                                                                 | Value                                              |
+   | -------------------------------------------------------------------- | -------------------------------------------------- |
+   | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`          | From step 1                                        |
+   | `SUPABASE_SERVICE_ROLE_KEY`                                          | From step 1. Server only, never `NEXT_PUBLIC_`     |
+   | `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | A new pair from `npx web-push generate-vapid-keys` |
+   | `CRON_SECRET`                                                        | `openssl rand -hex 32`                             |
+   | `NEXT_PUBLIC_APP_URL`                                                | `https://<your-domain>`                            |
+   | `NEXT_PUBLIC_TURNSTILE_SITE_KEY`                                     | Optional                                           |
+
+3. Deploy, then add your custom domain under Settings → Domains (optional). If the domain changes, update the Site URL, the redirect URLs and `NEXT_PUBLIC_APP_URL`, and redeploy, because `NEXT_PUBLIC_*` values are inlined at build time.
+
+### 4. Reminders (Vault + pg_cron)
+
+Follow "Reminders and push notifications", steps 2 to 5 above, against the production database. Set `app_url` to the deployed origin and `cron_secret` to the same value as `CRON_SECRET`. Then confirm the jobs:
+
+```sql
+select jobname, schedule, active from cron.job order by jobname;
+-- questrix-leaderboard (*/10), questrix-push-log-cleanup, questrix-reminders (every minute),
+-- questrix-social-events-cleanup
+```
+
+### 5. Smoke test
+
+1. Sign up with email, finish onboarding, and complete a habit. Points and the streak should change.
+2. Buy a cheap item and equip it, then post with the weekly summary and like the post.
+3. On an iPhone: install to the Home Screen (README), enable notifications, and set a reminder 2 minutes ahead. Check that it arrives and that tapping it opens the habit. This is the #104 checklist.
+4. Settings → Export my data downloads JSON. Delete a throwaway account and check that it can't sign back in to the same data.
+
+### 6. Monitoring
+
+- Server errors are written as one JSON line each (`"source":"questrix"`) by `instrumentation.ts` (DECISIONS H3). In Vercel go to Logs, filter on `level:error`, and add a log drain or alert if you want email.
+- Supabase: Reports, and Logs → Postgres for slow queries and `QX` errors. `cron.job_run_details` shows failed jobs.
+- Abuse limits that hit their cap show up as `QX301`/`QX109` errors in the Postgres logs.
+
+### 7. Admin adjustments
+
+Never insert ledger rows by hand. Use the RPC, which moves the balance in the same transaction (#83):
+
+```sql
+select public.admin_adjust_points('<user uuid>', 100, 'support refund');
+```
