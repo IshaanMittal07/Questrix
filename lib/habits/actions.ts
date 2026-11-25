@@ -191,10 +191,12 @@ export async function setHabitReminders(
   if (!data || data.length === 0) {
     return fail("not_found", "That habit doesn't exist.");
   }
-  // Settings, and Habits with its edit pages (they show reminder times only
-  // when reminders are on). Today doesn't show reminders.
+  // Settings, and Habits with its new and edit pages (they show reminder
+  // times only when reminders are on). Today doesn't show reminders.
+  // The layout form needs the route-group path: the pages live under
+  // (app), so "/habits" with "layout" would match no route.
   revalidatePath("/settings");
-  revalidatePath("/habits", "layout");
+  revalidatePath("/(app)/habits", "layout");
   return { ok: true, data: undefined };
 }
 

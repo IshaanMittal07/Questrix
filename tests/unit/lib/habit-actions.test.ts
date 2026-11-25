@@ -668,11 +668,10 @@ describe("setHabitReminders", () => {
       ["is", "archived_at", null],
       ["select", "id"],
     ]);
-    // Only Settings shows the flag; /habits and /today refresh on next visit.
     expect(revalidatePath.mock.calls).toEqual([
       ["/settings"],
       // Habits and its edit pages show reminder times only when on.
-      ["/habits", "layout"],
+      ["/(app)/habits", "layout"],
     ]);
   });
 
