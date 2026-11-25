@@ -639,7 +639,9 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - every SECURITY DEFINER function pins `search_path`
   - `anon` can't execute any of them
 - **H8. Deferred.**
-  - #85 (relived days and per-habit streaks): per-habit streaks still feed no reward, card or leaderboard.
+  - ~~#85~~ fixed after v1.0.0: see H9.
   - #52 (a private schema for internal helpers): they're revoked from clients, and the H7 sweep guards the rule.
   - #64 and #100 (CI and test flakes).
   - The real-iPhone checklist (#104) runs on the production deploy (RUNBOOK §5).
+- **H9. Relived days and per-habit streaks (#85, after v1.0.0).** A relived day no longer advances a habit's own streak, just as it never advanced the global one. It's still a missed day when the reached day comes, so it can't bridge one for the habit. Undoing a relived-day completion has nothing to restore, so it can't hit a false `QX108`. This supersedes the habit-streak half of D3. The engine functions are redefined from their live definitions in `20261128000100_relived_habit_streaks.sql`.
+- **H10. Flakes.** UI tests get a 15 s timeout, because they only exceeded 5 s under full-suite load (#100). CI retries `supabase start` once after a clean stop (#64).
