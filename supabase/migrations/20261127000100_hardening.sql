@@ -120,6 +120,14 @@ security definer
 set search_path = ''
 as $$
 begin
+  -- A re-save of a device the caller already owns (every Settings visit
+  -- re-claims it) isn't churn: only adding or moving an endpoint counts.
+  -- Garbage-endpoint churn always uses new endpoints. Only the RPC inserts
+  -- here, so unlike the ledger limit there's no JWT gate.
+  if exists (select 1 from public.push_subscriptions s
+             where s.endpoint = new.endpoint and s.user_id = new.user_id) then
+    return new;
+  end if;
   if (select count(*) from public.social_events e
       where e.user_id = new.user_id and e.kind = 'push_save'
         and e.created_at > now() - interval '1 hour') >= 20 then
