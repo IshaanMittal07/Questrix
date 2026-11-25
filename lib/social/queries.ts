@@ -130,6 +130,13 @@ export type InboxItem = {
   unread: boolean;
 };
 
+export async function loadBlocked() {
+  const s = await getVerifiedUser();
+  if (!s) return [];
+  const { data } = await s.supabase.rpc("my_blocked_users");
+  return (data ?? []).map((r) => ({ userId: r.user_id, username: r.username }));
+}
+
 export async function loadInbox(): Promise<InboxItem[] | null> {
   const s = await getVerifiedUser();
   if (!s) return null;
@@ -140,12 +147,28 @@ export async function loadInbox(): Promise<InboxItem[] | null> {
     .order("created_at", { ascending: false })
     .limit(50);
   if (error) return null;
+  // Names are read now, not stored: a renamed user's old name could be
+  // claimed by someone else (audit L2). Blocked or unknown → "Someone".
+  const actorOf = (r: { payload: unknown }) => {
+    const a = ((r.payload ?? {}) as Row).actor_id;
+    return typeof a === "string" ? a : null;
+  };
+  const ids = [...new Set(data.map(actorOf).filter((x): x is string => !!x))];
+  const names = ids.length
+    ? (
+        await s.supabase
+          .from("public_profiles")
+          .select("id, username")
+          .in("id", ids)
+      ).data
+    : [];
+  const byId = new Map((names ?? []).map((n) => [n.id, n.username]));
   return data.map((r) => {
-    const payload = (r.payload ?? {}) as Row;
+    const id = actorOf(r);
     return {
       id: r.id,
       type: r.type as InboxItem["type"],
-      actor: typeof payload.actor === "string" ? payload.actor : null,
+      actor: id ? (byId.get(id) ?? null) : null,
       createdAt: r.created_at,
       unread: r.read_at === null,
     };

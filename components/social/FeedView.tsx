@@ -43,10 +43,10 @@ export function FeedView({
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "posts" },
         (payload) => {
-          const created = (payload.new as { created_at?: string }).created_at;
-          if (!created || !newest.current || created > newest.current) {
-            setFresh(true);
-          }
+          const row = payload.new as { created_at?: string };
+          const created = Date.parse(row.created_at ?? "");
+          const seen = newest.current ? Date.parse(newest.current) : NaN;
+          if (Number.isNaN(seen) || !(created <= seen)) setFresh(true);
         },
       )
       .subscribe();
@@ -70,6 +70,7 @@ export function FeedView({
   function more() {
     const last = posts.at(-1);
     if (!last) return;
+    setError("");
     start(async () => {
       const res = await loadFeed(
         tab,
@@ -190,7 +191,9 @@ export function FeedView({
 
 function Composer({ onPosted }: { onPosted: (p: FeedPost | null) => void }) {
   const [body, setBody] = useState("");
-  const [attach, setAttach] = useState(true);
+  // Off by default: the summary shares streak and level, which a private
+  // profile otherwise hides.
+  const [attach, setAttach] = useState(false);
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
 

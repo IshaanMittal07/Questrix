@@ -177,6 +177,7 @@ export function PostCard({
           aria-pressed={liked}
           aria-label={liked ? `Unlike, ${likes} likes` : `Like, ${likes} likes`}
           onClick={toggleLike}
+          disabled={pending}
           className={cn(liked && "text-magenta")}
         >
           {liked ? "♥" : "♡"} {likes}
