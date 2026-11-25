@@ -612,13 +612,13 @@ Also create **`CLAUDE.md`** at the repo root containing: a short project summary
 ### 11.2 Per-phase loop
 1. Create a **tracking issue** for the phase (template `phase.yml`, label `phase-N`, milestone) with the phase's goals and acceptance criteria copied from Section 12.
 2. Run the `planner` subagent; post its task list as a comment on the tracking issue: `gh issue comment <n> --body-file plan.md`.
-3. Create one **issue per task** (label + milestone), each linked to the tracking issue.
-Steps 4–11 run **once per task issue**, in plan order, each from an up-to-date `main`:
+3. List the tasks as a checklist on the tracking issue. **Since Phase 6 there's one PR per phase** (DECISIONS § Workflow); before that, each task got its own issue and PR.
+Steps 4–11 run **once per phase**, from an up-to-date `main`:
 
-4. `git switch -c phase-N/<task-slug>`.
-5. Implement in small **Conventional Commits** (`feat:`, `fix:`, `test:`, `chore:`, `docs:`), each referencing the task issue (`refs #12`).
+4. `git switch -c phase-N/<slug>`.
+5. Implement in small **Conventional Commits** (`feat:`, `fix:`, `test:`, `chore:`, `docs:`), each referencing the tracking issue (`refs #12`).
 6. Run `test-writer` for the task, then run everything locally: lint, typecheck, unit, db tests, build (and E2E when applicable). All green before pushing.
-7. `git push -u origin HEAD` and `gh pr create --draft --fill` with the PR template filled in, `Closes #<task>` (the phase's **last** PR also closes the tracking issue), label `needs-review`, milestone set.
+7. `git push -u origin HEAD` and `gh pr create --draft --fill` with the PR template filled in, `Closes #<tracking issue>`, label `needs-review`, milestone set.
 8. Run `code-reviewer` (and `security-auditor` where Section 10 says so) on the PR's diff. Post the review on the PR with `gh pr review <n> --comment --body-file review.md` (GitHub doesn't allow approving your own PR, so use `--comment`).
 9. Fix all **Blocking** and **Should fix** items in new commits; re-run the reviewer until there are no Blocking items; post the final review as another comment.
 10. `gh pr ready <n>`, then `gh pr checks <n> --watch` until CI is green.

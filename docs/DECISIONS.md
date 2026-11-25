@@ -533,7 +533,8 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
 
 ## Phase 6
 
-- **S1. `purchase_item` (plan §6.4).** It locks the profile `for no key update` first, like the engine (D5), so a user's purchases serialise with each other and with complete and undo. Two sessions buying at once can't both pass the balance check: the second waits, then sees the lower balance (checked by hand with two `psql` sessions; pgTAP runs in one transaction).
+- **S1. `purchase_item` (plan §6.4).** It locks the profile `for no key update` first, like the engine (D5), so a user's purchases serialise with each other and with complete and undo. Two sessions buying at once can't both pass the balance check: the second waits, then sees the lower balance (checked by hand with two `psql` sessions). The plan asks for a pgTAP test of this, but pgTAP runs in one session, so `100_shop.sql` instead pins the lock with `pg_get_functiondef`. That's a deviation from the acceptance criteria.
+  - **Freezes an undo could return (audit L1).** The cap check counts `streak_freezes` plus today's `daily_progress.streak_freezes_used`. Undo hands those back capped at the max, so a freeze bought in between would otherwise vanish after being paid for. Only today's completions can be undone, so earlier days don't count.
   - **Order of checks:** signed in (`28000`), profile, onboarded (`QX107`), item active (`P0002`), level (`QX203`), freeze cap (`QX204`) or already owned (`QX202`), balance (`QX201`).
   - **Ledger:** a negative `purchase` entry whose `ref_id` is the item id. (`user_items` has no id of its own, and freezes have no row.) Free items write no entry, because the delta must be nonzero.
   - **Streak Freeze** is the only consumable. It adds to `profiles.streak_freezes` up to `economy_config.streak_freezes_max`, with no `user_items` row. Undo gives back freezes as a capped delta (#69), so a freeze bought after a completion survives undoing it.
