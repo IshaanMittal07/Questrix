@@ -93,6 +93,16 @@ describe("routeForOnboarding", () => {
     });
   });
 
+  it("only lets onboarded users reach step 3 (notifications)", () => {
+    expect(routeForOnboarding(true, "/onboarding/notifications")).toEqual({
+      kind: "next",
+    });
+    expect(routeForOnboarding(false, "/onboarding/notifications")).toEqual({
+      kind: "redirect",
+      to: "/onboarding",
+    });
+  });
+
   it("sends users who haven't onboarded to /onboarding", () => {
     expect(routeForOnboarding(false, "/today")).toEqual({
       kind: "redirect",

@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { cn } from "@/lib/cn";
 
 type SwitchProps = {
@@ -9,6 +10,8 @@ type SwitchProps = {
   description?: string;
   disabled?: boolean;
   id?: string;
+  /** A decorative emoji shown before the label, not part of the name. */
+  icon?: string | null;
 };
 
 /**
@@ -21,10 +24,14 @@ export function Switch({
   label,
   description,
   disabled,
-  id,
+  id: idProp,
+  icon,
 }: SwitchProps) {
-  const descId = description && id ? `${id}-desc` : undefined;
-  const labelId = id ? `${id}-label` : undefined;
+  // Always an id, so the name is the label alone even without one passed.
+  const generated = useId();
+  const id = idProp ?? generated;
+  const descId = description ? `${id}-desc` : undefined;
+  const labelId = `${id}-label`;
   return (
     <button
       type="button"
@@ -46,8 +53,9 @@ export function Switch({
       )}
     >
       <span className="min-w-0">
-        <span id={labelId} className="block font-medium">
-          {label}
+        <span className="block font-medium">
+          {icon ? <span aria-hidden="true">{icon} </span> : null}
+          <span id={labelId}>{label}</span>
         </span>
         {description ? (
           <span id={descId} className="text-muted block text-sm">

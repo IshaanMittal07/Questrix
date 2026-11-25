@@ -85,9 +85,6 @@ export function EnableNotifications({
   const busyRef = useRef(false);
   // Bumped when an action starts: a check begun before it is stale.
   const actionSeq = useRef(0);
-  useEffect(() => {
-    busyRef.current = busy;
-  }, [busy]);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -135,9 +132,11 @@ export function EnableNotifications({
 
   async function turnOn() {
     actionSeq.current += 1;
+    busyRef.current = true;
     setBusy(true);
     setMessage(null);
     const res = await subscribe(publicKey);
+    busyRef.current = false;
     setBusy(false);
     if (res.ok) {
       setState({ kind: "on" });
@@ -151,11 +150,13 @@ export function EnableNotifications({
 
   async function turnOff() {
     actionSeq.current += 1;
+    busyRef.current = true;
     setBusy(true);
     setMessage(null);
     const ok = await unsubscribe();
     // Say what actually happened: the browser may still be subscribed.
     const stillOn = !ok && (await isSubscribed());
+    busyRef.current = false;
     setBusy(false);
     setState({ kind: stillOn ? "on" : "off" });
     setMessage(
