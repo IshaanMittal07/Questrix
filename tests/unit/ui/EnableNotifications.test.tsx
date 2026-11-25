@@ -1,14 +1,27 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as PushClient from "@/lib/push/client";
 import type { PushSupport } from "@/lib/push/platform";
 
 const client = vi.hoisted(() => ({
   isSubscribed: vi.fn(async () => false),
   subscribe: vi.fn(),
   unsubscribe: vi.fn(async () => true),
-  claimSubscription: vi.fn(async () => {}),
-  activeRegistration: vi.fn(async () => ({}) as ServiceWorkerRegistration),
+  claimSubscription: vi.fn<typeof PushClient.claimSubscription>(
+    async () => "ok",
+  ),
+  activeRegistration: vi.fn<typeof PushClient.activeRegistration>(
+    async () => ({}) as ServiceWorkerRegistration,
+  ),
 }));
 vi.mock("@/lib/push/client", () => client);
 
@@ -224,6 +237,136 @@ describe("EnableNotifications", () => {
   });
 });
 
+describe("EnableNotifications detect()", () => {
+  beforeEach(() => {
+    client.activeRegistration.mockReset();
+    client.activeRegistration.mockResolvedValue(
+      {} as ServiceWorkerRegistration,
+    );
+    client.claimSubscription.mockReset();
+    client.claimSubscription.mockResolvedValue("ok");
+  });
+
+  afterEach(() => {
+    // @ts-expect-error -- remove the test double from jsdom's navigator.
+    delete navigator.serviceWorker;
+  });
+
+  it("says unavailable (not unsupported) when no worker becomes active", async () => {
+    client.activeRegistration.mockResolvedValue(null);
+    render(<EnableNotifications publicKey={KEY} />);
+    expect(
+      await screen.findByText("Notifications aren't available right now."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("This browser doesn't support notifications."),
+    ).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(client.isSubscribed).not.toHaveBeenCalled();
+    expect(client.claimSubscription).not.toHaveBeenCalled();
+  });
+
+  it("doesn't claim when this device has no subscription", async () => {
+    render(<EnableNotifications publicKey={KEY} />);
+    await screen.findByRole("button", { name: "Enable notifications" });
+    expect(client.claimSubscription).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("claims an existing subscription for the signed-in user and shows on", async () => {
+    client.isSubscribed.mockResolvedValue(true);
+    render(<EnableNotifications publicKey={KEY} />);
+    expect(
+      await screen.findByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeInTheDocument();
+    expect(client.claimSubscription).toHaveBeenCalledExactlyOnceWith(KEY);
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("shows a stale subscription (old VAPID key) as off with a note", async () => {
+    client.isSubscribed.mockResolvedValue(true);
+    client.claimSubscription.mockResolvedValue("stale");
+    render(<EnableNotifications publicKey={KEY} />);
+    expect(
+      await screen.findByRole("button", { name: "Enable notifications" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Notifications need turning on again on this device.",
+    );
+    expect(
+      screen.queryByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps a failed claim on, with the relink note", async () => {
+    client.isSubscribed.mockResolvedValue(true);
+    client.claimSubscription.mockResolvedValue("failed");
+    render(<EnableNotifications publicKey={KEY} />);
+    expect(
+      await screen.findByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Couldn't link this device's notifications to your account. Turn them off and on again.",
+    );
+  });
+
+  it("treats a 'none' claim as on (the subscription vanished meanwhile)", async () => {
+    client.isSubscribed.mockResolvedValue(true);
+    client.claimSubscription.mockResolvedValue("none");
+    render(<EnableNotifications publicKey={KEY} />);
+    expect(
+      await screen.findByRole("button", {
+        name: "Turn off notifications on this device",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("re-checks on a serviceWorker controllerchange", async () => {
+    const sw = new EventTarget();
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: sw,
+    });
+    client.activeRegistration.mockResolvedValueOnce(null);
+    render(<EnableNotifications publicKey={KEY} />);
+    await screen.findByText("Notifications aren't available right now.");
+    expect(client.activeRegistration).toHaveBeenCalledTimes(1);
+    // The worker finishes installing and takes control.
+    await act(async () => {
+      sw.dispatchEvent(new Event("controllerchange"));
+    });
+    expect(
+      await screen.findByRole("button", { name: "Enable notifications" }),
+    ).toBeInTheDocument();
+    expect(client.activeRegistration).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops listening for controllerchange after unmount", async () => {
+    const sw = new EventTarget();
+    const remove = vi.spyOn(sw, "removeEventListener");
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: sw,
+    });
+    const { unmount } = render(<EnableNotifications publicKey={KEY} />);
+    await screen.findByRole("button", { name: "Enable notifications" });
+    unmount();
+    expect(remove).toHaveBeenCalledWith(
+      "controllerchange",
+      expect.any(Function),
+    );
+    sw.dispatchEvent(new Event("controllerchange"));
+    expect(client.activeRegistration).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("SignOutButton", () => {
   let submit: ReturnType<typeof vi.spyOn>;
 
@@ -243,6 +386,55 @@ describe("SignOutButton", () => {
     // @ts-expect-error -- remove the test double from jsdom's navigator.
     delete navigator.serviceWorker;
     vi.useRealTimers();
+  });
+
+  it("is disabled in the server HTML, before hydration", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToString(<SignOutButton />);
+    expect(host.querySelector("button")).toBeDisabled();
+  });
+
+  it("is enabled once hydrated", async () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToString(<SignOutButton />);
+    document.body.append(host);
+    const btn = () => host.querySelector("button")!;
+    expect(btn()).toBeDisabled();
+    const root = await act(async () => hydrateRoot(host, <SignOutButton />));
+    await waitFor(() => expect(btn()).toBeEnabled());
+    act(() => root.unmount());
+    host.remove();
+  });
+
+  it("is enabled after a client mount", () => {
+    render(<SignOutButton />);
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+  });
+
+  function pageshow(persisted: boolean) {
+    const e = new Event("pageshow");
+    Object.defineProperty(e, "persisted", { value: persisted });
+    window.dispatchEvent(e);
+  }
+
+  it("is usable again after a bfcache restore (pageshow persisted)", () => {
+    client.unsubscribe.mockReturnValue(new Promise(() => {}));
+    render(<SignOutButton />);
+    const btn = screen.getByRole("button", { name: "Sign out" });
+    fireEvent.click(btn);
+    expect(btn).toBeDisabled();
+    act(() => pageshow(false));
+    expect(btn).toBeDisabled();
+    act(() => pageshow(true));
+    expect(btn).toBeEnabled();
+  });
+
+  it("stops listening for pageshow after unmount", () => {
+    const remove = vi.spyOn(window, "removeEventListener");
+    const { unmount } = render(<SignOutButton />);
+    unmount();
+    expect(remove).toHaveBeenCalledWith("pageshow", expect.any(Function));
+    remove.mockRestore();
   });
 
   it("posts to /auth/signout", () => {
