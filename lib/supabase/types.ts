@@ -878,6 +878,10 @@ export type Database = {
     };
     Functions: {
       archive_habit: { Args: { p_habit_id: string }; Returns: undefined };
+      cleanup_push_logs: {
+        Args: Record<PropertyKey, never>;
+        Returns: undefined;
+      };
       complete_habit: { Args: { p_habit_id: string }; Returns: Json };
       complete_habit_at: {
         Args: { p_habit_id: string; p_now: string; p_uid: string };
@@ -933,6 +937,7 @@ export type Database = {
       };
       habits_clean_text: { Args: { p_text: string }; Returns: string };
       habits_lock: { Args: { p_user_id: string }; Returns: undefined };
+      invoke_reminders: { Args: Record<PropertyKey, never>; Returns: number };
       is_reserved_username: { Args: { p_username: string }; Returns: boolean };
       jsonb_num_between: {
         Args: { hi: number; lo: number; v: Json; whole: boolean };
@@ -940,6 +945,7 @@ export type Database = {
       };
       level_for: { Args: { p_lifetime: number }; Returns: number };
       local_date_in: { Args: { p_at: string; p_tz: string }; Returns: string };
+      purchase_item: { Args: { p_item_id: string }; Returns: Json };
       reorder_habits: { Args: { p_habit_ids: string[] }; Returns: undefined };
       save_push_subscription: {
         Args: {
