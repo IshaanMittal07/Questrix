@@ -49,6 +49,23 @@ const notificationPrefsSchema = z
 
 export type PrefsResult = { ok: true } | { ok: false; error: string };
 
+/** Private profile: stats, heatmap and leaderboard rank hidden from others. */
+export async function setPrivate(value: unknown): Promise<PrefsResult> {
+  if (typeof value !== "boolean") return { ok: false, error: "Couldn't save." };
+  const supabase = await createClient();
+  const { data: claims } = await supabase.auth.getClaims();
+  const userId = claims?.claims?.sub;
+  if (!userId) return { ok: false, error: "You're signed out." };
+  const { error } = await supabase
+    .from("profiles")
+    .update({ is_private: value })
+    .eq("id", userId);
+  if (error) return { ok: false, error: "Couldn't save. Try again." };
+  revalidatePath("/settings");
+  revalidatePath("/profile");
+  return { ok: true };
+}
+
 /**
  * Turn reminders or the streak saver on or off for the signed-in user
  * (plan §12 Phase 5). Only these two columns are client-writable (P3).

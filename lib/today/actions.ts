@@ -48,6 +48,7 @@ const COMPLETE_ERRORS: Record<string, [TodayErrorCode, string]> = {
   QX102: ["not_found", "That habit is archived."],
   QX103: ["done", "Already done for today."],
   QX107: ["not_onboarded", "Finish setting up your account first."],
+  QX109: ["failed", "Too fast. Wait a minute and try again."],
 };
 
 const UNDO_ERRORS: Record<string, [TodayErrorCode, string]> = {
@@ -58,6 +59,7 @@ const UNDO_ERRORS: Record<string, [TodayErrorCode, string]> = {
     "You've already spent those points, so this can't be undone.",
   ],
   QX108: ["too_late", "A later day already counts on this one."],
+  QX109: ["failed", "Too fast. Wait a minute and try again."],
 };
 
 function fromDb(
