@@ -32,6 +32,7 @@ test("post, paginate, like and comment safely", async ({ page }, testInfo) => {
   await expect(page).toHaveURL(/\/feed$/);
 
   await page.getByLabel("Share your progress").fill(`${XSS} day one`);
+  await page.getByLabel("Attach my weekly summary").check();
   await page.getByRole("button", { name: "Post", exact: true }).tap();
 
   const mine = page.getByRole("article").filter({ hasText: "day one" }).first();

@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { SignOutButton } from "@/components/push/SignOutButton";
+import { BlockedList } from "@/components/social/BlockedList";
 import { Card } from "@/components/ui/Card";
+import { loadBlocked } from "@/lib/social/queries";
 import { timezoneCooldownUntil } from "@/lib/profile/cooldown";
 import { listActiveHabits } from "@/lib/habits/queries";
 import { getMyProfile } from "@/lib/profile/queries";
@@ -36,11 +38,12 @@ async function timezoneLock(profile: {
 async function SettingsContent() {
   const me = await getMyProfile();
   if (!me) return null;
-  const [lockedUntil, habits] = await Promise.all([
+  const [lockedUntil, habits, blocked] = await Promise.all([
     timezoneLock(me.profile),
     // A failure here costs only the per-habit list, not Settings (and
     // Sign out) as a whole.
     listActiveHabits().catch(() => null),
+    loadBlocked().catch(() => []),
   ]);
   return (
     <>
@@ -62,6 +65,9 @@ async function SettingsContent() {
             remindersEnabled: h.reminders_enabled,
           }))}
         />
+      </Card>
+      <Card>
+        <BlockedList initial={blocked} />
       </Card>
       <Card className="flex items-center justify-between gap-4">
         <div>
