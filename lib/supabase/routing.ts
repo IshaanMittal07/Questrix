@@ -17,6 +17,10 @@ const MAX_NEXT_LENGTH = 512;
 export type RouteDecision =
   { kind: "next" } | { kind: "redirect"; to: string; clearOnboarded?: boolean };
 
+export function isApiPath(pathname: string) {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
 export function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
@@ -47,6 +51,10 @@ export function routeBeforeProfile(
   pathname: string,
   search = "",
 ): RouteDecision | "check-onboarding" {
+  // API routes check auth themselves and answer with JSON. A redirect to
+  // /login (or /onboarding) would be followed by fetch and could look like
+  // success (review of PR #99).
+  if (isApiPath(pathname)) return { kind: "next" };
   if (!signedIn) {
     return isPublicPath(pathname)
       ? { kind: "next" }

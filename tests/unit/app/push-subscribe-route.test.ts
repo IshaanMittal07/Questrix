@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-type Err = { code: string; message?: string } | null;
+type Err = { code: string; message?: string; hint?: string } | null;
 
 let claims: { sub?: string } | null = { sub: "u1" };
 let rpcError: Err = null;
@@ -377,12 +377,31 @@ describe("POST /api/push/subscribe save", () => {
     expect(args.p_user_agent).toBeUndefined();
   });
 
-  it("returns 429 for the device cap (QX001)", async () => {
-    rpcError = { code: "QX001", message: "too many" };
+  it("returns 429 for the device cap (QX001, told apart by its hint)", async () => {
+    rpcError = {
+      code: "QX001",
+      message: "You can have at most 10 devices with notifications",
+      hint: "Turn notifications off on a device you no longer use.",
+    };
     const res = await POST(req("POST", valid));
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({
       error: "Too many devices have notifications on",
+      limit: "devices",
+    });
+  });
+
+  it("returns a generic 429 for any other QX001 limit (P5)", async () => {
+    rpcError = {
+      code: "QX001",
+      message: "Too many requests",
+      hint: "Try again later.",
+    };
+    const res = await POST(req("POST", valid));
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({
+      error: "Too many tries; try again later",
+      limit: "rate",
     });
   });
 

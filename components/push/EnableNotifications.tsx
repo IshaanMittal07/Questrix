@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { isSubscribed, subscribe, unsubscribe } from "@/lib/push/client";
+import {
+  activeRegistration,
+  claimSubscription,
+  isSubscribed,
+  subscribe,
+  unsubscribe,
+} from "@/lib/push/client";
 import { pushSupport, type PushSupport } from "@/lib/push/platform";
 import { InstallSheet } from "./InstallSheet";
 
@@ -20,7 +26,12 @@ const MESSAGES = {
   "too-many":
     "Notifications are on for 10 devices already. Turn them off on one you no longer use.",
   failed: "Couldn't turn notifications on. Try again.",
+  dismissed: "No problem. You can turn them on any time.",
+  "rate-limited": "Too many tries. Try again in a little while.",
 } as const;
+
+/** How long the first check waits for the service worker to start. */
+const DETECT_TIMEOUT_MS = 5_000;
 
 /** What this device can do right now (browser APIs: client only). */
 async function detect(): Promise<State> {
@@ -29,7 +40,14 @@ async function detect(): Promise<State> {
   );
   if (support !== "supported") return { kind: "support", support };
   if (Notification.permission === "denied") return { kind: "denied" };
-  return { kind: (await isSubscribed()) ? "on" : "off" };
+  // No worker (a dev build, or registration failed): nothing can subscribe.
+  if (!(await activeRegistration(DETECT_TIMEOUT_MS))) {
+    return { kind: "support", support: "unsupported" };
+  }
+  if (!(await isSubscribed())) return { kind: "off" };
+  // On means on for whoever is signed in now (security audit of PR #99, S2).
+  await claimSubscription();
+  return { kind: "on" };
 }
 
 /**
@@ -83,6 +101,7 @@ export function EnableNotifications({
       setMessage("Notifications are on for this device.");
     } else {
       if (res.reason === "denied") setState({ kind: "denied" });
+      // A dismissed prompt leaves the state off (it isn't blocked).
       setMessage(MESSAGES[res.reason]);
     }
   }
@@ -91,12 +110,16 @@ export function EnableNotifications({
     setBusy(true);
     setMessage(null);
     const ok = await unsubscribe();
+    // Say what actually happened: the browser may still be subscribed.
+    const stillOn = !ok && (await isSubscribed());
     setBusy(false);
-    setState({ kind: "off" });
+    setState({ kind: stillOn ? "on" : "off" });
     setMessage(
       ok
         ? "Notifications are off for this device."
-        : "Notifications are off here, but the server didn't confirm. Try again later.",
+        : stillOn
+          ? "Couldn't turn notifications off. Try again."
+          : "Notifications are off here, but the server didn't confirm. Try again later.",
     );
   }
 

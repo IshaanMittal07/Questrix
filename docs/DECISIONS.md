@@ -491,16 +491,21 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Service worker** (`public/sw.js`). `push` reads the JSON `{title, body, url, tag}`:
     - Title and body are trimmed and cut by code point (120 and 300), shown only as notification text. Anything unreadable falls back to a generic reminder, because a push must show something (`userVisibleOnly`).
     - A tag that isn't `habit-<id>` or `streak-saver` is replaced.
-    - `url` must be a same-origin path, using the `safeNextPath` rules: no control characters or backslashes, and resolving to our origin. Anything else opens `/today`.
+    - `url` must be a same-origin path, using the `safeNextPath` rules: no control characters or backslashes, resolving to our origin, and still a single-slash path _after_ normalisation. Dot segments can turn `/..//evil.com` into `//evil.com`, which a window opens as another site (security audit of PR #99, B1). Anything else opens `/today`.
     - `notificationclick` focuses our open window and navigates it. If it can't (a tab opened before the worker activated isn't controlled, so `navigate()` rejects), it opens a new window.
   - **Subscribe API** (`POST`/`DELETE /api/push/subscribe`).
-    - It's same-origin only (403) and signed-in only (401, from verified claims).
-    - Bodies are at most 4 KB (by Content-Length, then by bytes read). The body is validated with Zod: the P2 allowlist, printable ASCII, at most 1024 characters, and exact key sizes. The rules live in `lib/validation/push.ts`, shared with the sender.
-    - POST calls `save_push_subscription`; QX001 gives 429. DELETE deletes the caller's row by endpoint under RLS.
+    - It's same-origin only (403) and signed-in only (401, from verified claims). The page gate in `proxy.ts` never redirects `/api/*`: a followed 307 to `/login` could look like success (review of PR #99). The client also fetches with `redirect: "error"`.
+    - Bodies must be `application/json` (415 otherwise) and at most 4 KB, by Content-Length and then streamed with a cut-off, so a chunked body is never buffered whole. The body is validated with Zod: the P2 allowlist, printable ASCII, at most 1024 characters, and exact key sizes. The rules live in `lib/validation/push.ts`, shared with the sender.
+    - POST calls `save_push_subscription`. QX001 gives 429, with `limit: "devices"` when the hint names the device cap and `"rate"` otherwise, because QX001 covers several limits (P5). DELETE deletes the caller's row by endpoint under RLS.
     - Errors log only the code, never the endpoint or keys.
   - **Enable notifications** (`components/push/EnableNotifications.tsx`).
     - Permission is requested only inside the click handler, because iOS Safari requires a tap. Nothing is asked on mount.
     - It reuses this device's subscription, replacing one made for another VAPID key (a rotation).
     - On iPhone outside the installed app, it shows the install sheet instead, because push needs iOS 16.4+ in a Home Screen app.
-    - Without a public key it says notifications are unavailable.
-  - **Unsubscribing and signing out.** `unsubscribe()` deletes the server row first, while the session is valid, then always unsubscribes the browser, even if the server can't be reached. That way the device stops receiving either way, and a row left behind goes on the sender's next 404/410. Sign-out (`SignOutButton`) unsubscribes before posting `/auth/signout`, giving up after 3 s so it can't hang (P1).
+    - Without a public key, or with no service worker active within a few seconds (dev builds register none, and `ready` never settles), it says notifications are unavailable.
+    - A dismissed prompt (`"default"`) stays off with a friendly note; only `"denied"` is blocked.
+    - **Re-claiming.** When the device is already subscribed, it re-saves the subscription for whoever is signed in now. A session can end without our sign-out (expiry, another device), leaving the row with the previous user.
+    - Turning off re-checks the browser and says what actually happened.
+    - `NEXT_PUBLIC_VAPID_PUBLIC_KEY` is inlined at build time, so rotating the VAPID pair needs a rebuild; devices then re-subscribe on their next visit.
+  - **Unsubscribing and signing out.** `unsubscribe()` sends the server DELETE (with `keepalive`, so it survives the navigation, while the session is valid) and unsubscribes the browser at the same time, even if the server can't be reached. That way the device stops receiving either way, and a row left behind goes on the sender's next 404/410. Sign-out (`SignOutButton`) unsubscribes before posting `/auth/signout`, giving up after 3 s so it can't hang (P1). It's disabled until hydrated and usable again after Back (bfcache).
+  - **Takeover.** Whoever holds a device's full subscription (endpoint and `auth` key) can move it to their account (P1), and their habit titles then appear on that device. Click targets stay server-built and same-origin. Accepted.

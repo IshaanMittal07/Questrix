@@ -212,6 +212,12 @@ describe("sw.js push", () => {
     ["a tab inside", "/to\tday"],
     ["a newline inside", "/\n/evil.com"],
     ["an empty string", ""],
+    // Same origin as input, protocol-relative once dot segments resolve
+    // (security audit of PR #99, B1).
+    ["a dot-segment escape", "/..//evil.com"],
+    ["a single-dot escape", "/.//evil.com"],
+    ["a nested dot-segment escape", "/a/..//evil.com"],
+    ["an encoded-dot escape", "/%2e//evil.com"],
   ])("falls back to /today for %s", async (_label, url) => {
     const n = await push(pushData({ title: "t", url }));
     expect(n.data.url).toBe("/today");
@@ -350,6 +356,8 @@ describe("sw.js notificationclick", () => {
     ["an off-origin url", { url: "https://evil.com/" }],
     ["a protocol-relative url", { url: "//evil.com/x" }],
     ["a javascript: url", { url: "javascript:alert(1)" }],
+    ["a dot-segment escape", { url: "/..//evil.com" }],
+    ["an encoded-dot escape", { url: "/%2e//evil.com" }],
     ["missing data", null],
     ["data without a url", {}],
   ])("re-checks the url on click and opens /today for %s", async (_l, data) => {

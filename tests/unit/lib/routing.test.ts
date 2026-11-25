@@ -18,6 +18,19 @@ describe("isPublicPath", () => {
 });
 
 describe("routeBeforeProfile", () => {
+  it("never redirects API routes: they answer for themselves (a followed redirect could look like success)", () => {
+    for (const signedIn of [false, true]) {
+      expect(routeBeforeProfile(signedIn, "/api/push/subscribe")).toEqual({
+        kind: "next",
+      });
+      expect(routeBeforeProfile(signedIn, "/api")).toEqual({ kind: "next" });
+    }
+    // Not a prefix trick: /apix is still a page.
+    expect(routeBeforeProfile(false, "/apix")).toMatchObject({
+      kind: "redirect",
+    });
+  });
+
   it("lets signed-out visitors through to public pages", () => {
     expect(routeBeforeProfile(false, "/login")).toEqual({ kind: "next" });
     expect(routeBeforeProfile(false, "/auth/confirm")).toEqual({

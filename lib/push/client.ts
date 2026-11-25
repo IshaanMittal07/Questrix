@@ -16,7 +16,19 @@ export function urlBase64ToUint8Array(
 
 export type SubscribeResult =
   | { ok: true }
-  | { ok: false; reason: "denied" | "unavailable" | "too-many" | "failed" };
+  | {
+      ok: false;
+      reason:
+        | "denied"
+        | "dismissed"
+        | "unavailable"
+        | "too-many"
+        | "rate-limited"
+        | "failed";
+    };
+
+/** How long to wait for the service worker before giving up. */
+export const READY_TIMEOUT_MS = 10_000;
 
 async function post(method: "POST" | "DELETE", body: unknown) {
   return fetch("/api/push/subscribe", {
@@ -24,6 +36,10 @@ async function post(method: "POST" | "DELETE", body: unknown) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
     credentials: "same-origin",
+    // Survives the page navigating away (sign-out submits right after).
+    keepalive: true,
+    // A redirect (to /login, say) is never success.
+    redirect: "error",
   });
 }
 
@@ -33,9 +49,25 @@ function sameKey(a: ArrayBuffer | null, b: Uint8Array) {
   return x.length === b.length && x.every((v, i) => v === b[i]);
 }
 
-/** The registration that /sw.js is (or will be) running. */
-async function registration() {
-  return navigator.serviceWorker.ready;
+/**
+ * The active registration of /sw.js, or null if none becomes active in
+ * time. `ready` never settles without a worker (dev builds, a failed
+ * registration), so it's always raced against a timeout.
+ */
+export async function activeRegistration(
+  timeoutMs = READY_TIMEOUT_MS,
+): Promise<ServiceWorkerRegistration | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise<null>((r) => {
+        timer = setTimeout(() => r(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Ask for permission, subscribe this device, and save it on the server. */
@@ -43,10 +75,14 @@ export async function subscribe(
   publicKey: string | undefined,
 ): Promise<SubscribeResult> {
   if (!publicKey) return { ok: false, reason: "unavailable" };
+  // The first await in the tap: browsers only prompt inside a user gesture.
   const permission = await Notification.requestPermission();
-  if (permission !== "granted") return { ok: false, reason: "denied" };
+  if (permission === "denied") return { ok: false, reason: "denied" };
+  // "default": the prompt was dismissed, not blocked.
+  if (permission !== "granted") return { ok: false, reason: "dismissed" };
   try {
-    const reg = await registration();
+    const reg = await activeRegistration();
+    if (!reg) return { ok: false, reason: "unavailable" };
     const key = urlBase64ToUint8Array(publicKey);
     let sub = await reg.pushManager.getSubscription();
     // A subscription made for another VAPID key (a rotation) can't receive
@@ -60,7 +96,13 @@ export async function subscribe(
       applicationServerKey: key,
     });
     const res = await post("POST", sub.toJSON());
-    if (res.status === 429) return { ok: false, reason: "too-many" };
+    if (res.status === 429) {
+      const body = (await res.json().catch(() => ({}))) as { limit?: string };
+      return {
+        ok: false,
+        reason: body.limit === "devices" ? "too-many" : "rate-limited",
+      };
+    }
     return res.ok ? { ok: true } : { ok: false, reason: "failed" };
   } catch {
     return { ok: false, reason: "failed" };
@@ -76,26 +118,41 @@ export async function subscribe(
 export async function unsubscribe(): Promise<boolean> {
   let sub: PushSubscription | null;
   try {
-    const reg = await registration();
-    sub = await reg.pushManager.getSubscription();
+    // No registration means no subscription to remove (and `ready` would
+    // never settle).
+    const reg = await navigator.serviceWorker.getRegistration();
+    sub = (await reg?.pushManager.getSubscription()) ?? null;
   } catch {
     return false;
   }
   if (!sub) return true;
-  let serverOk = false;
+  // Both at once, so a slow network can't leave either side behind when
+  // sign-out gives up waiting. The DELETE is sent while the session is
+  // still valid (P1) and survives the navigation (keepalive); it needs
+  // only the endpoint, captured here.
+  const { endpoint } = sub;
+  const [server, browser] = await Promise.allSettled([
+    post("DELETE", { endpoint }),
+    sub.unsubscribe(),
+  ]);
+  const serverOk = server.status === "fulfilled" && server.value.ok;
+  return serverOk && browser.status === "fulfilled";
+}
+
+/**
+ * Re-save this device's subscription for whoever is signed in now. A
+ * session can end without our sign-out (expiry, another device), leaving
+ * the row with the previous user; the RPC moves it (P1). Best effort.
+ */
+export async function claimSubscription(): Promise<void> {
   try {
-    // Server first, while the session is still valid (P1).
-    const res = await post("DELETE", { endpoint: sub.endpoint });
-    serverOk = res.ok;
+    if (Notification.permission !== "granted") return;
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) await post("POST", sub.toJSON());
   } catch {
-    serverOk = false;
+    // Nothing to do: the toggle still reflects the browser's state.
   }
-  try {
-    await sub.unsubscribe();
-  } catch {
-    return false;
-  }
-  return serverOk;
 }
 
 /** Is this device subscribed (and allowed) right now? */

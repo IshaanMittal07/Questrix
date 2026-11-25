@@ -5,15 +5,56 @@ import { subscribeSchema, unsubscribeSchema } from "@/lib/validation/push";
 /** Bodies are small JSON; anything bigger is refused before parsing. */
 const MAX_BODY = 4096;
 
-async function readJson(request: Request): Promise<unknown> {
-  // Refuse early when the size is declared, then check the bytes read.
-  const declared = Number(request.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_BODY) {
-    throw new Error("too large");
+class BadBody extends Error {
+  constructor(readonly status: 400 | 415) {
+    super("bad body");
   }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > MAX_BODY) throw new Error("too large");
-  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+/**
+ * JSON only (415 otherwise), at most MAX_BODY bytes: refused early when the
+ * size is declared, and read as a stream that stops once it passes the
+ * limit, so a chunked body is never buffered whole.
+ */
+async function readJson(request: Request): Promise<unknown> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!/^application\/json\b/i.test(type)) throw new BadBody(415);
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY) throw new BadBody(400);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (request.body) {
+    const reader = request.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY) {
+        await reader.cancel();
+        throw new BadBody(400);
+      }
+      chunks.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    bytes.set(c, at);
+    at += c.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new BadBody(400);
+  }
+}
+
+function badBody(err: unknown) {
+  const status = err instanceof BadBody ? err.status : 400;
+  return Response.json(
+    { error: status === 415 ? "Send JSON" : "Invalid request" },
+    { status },
+  );
 }
 
 /** Same-origin and signed in, or the error response. */
@@ -42,8 +83,8 @@ export async function POST(request: Request) {
   let body: unknown;
   try {
     body = await readJson(request);
-  } catch {
-    return Response.json({ error: "Invalid request" }, { status: 400 });
+  } catch (err) {
+    return badBody(err);
   }
   const parsed = subscribeSchema.safeParse(body);
   if (!parsed.success) {
@@ -62,8 +103,15 @@ export async function POST(request: Request) {
   });
   if (error) {
     if (error.code === "QX001") {
+      // QX001 covers several limits (P5): tell them apart by the hint.
+      const devices = /device/i.test(`${error.hint ?? ""} ${error.message}`);
       return Response.json(
-        { error: "Too many devices have notifications on" },
+        devices
+          ? {
+              error: "Too many devices have notifications on",
+              limit: "devices",
+            }
+          : { error: "Too many tries; try again later", limit: "rate" },
         { status: 429 },
       );
     }
@@ -84,8 +132,8 @@ export async function DELETE(request: Request) {
   let body: unknown;
   try {
     body = await readJson(request);
-  } catch {
-    return Response.json({ error: "Invalid request" }, { status: 400 });
+  } catch (err) {
+    return badBody(err);
   }
   const parsed = unsubscribeSchema.safeParse(body);
   if (!parsed.success) {
