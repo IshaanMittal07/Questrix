@@ -23,7 +23,7 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"], channel },
       // The iPhone-only acceptance specs (Phases 3 to 6).
       testIgnore:
-        /(^|[\/])(habit-template|today|notifications|shop)\.spec\.ts$/,
+        /(^|[\/])(habit-template|today|notifications|shop|social)\.spec\.ts$/,
     },
     {
       name: "iphone-13",
