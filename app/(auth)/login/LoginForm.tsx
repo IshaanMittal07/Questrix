@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { TURNSTILE_SITE_KEY, Turnstile } from "@/components/auth/Turnstile";
 import { Button } from "@/components/ui/Button";
 import { authCallbackUrl, nextFromSearch } from "@/lib/auth/next";
@@ -11,10 +11,25 @@ import { authCallbackUrl, nextFromSearch } from "@/lib/auth/next";
  * are most of the login page's JavaScript, and the form needs neither until
  * it's submitted (DECISIONS H4, Lighthouse TBT).
  */
-const supabase = async () =>
-  (await import("@/lib/supabase/client")).createClient();
-const emailSchema = async () =>
-  (await import("@/lib/validation/profile")).emailSchema;
+const loadClient = () => import("@/lib/supabase/client");
+const loadValidation = () => import("@/lib/validation/profile");
+/**
+ * A chunk that fails to load (flaky network, or a deploy replaced it) would
+ * leave the form stuck on "Sending"; reload to fetch fresh chunks instead.
+ */
+function orReload<T>(p: Promise<T>): Promise<T> {
+  return p.catch((e: unknown) => {
+    window.location.reload();
+    throw e;
+  });
+}
+const supabase = async () => (await orReload(loadClient())).createClient();
+const emailSchema = async () => (await orReload(loadValidation())).emailSchema;
+/** Warm both chunks once the page is idle, so a submit rarely waits on them. */
+function prefetchLoginChunks() {
+  void loadClient().catch(() => {});
+  void loadValidation().catch(() => {});
+}
 
 type Status =
   | { kind: "idle" }
@@ -33,6 +48,10 @@ function callbackUrl() {
 }
 
 export function LoginForm() {
+  useEffect(() => {
+    const id = setTimeout(prefetchLoginChunks, 1500);
+    return () => clearTimeout(id);
+  }, []);
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);

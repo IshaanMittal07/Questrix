@@ -16,6 +16,16 @@ async function LoginError({ searchParams }: { searchParams: Search }) {
   const key = Array.isArray(raw) ? (raw[0] ?? "") : (raw ?? "");
   // Own keys only: "__proto__" or "constructor" must not resolve to built-ins.
   const message = Object.hasOwn(ERRORS, key) ? ERRORS[key] : undefined;
+  if ((await searchParams).deleted === "1") {
+    return (
+      <p
+        role="status"
+        className="text-muted rounded-xl border border-current/30 px-4 py-3 text-center text-sm"
+      >
+        Your account and its data were deleted.
+      </p>
+    );
+  }
   if (!message) return null;
   return (
     <p
