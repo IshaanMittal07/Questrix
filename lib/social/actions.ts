@@ -145,6 +145,8 @@ export async function setLike(
   return { ok: true };
 }
 
+const COMMENTS_SHOWN = 100;
+
 export type CommentView = {
   id: string;
   body: string;
@@ -155,7 +157,7 @@ export type CommentView = {
 
 export async function loadComments(
   postId: unknown,
-): Promise<Ok<{ comments: CommentView[] }> | Fail> {
+): Promise<Ok<{ comments: CommentView[]; truncated: boolean }> | Fail> {
   const id = uuidSchema.safeParse(postId);
   if (!id.success) return fail("Couldn't load comments.");
   const s = await getVerifiedUser();
@@ -164,8 +166,10 @@ export async function loadComments(
     .from("comments")
     .select("id, body, created_at, author_id")
     .eq("post_id", id.data)
-    .order("created_at")
-    .limit(100);
+    // The newest 100, so a just-posted comment always shows; shown
+    // oldest-first below.
+    .order("created_at", { ascending: false })
+    .limit(COMMENTS_SHOWN);
   if (error) return mapError(error, "Couldn't load comments.");
   const authorIds = [...new Set(data.map((c) => c.author_id))];
   const authors = authorIds.length
@@ -179,7 +183,8 @@ export async function loadComments(
   const byId = new Map((authors ?? []).map((a) => [a.id, a]));
   return {
     ok: true,
-    comments: data.map((c) => ({
+    truncated: data.length === COMMENTS_SHOWN,
+    comments: [...data].reverse().map((c) => ({
       id: c.id,
       body: c.body,
       createdAt: c.created_at,
@@ -303,14 +308,22 @@ export async function setFollowing(
   return { ok: true };
 }
 
-export async function markInboxRead(): Promise<Ok | Fail> {
+/**
+ * Marks read what the Activity page showed: items up to `through` (the
+ * newest shown), so anything that arrived after the render stays unread.
+ */
+export async function markInboxRead(through: unknown): Promise<Ok | Fail> {
+  if (typeof through !== "string" || Number.isNaN(Date.parse(through))) {
+    return fail("Couldn't save.");
+  }
   const s = await getVerifiedUser();
   if (!s) return fail(SIGNED_OUT);
   const { error } = await s.supabase
     .from("notifications_inbox")
     .update({ read_at: new Date().toISOString() })
     .eq("user_id", s.userId)
-    .is("read_at", null);
+    .is("read_at", null)
+    .lte("created_at", through);
   if (error) return mapError(error);
   return { ok: true };
 }

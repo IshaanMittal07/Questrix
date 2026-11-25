@@ -30,7 +30,9 @@ async function Inbox() {
   }
   return (
     <>
-      {items.some((i) => i.unread) ? <MarkRead /> : null}
+      {items.some((i) => i.unread) ? (
+        <MarkRead through={items[0].createdAt} />
+      ) : null}
       <ul className="flex flex-col gap-2">
         {items.map((i) => (
           <li

@@ -49,6 +49,14 @@ function callbackUrl() {
 
 export function LoginForm() {
   useEffect(() => {
+    // When the browser is idle (after first paint and hydration); a timer
+    // where requestIdleCallback is missing (Safari).
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(prefetchLoginChunks, {
+        timeout: 4000,
+      });
+      return () => window.cancelIdleCallback(id);
+    }
     const id = setTimeout(prefetchLoginChunks, 1500);
     return () => clearTimeout(id);
   }, []);
