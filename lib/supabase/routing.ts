@@ -11,6 +11,8 @@ export const PUBLIC_PATHS = [LOGIN_PATH, "/auth"] as const;
 export const ONBOARDING_PATH = "/onboarding";
 /** Onboarding step 2. Only reachable once step 1 has set onboarded_at. */
 export const STARTER_HABITS_PATH = "/onboarding/habits";
+/** Onboarding step 3: notifications (skippable). */
+export const NOTIFICATIONS_STEP_PATH = "/onboarding/notifications";
 export const HOME_PATH = "/today";
 const MAX_NEXT_LENGTH = 512;
 

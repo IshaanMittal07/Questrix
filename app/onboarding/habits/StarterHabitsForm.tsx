@@ -14,7 +14,7 @@ import {
   type HabitCategory,
   type HabitTemplate,
 } from "@/lib/habits/templates";
-import { HOME_PATH } from "@/lib/supabase/routing";
+import { NOTIFICATIONS_STEP_PATH } from "@/lib/supabase/routing";
 
 const STARTER_MAX = 3;
 
@@ -67,7 +67,7 @@ export function StarterHabitsForm({
     startTransition(async () => {
       try {
         const res = await addStarterHabits(picked);
-        if (res.ok) router.push(HOME_PATH);
+        if (res.ok) router.push(NOTIFICATIONS_STEP_PATH);
         else setError(res.error);
       } catch {
         // A network drop or server crash: stay here, with Skip available.
@@ -191,7 +191,7 @@ export function StarterHabitsForm({
           className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
         >
           <Link
-            href={HOME_PATH}
+            href={NOTIFICATIONS_STEP_PATH}
             aria-disabled={pending || undefined}
             onClick={(e) => {
               if (pending) e.preventDefault();

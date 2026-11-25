@@ -494,7 +494,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - `url` must be a same-origin path, using the `safeNextPath` rules: no control characters or backslashes, resolving to our origin, and still a single-slash path _after_ normalisation. Dot segments can turn `/..//evil.com` into `//evil.com`, which a window opens as another site (security audit of PR #99, B1). Anything else opens `/today`.
     - `notificationclick` focuses our open window and navigates it. If it can't (a tab opened before the worker activated isn't controlled, so `navigate()` rejects), it opens a new window.
   - **Subscribe API** (`POST`/`DELETE /api/push/subscribe`).
-    - It's same-origin only (403) and signed-in only (401, from verified claims). Every route under `app/api` must check auth itself, because the page gate never redirects `/api/*`. A unit test enforces it. The page gate in `proxy.ts` never redirects `/api/*`: a followed 307 to `/login` could look like success (review of PR #99). The client also fetches with `redirect: "error"`.
+    - It's same-origin only (403) and signed-in only (401, from verified claims). The page gate in `proxy.ts` never redirects `/api/*`, because a followed 307 to `/login` could look like success (review of PR #99). So every route under `app/api` must check auth itself, and a unit test enforces it. The client also fetches with `redirect: "error"`.
     - Bodies must be `application/json` (415 otherwise) and at most 4 KB, by Content-Length and then streamed with a cut-off, so a chunked body is never buffered whole. The body is validated with Zod: the P2 allowlist, printable ASCII, at most 1024 characters, and exact key sizes. The rules live in `lib/validation/push.ts`, shared with the sender.
     - POST calls `save_push_subscription`. QX001 gives 429, with `limit: "devices"` when the hint is exactly the device cap's and `"rate"` otherwise, because QX001 covers several limits (P5). DELETE deletes the caller's row by endpoint under RLS.
     - Errors log only the code, never the endpoint or keys.
@@ -511,3 +511,13 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - `NEXT_PUBLIC_VAPID_PUBLIC_KEY` is inlined at build time, so rotating the VAPID pair needs a rebuild. Devices then show as off until turned on again, which replaces their subscription.
   - **Unsubscribing and signing out.** `unsubscribe()` sends the server DELETE (with `keepalive`, so it survives the navigation, while the session is valid) and unsubscribes the browser at the same time, even if the server can't be reached. That way the device stops receiving either way, and a row left behind goes on the sender's next 404/410. Sign-out (`SignOutButton`) unsubscribes before posting `/auth/signout`, giving up after 3 s so it can't hang (P1). It's disabled until hydrated and usable again after Back (bfcache). That means sign-out needs JavaScript, a deliberate trade for P1.
   - **Takeover.** Whoever holds a device's full subscription (endpoint and `auth` key) can move it to their account (P1), and their habit titles then appear on that device. Click targets stay server-built and same-origin. Accepted.
+- **P11. Notification settings and onboarding step 3 (#92).**
+  - **Settings → Notifications.** One card holds:
+    - this device's Enable / Turn off (P10);
+    - **Habit reminders** (`profiles.push_enabled`), which pauses every reminder on all devices;
+    - **Streak saver** (`profiles.streak_saver_enabled`), disabled while reminders are off;
+    - **Per habit**: a switch for each active habit that has reminder times (`habits.reminders_enabled`). Habits without times get a link to edit one.
+  - Every switch saves at once, optimistically, through a Server Action (`setNotificationPrefs`, `setHabitReminders`). Each re-checks the session and validates its input; a failure rolls back with an alert. RLS and the column grants stay authoritative (P3).
+  - Switches are `<button role="switch" aria-checked>` with a 44 px row.
+  - **Onboarding step 3** (`/onboarding/notifications`) comes after step 2's Add and Skip. It offers Enable notifications (the install sheet on an iPhone tab), and **Continue** goes to Today. It's skippable, as DECISIONS § Phase 3 anticipated.
+  - **Deep link.** A notification opens `/today?habit=<id>`. Today scrolls that habit's card into view (no smooth scroll under reduced motion), focuses it once, and drops the parameter so a reload doesn't jump again. An unknown id is ignored.

@@ -243,6 +243,29 @@ export function TodayView({
     };
   }, [shownDate, shownHour, timezone, router]);
 
+  // A notification opens /today?habit=<id> (plan §7.1): bring that habit's
+  // card into view and focus it, once. An unknown id is ignored. The
+  // parameter is then dropped, so a reload doesn't jump again.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const id = url.searchParams.get("habit");
+    if (!id) return;
+    url.searchParams.delete("habit");
+    window.history.replaceState(window.history.state, "", url);
+    const card = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-habit]"),
+    ).find((el) => el.dataset.habit === id);
+    if (!card) return;
+    const reduce = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    card.scrollIntoView?.({
+      block: "center",
+      behavior: reduce ? "auto" : "smooth",
+    });
+    card.querySelector<HTMLElement>("button")?.focus({ preventScroll: true });
+  }, []);
+
   useEffect(() => {
     if (!confetti) return;
     const t = setTimeout(() => setConfetti(0), 2_500);
