@@ -211,30 +211,35 @@ export function PostCard({
           ) : comments.length === 0 ? (
             <p className="text-muted text-sm">No comments yet.</p>
           ) : (
-            <ul className="flex flex-col gap-2">
+            <>
               {truncated ? (
-                <li className="text-muted text-xs">
+                <p className="text-muted text-xs">
                   Showing the latest {comments.length} comments.
-                </li>
+                </p>
               ) : null}
-              {comments.map((c) => (
-                <li key={c.id} className="bg-surface-2 rounded-xl p-2 text-sm">
-                  <span className="font-semibold">@{c.author.username}</span>{" "}
-                  <span className="break-words whitespace-pre-wrap">
-                    {c.body}
-                  </span>
-                  {c.mine ? (
-                    <button
-                      type="button"
-                      className="text-muted ml-2 min-h-11 text-xs underline"
-                      onClick={() => removeComment(c.id)}
-                    >
-                      Delete
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
+              <ul className="flex flex-col gap-2">
+                {comments.map((c) => (
+                  <li
+                    key={c.id}
+                    className="bg-surface-2 rounded-xl p-2 text-sm"
+                  >
+                    <span className="font-semibold">@{c.author.username}</span>{" "}
+                    <span className="break-words whitespace-pre-wrap">
+                      {c.body}
+                    </span>
+                    {c.mine ? (
+                      <button
+                        type="button"
+                        className="text-muted ml-2 min-h-11 text-xs underline"
+                        onClick={() => removeComment(c.id)}
+                      >
+                        Delete
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
           <form onSubmit={submitComment} className="flex gap-2">
             <label className="sr-only" htmlFor={`c-${post.id}`}>

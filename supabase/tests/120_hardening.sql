@@ -2,7 +2,7 @@
 -- and an RLS audit sweep over every public table.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(24);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -76,6 +76,19 @@ select ok((select bool_and(public.export_my_data() ? k) from unnest(array['daily
              'equipped', 'likes', 'blocked']) k),
   'the export also covers daily progress, milestones, equipped items, likes and blocks');
 select is(public.export_my_data() -> 'equipped' ->> 'outfit', 'starter-tee', 'with equipped items by slug');
+-- Another user's like, block and day must not appear in mine.
+select pg_temp.as_postgres();
+insert into public.posts (id, author_id, body) values ('8b000000-0000-0000-0000-000000000001', '80000001-0000-0000-0000-000000000000', 'x');
+insert into public.post_likes (post_id, user_id) values ('8b000000-0000-0000-0000-000000000001', '80000002-0000-0000-0000-000000000000');
+insert into public.blocks (blocker_id, blocked_id) values ('80000002-0000-0000-0000-000000000000', '80000001-0000-0000-0000-000000000000');
+insert into public.daily_progress (user_id, local_date, completed_count) values ('80000002-0000-0000-0000-000000000000', current_date, 1);
+select pg_temp.as_user('80000001-0000-0000-0000-000000000000');
+select ok(jsonb_array_length(public.export_my_data() -> 'likes') = 0
+          and jsonb_array_length(public.export_my_data() -> 'blocked') = 0
+          and jsonb_array_length(public.export_my_data() -> 'daily_progress') = 0,
+  'other users'' likes, blocks and days stay out of my export');
+select pg_temp.as_postgres();
+delete from public.blocks where blocker_id = '80000002-0000-0000-0000-000000000000';
 select pg_temp.as_postgres();
 select is(public.export_my_data(), null, 'with no user there''s nothing to export');
 

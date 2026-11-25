@@ -169,7 +169,7 @@ export async function loadComments(
     // The newest 100, so a just-posted comment always shows; shown
     // oldest-first below.
     .order("created_at", { ascending: false })
-    .limit(COMMENTS_SHOWN);
+    .limit(COMMENTS_SHOWN + 1);
   if (error) return mapError(error, "Couldn't load comments.");
   const authorIds = [...new Set(data.map((c) => c.author_id))];
   const authors = authorIds.length
@@ -183,17 +183,20 @@ export async function loadComments(
   const byId = new Map((authors ?? []).map((a) => [a.id, a]));
   return {
     ok: true,
-    truncated: data.length === COMMENTS_SHOWN,
-    comments: [...data].reverse().map((c) => ({
-      id: c.id,
-      body: c.body,
-      createdAt: c.created_at,
-      mine: c.author_id === s.userId,
-      author: {
-        username: byId.get(c.author_id)?.username ?? "someone",
-        displayName: byId.get(c.author_id)?.display_name ?? null,
-      },
-    })),
+    truncated: data.length > COMMENTS_SHOWN,
+    comments: data
+      .slice(0, COMMENTS_SHOWN)
+      .reverse()
+      .map((c) => ({
+        id: c.id,
+        body: c.body,
+        createdAt: c.created_at,
+        mine: c.author_id === s.userId,
+        author: {
+          username: byId.get(c.author_id)?.username ?? "someone",
+          displayName: byId.get(c.author_id)?.display_name ?? null,
+        },
+      })),
   };
 }
 

@@ -27,17 +27,18 @@ as $$
     'ledger', (select coalesce(jsonb_agg(jsonb_build_object(
         'delta', l.delta, 'reason', l.reason, 'created_at', l.created_at) order by l.id), '[]')
       from public.points_ledger l where l.user_id = (select auth.uid())),
-    'items', (select coalesce(jsonb_agg(jsonb_build_object('slug', i.slug, 'acquired_at', ui.acquired_at)), '[]')
+    'items', (select coalesce(jsonb_agg(jsonb_build_object('slug', i.slug, 'acquired_at', ui.acquired_at)
+        order by ui.acquired_at, i.slug), '[]')
       from public.user_items ui join public.items i on i.id = ui.item_id where ui.user_id = (select auth.uid())),
     'equipped', (select jsonb_strip_nulls(jsonb_build_object(
-        'avatar_base', (select slug from public.items where id = e.avatar_base_id),
-        'outfit', (select slug from public.items where id = e.outfit_id),
-        'accessory', (select slug from public.items where id = e.accessory_id),
-        'name_color', (select slug from public.items where id = e.name_color_id),
-        'name_style', (select slug from public.items where id = e.name_style_id),
-        'title', (select slug from public.items where id = e.title_id),
-        'background', (select slug from public.items where id = e.background_id),
-        'border', (select slug from public.items where id = e.border_id)))
+        'avatar_base', (select i2.slug from public.items i2 where i2.id = e.avatar_base_id),
+        'outfit', (select i2.slug from public.items i2 where i2.id = e.outfit_id),
+        'accessory', (select i2.slug from public.items i2 where i2.id = e.accessory_id),
+        'name_color', (select i2.slug from public.items i2 where i2.id = e.name_color_id),
+        'name_style', (select i2.slug from public.items i2 where i2.id = e.name_style_id),
+        'title', (select i2.slug from public.items i2 where i2.id = e.title_id),
+        'background', (select i2.slug from public.items i2 where i2.id = e.background_id),
+        'border', (select i2.slug from public.items i2 where i2.id = e.border_id)))
       from public.equipped_cosmetics e where e.user_id = (select auth.uid())),
     'posts', (select coalesce(jsonb_agg(jsonb_build_object(
         'body', p.body, 'attachment', p.attachment, 'created_at', p.created_at, 'deleted_at', p.deleted_at)
