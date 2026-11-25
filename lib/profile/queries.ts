@@ -2,6 +2,7 @@ import "server-only";
 
 import { cache } from "react";
 import { assetSvg, type AvatarLayers } from "@/components/avatar/Avatar";
+import { assetCss } from "@/lib/shop/types";
 import { createClient } from "@/lib/supabase/server";
 
 const EQUIPPED_SELECT = `
@@ -10,7 +11,9 @@ const EQUIPPED_SELECT = `
   accessory:items!equipped_cosmetics_accessory_id_fkey(asset),
   background:items!equipped_cosmetics_background_id_fkey(asset),
   border:items!equipped_cosmetics_border_id_fkey(asset),
-  title:items!equipped_cosmetics_title_id_fkey(name)
+  title:items!equipped_cosmetics_title_id_fkey(name),
+  name_color:items!equipped_cosmetics_name_color_id_fkey(asset),
+  name_style:items!equipped_cosmetics_name_style_id_fkey(asset)
 `;
 
 /** The signed-in user's profile + equipped avatar layers (deduped per request). */
@@ -37,5 +40,11 @@ export const getMyProfile = cache(async () => {
     outfit: assetSvg(equipped?.outfit?.asset),
     accessory: assetSvg(equipped?.accessory?.asset),
   };
-  return { profile, layers, title: equipped?.title?.name ?? null };
+  return {
+    profile,
+    layers,
+    title: equipped?.title?.name ?? null,
+    nameColor: assetCss(equipped?.name_color?.asset),
+    nameStyle: assetCss(equipped?.name_style?.asset),
+  };
 });
