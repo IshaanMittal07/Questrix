@@ -1,8 +1,17 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
 import { Button } from "@/components/ui/Button";
 import { unsubscribe } from "@/lib/push/client";
+
+function noopSubscribe() {
+  return () => {};
+}
 
 /** Give up on the unsubscribe after this long; sign-out must not hang. */
 const UNSUBSCRIBE_TIMEOUT_MS = 3000;
@@ -14,6 +23,21 @@ const UNSUBSCRIBE_TIMEOUT_MS = 3000;
  */
 export function SignOutButton() {
   const [busy, setBusy] = useState(false);
+  // Disabled until hydrated: before then the plain form would post without
+  // forgetting the device first. (False on the server, true on the client.)
+  const ready = useSyncExternalStore(
+    noopSubscribe,
+    () => true,
+    () => false,
+  );
+  // Back from the bfcache after a sign-out (or a refused one): usable again.
+  useEffect(() => {
+    const onShow = (e: PageTransitionEvent) => {
+      if (e.persisted) setBusy(false);
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -30,7 +54,7 @@ export function SignOutButton() {
 
   return (
     <form action="/auth/signout" method="post" onSubmit={onSubmit}>
-      <Button type="submit" variant="secondary" disabled={busy}>
+      <Button type="submit" variant="secondary" disabled={busy || !ready}>
         Sign out
       </Button>
     </form>

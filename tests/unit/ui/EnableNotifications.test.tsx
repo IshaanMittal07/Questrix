@@ -7,6 +7,8 @@ const client = vi.hoisted(() => ({
   isSubscribed: vi.fn(async () => false),
   subscribe: vi.fn(),
   unsubscribe: vi.fn(async () => true),
+  claimSubscription: vi.fn(async () => {}),
+  activeRegistration: vi.fn(async () => ({}) as ServiceWorkerRegistration),
 }));
 vi.mock("@/lib/push/client", () => client);
 
@@ -183,7 +185,8 @@ describe("EnableNotifications", () => {
   });
 
   it("warns when the server didn't confirm the turn-off", async () => {
-    client.isSubscribed.mockResolvedValue(true);
+    // On at first; off in the browser after the turn-off.
+    client.isSubscribed.mockResolvedValueOnce(true).mockResolvedValue(false);
     client.unsubscribe.mockResolvedValue(false);
     render(<EnableNotifications publicKey={KEY} />);
     await userEvent.click(
@@ -200,6 +203,9 @@ describe("EnableNotifications", () => {
     ["too-many", "Notifications are on for 10 devices already."],
     ["failed", "Couldn't turn notifications on. Try again."],
     ["unavailable", "Notifications aren't available right now."],
+    // Dismissed isn't blocked: it stays off with a friendly note.
+    ["dismissed", "You can turn them on any time."],
+    ["rate-limited", "Too many tries. Try again in a little while."],
   ] as const)("shows the %s message and stays off", async (reason, text) => {
     client.subscribe.mockResolvedValue({ ok: false, reason });
     render(<EnableNotifications publicKey={KEY} />);

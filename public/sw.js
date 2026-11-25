@@ -83,7 +83,12 @@ function safeUrl(value) {
   try {
     const url = new URL(value, self.location.origin);
     if (url.origin !== self.location.origin) return "/today";
-    return url.pathname + url.search + url.hash;
+    const out = url.pathname + url.search + url.hash;
+    // Check the output too: dot segments can turn "/..//evil.com" (same
+    // origin as input) into the protocol-relative "//evil.com", which a
+    // window would open as another site (security audit of PR #99, B1).
+    if (!out.startsWith("/") || out.startsWith("//")) return "/today";
+    return out;
   } catch {
     return "/today";
   }

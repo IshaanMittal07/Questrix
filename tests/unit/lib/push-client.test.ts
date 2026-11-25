@@ -46,9 +46,10 @@ const requestPermission = vi.fn(
 );
 let permission: NotificationPermission = "default";
 let status = 200;
+let body = "{}";
 const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
   calls.push(`fetch ${init.method}`);
-  return new Response("{}", { status });
+  return new Response(body, { status });
 });
 
 beforeEach(() => {
@@ -56,6 +57,7 @@ beforeEach(() => {
   current = null;
   fresh = fakeSub(KEY_BYTES.slice().buffer);
   status = 200;
+  body = "{}";
   permission = "default";
   pushManager.getSubscription.mockClear();
   pushManager.subscribe.mockClear();
@@ -126,15 +128,42 @@ describe("subscribe", () => {
     expect(requestPermission).not.toHaveBeenCalled();
   });
 
-  it.each(["denied", "default"] as const)(
-    "reports denied when permission is %s, without subscribing",
-    async (answer) => {
+  it.each([
+    ["denied", "denied"],
+    // A dismissed prompt isn't a block (review of PR #99).
+    ["default", "dismissed"],
+  ] as const)(
+    "reports %s permission as %s, without subscribing",
+    async (answer, reason) => {
       requestPermission.mockResolvedValue(answer);
-      expect(await subscribe(KEY)).toEqual({ ok: false, reason: "denied" });
+      expect(await subscribe(KEY)).toEqual({ ok: false, reason });
       expect(pushManager.subscribe).not.toHaveBeenCalled();
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+
+  it("never follows a redirect (a signed-out call bounced to /login)", async () => {
+    await subscribe(KEY);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      redirect: "error",
+      keepalive: true,
+    });
+  });
+
+  it("reports unavailable when the service worker never becomes active", async () => {
+    vi.useFakeTimers();
+    try {
+      Object.defineProperty(navigator.serviceWorker, "ready", {
+        configurable: true,
+        get: () => new Promise(() => {}),
+      });
+      const p = subscribe(KEY);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await p).toEqual({ ok: false, reason: "unavailable" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("asks for permission, subscribes with the key and saves it", async () => {
     expect(await subscribe(KEY)).toEqual({ ok: true });
@@ -196,9 +225,18 @@ describe("subscribe", () => {
     expect(pushManager.subscribe).toHaveBeenCalledOnce();
   });
 
-  it("reports too-many for a 429", async () => {
+  it("reports too-many for a 429 on the device cap", async () => {
     status = 429;
+    body = JSON.stringify({ limit: "devices" });
     expect(await subscribe(KEY)).toEqual({ ok: false, reason: "too-many" });
+  });
+
+  it("reports rate-limited for any other 429", async () => {
+    status = 429;
+    body = JSON.stringify({ limit: "rate" });
+    expect(await subscribe(KEY)).toEqual({ ok: false, reason: "rate-limited" });
+    body = "not json";
+    expect(await subscribe(KEY)).toEqual({ ok: false, reason: "rate-limited" });
   });
 
   it.each([400, 401, 403, 500])("reports failed for a %i", async (s) => {
