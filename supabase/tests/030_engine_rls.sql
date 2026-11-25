@@ -386,8 +386,9 @@ select sequence_privs_are('public', 'points_ledger_id_seq', 'authenticated', arr
   'authenticated has no privileges on the ledger id sequence');
 select sequence_privs_are('public', 'points_ledger_id_seq', 'anon', array[]::text[],
   'anon has no privileges on the ledger id sequence');
-select table_privs_are('public', 'points_ledger', 'service_role', array['INSERT', 'REFERENCES', 'SELECT'],
-  'service_role can append to the ledger but not edit, delete or truncate it');
+-- #83 (Phase 8): service_role writes only through admin_adjust_points.
+select table_privs_are('public', 'points_ledger', 'service_role', array['REFERENCES', 'SELECT'],
+  'service_role can read the ledger but writes only through admin_adjust_points');
 select pg_temp.as_user('11111111-1111-1111-1111-111111111111');
 select throws_ok($$select setval('public.points_ledger_id_seq', 1)$$, '42501', null,
   'a signed-in user cannot reset the ledger id sequence');
