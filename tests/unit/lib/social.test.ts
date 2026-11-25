@@ -161,6 +161,76 @@ describe("social actions", () => {
     expect(from).not.toHaveBeenCalled();
   });
 
+  /** A thenable query builder: every call is recorded, awaiting gives `result`. */
+  function builder(result: { data: unknown; error: unknown }) {
+    const calls: Array<[string, ...unknown[]]> = [];
+    const b: Record<string, unknown> = {};
+    for (const m of [
+      "select",
+      "eq",
+      "is",
+      "in",
+      "lte",
+      "order",
+      "limit",
+      "update",
+    ]) {
+      b[m] = (...args: unknown[]) => {
+        calls.push([m, ...args]);
+        return b;
+      };
+    }
+    b.then = (ok: (v: unknown) => unknown) => Promise.resolve(result).then(ok);
+    return { b, calls };
+  }
+
+  it("marks read only items up to the newest one shown", async () => {
+    const q = builder({ data: null, error: null });
+    from.mockReturnValue(q.b);
+    const { markInboxRead } = await import("@/lib/social/actions");
+    const through = "2026-11-25T10:00:00.123456+00:00";
+    expect(await markInboxRead(through)).toEqual({ ok: true });
+    expect(q.calls).toContainEqual(["lte", "created_at", through]);
+    expect(q.calls).toContainEqual(["eq", "user_id", "u1"]);
+  });
+
+  it.each([
+    [3, false],
+    [100, false],
+    [101, true],
+  ])(
+    "loads the newest comments oldest-first (%i rows → truncated %s)",
+    async (rows, truncated) => {
+      // The query returns newest first.
+      const newestFirst = Array.from({ length: rows }, (_, i) => ({
+        id: `c${rows - i}`,
+        body: "b",
+        created_at: `t${rows - i}`,
+        author_id: "a1",
+      }));
+      const comments = builder({ data: newestFirst, error: null });
+      const authors = builder({
+        data: [{ id: "a1", username: "al", display_name: null }],
+        error: null,
+      });
+      from.mockReturnValueOnce(comments.b).mockReturnValueOnce(authors.b);
+      const { loadComments } = await import("@/lib/social/actions");
+      const res = await loadComments(ID);
+      if (!res.ok) throw new Error(res.error);
+      expect(comments.calls).toContainEqual([
+        "order",
+        "created_at",
+        { ascending: false },
+      ]);
+      expect(comments.calls).toContainEqual(["limit", 101]);
+      expect(res.truncated).toBe(truncated);
+      expect(res.comments).toHaveLength(Math.min(rows, 100));
+      // Oldest of the shown ones first, newest last.
+      expect(res.comments.at(-1)?.id).toBe(`c${rows}`);
+      expect(res.comments[0].id).toBe(`c${rows - Math.min(rows, 100) + 1}`);
+    },
+  );
+
   it("is signed out without a session", async () => {
     signedIn = false;
     const { addComment } = await import("@/lib/social/actions");
