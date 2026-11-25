@@ -139,19 +139,44 @@ export async function unsubscribe(): Promise<boolean> {
   return serverOk && browser.status === "fulfilled";
 }
 
+export type ClaimResult =
+  /** Saved for whoever is signed in now. */
+  | "ok"
+  /** No subscription (or no permission) on this device. */
+  | "none"
+  /** Made for another VAPID key (a rotation): it can't receive our pushes. */
+  | "stale"
+  /** The server didn't take it (signed out, a limit, an error). */
+  | "failed";
+
 /**
  * Re-save this device's subscription for whoever is signed in now. A
  * session can end without our sign-out (expiry, another device), leaving
- * the row with the previous user; the RPC moves it (P1). Best effort.
+ * the row with the previous user; the RPC moves it (P1). A subscription
+ * for another VAPID key isn't re-saved: it's reported stale, so the UI
+ * offers to turn notifications on again (which replaces it).
  */
-export async function claimSubscription(): Promise<void> {
+export async function claimSubscription(
+  publicKey: string | undefined,
+): Promise<ClaimResult> {
   try {
-    if (Notification.permission !== "granted") return;
+    if (Notification.permission !== "granted") return "none";
     const reg = await navigator.serviceWorker.getRegistration();
     const sub = await reg?.pushManager.getSubscription();
-    if (sub) await post("POST", sub.toJSON());
+    if (!sub) return "none";
+    if (!publicKey) return "failed";
+    if (
+      !sameKey(
+        sub.options.applicationServerKey,
+        urlBase64ToUint8Array(publicKey),
+      )
+    ) {
+      return "stale";
+    }
+    const res = await post("POST", sub.toJSON());
+    return res.ok ? "ok" : "failed";
   } catch {
-    // Nothing to do: the toggle still reflects the browser's state.
+    return "failed";
   }
 }
 

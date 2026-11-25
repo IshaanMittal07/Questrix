@@ -15,6 +15,8 @@ import { InstallSheet } from "./InstallSheet";
 type State =
   | { kind: "checking" }
   | { kind: "support"; support: Exclude<PushSupport, "supported"> }
+  /** Supported, but no service worker is running (yet): try again later. */
+  | { kind: "unavailable" }
   | { kind: "off" }
   | { kind: "on" }
   | { kind: "denied" };
@@ -33,21 +35,36 @@ const MESSAGES = {
 /** How long the first check waits for the service worker to start. */
 const DETECT_TIMEOUT_MS = 5_000;
 
-/** What this device can do right now (browser APIs: client only). */
-async function detect(): Promise<State> {
+/** What this device can do right now, plus a note to show (client only). */
+async function detect(
+  publicKey: string | undefined,
+): Promise<{ state: State; note?: string }> {
   const support = pushSupport(
     window as unknown as Parameters<typeof pushSupport>[0],
   );
-  if (support !== "supported") return { kind: "support", support };
-  if (Notification.permission === "denied") return { kind: "denied" };
-  // No worker (a dev build, or registration failed): nothing can subscribe.
+  if (support !== "supported") return { state: { kind: "support", support } };
+  if (Notification.permission === "denied")
+    return { state: { kind: "denied" } };
+  // No worker (a dev build, a failed or still-installing registration).
   if (!(await activeRegistration(DETECT_TIMEOUT_MS))) {
-    return { kind: "support", support: "unsupported" };
+    return { state: { kind: "unavailable" } };
   }
-  if (!(await isSubscribed())) return { kind: "off" };
+  if (!(await isSubscribed())) return { state: { kind: "off" } };
   // On means on for whoever is signed in now (security audit of PR #99, S2).
-  await claimSubscription();
-  return { kind: "on" };
+  const claim = await claimSubscription(publicKey);
+  if (claim === "stale") {
+    return {
+      state: { kind: "off" },
+      note: "Notifications need turning on again on this device.",
+    };
+  }
+  if (claim === "failed") {
+    return {
+      state: { kind: "on" },
+      note: "Couldn't link this device's notifications to your account. Turn them off and on again.",
+    };
+  }
+  return { state: { kind: "on" } };
 }
 
 /**
@@ -66,19 +83,31 @@ export function EnableNotifications({
 
   useEffect(() => {
     let live = true;
-    void detect().then((next) => {
-      if (live) setState(next);
-    });
+    const run = () =>
+      void detect(publicKey).then(({ state: next, note }) => {
+        if (!live) return;
+        setState(next);
+        if (note) setMessage(note);
+      });
+    run();
+    // The worker may finish installing after the first check.
+    const sw =
+      typeof navigator !== "undefined" ? navigator.serviceWorker : undefined;
+    sw?.addEventListener("controllerchange", run);
     return () => {
       live = false;
+      sw?.removeEventListener("controllerchange", run);
     };
-  }, []);
+  }, [publicKey]);
 
   if (state.kind === "checking") {
     return <p className="text-muted text-sm">Checking notifications…</p>;
   }
   if (state.kind === "support" && state.support === "install") {
     return <InstallSheet />;
+  }
+  if (state.kind === "unavailable") {
+    return <p className="text-muted text-sm">{MESSAGES.unavailable}</p>;
   }
   if (state.kind === "support") {
     return (
