@@ -6,6 +6,8 @@ A running log of choices made where the plan was ambiguous or where current tool
 
 - **One PR per task, rebase-merged (from Phase 3, #29).** Plan §11.2 originally had one PR per phase, squash-merged, which put a whole phase on `main` as a single commit. Now each task issue gets its own branch and PR, merged with `--rebase` so the individual Conventional Commits stay on `main`. That keeps the history readable step by step and satisfies the linear-history rule. The tag and release still happen once per phase.
 
+- **One PR per phase again (from Phase 6, 2026-11-25).** The owner asked to finish by the end of the week, without a PR for every task. Each phase now gets one branch (`phase-N/<slug>`) and one PR, still rebase-merged, so each Conventional Commit stays on `main`. `main`'s protection is unchanged: a PR, green `ci`, `db-tests` and `e2e`, and linear history. There's no per-task issue; the tracking issue lists the tasks as a checklist. `code-reviewer` (plus `security-auditor` where §11 asks) still reviews every PR before merge.
+
 ## Phase 0
 
 - **Repository visibility:** the repo `IshaanMittal07/Questrix` already existed and is **public**, so it was reused instead of running `gh repo create`. Because it's public, branch protection is available.
@@ -528,3 +530,28 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - A second test checks that an iPhone outside the installed app gets the install sheet. Both check that there's no horizontal overflow at 390 px.
   - **CI key.** The CI E2E build gets a real VAPID _public_ key, committed in `ci.yml`. It's public by design, and its private half was discarded when it was generated. The UI needs a well-formed key to offer Enable; nothing in CI sends a push.
   - **Not covered automatically.** Real delivery (cron → route → push service → device) and the click on a real notification can't run in CI. They're the manual real-iPhone checklist, run through the RUNBOOK §6 tunnel. The owner deferred that run (2026-11-23), so **v0.5.0 ships before it**. The checklist lives in a follow-up issue, so it can be ticked off later.
+
+## Phase 6
+
+- **S1. `purchase_item` (plan §6.4).** It locks the profile `for no key update` first, like the engine (D5), so a user's purchases serialise with each other and with complete and undo. Two sessions buying at once can't both pass the balance check: the second waits, then sees the lower balance (checked by hand with two `psql` sessions; pgTAP runs in one transaction).
+  - **Order of checks:** signed in (`28000`), profile, onboarded (`QX107`), item active (`P0002`), level (`QX203`), freeze cap (`QX204`) or already owned (`QX202`), balance (`QX201`).
+  - **Ledger:** a negative `purchase` entry whose `ref_id` is the item id. (`user_items` has no id of its own, and freezes have no row.) Free items write no entry, because the delta must be nonzero.
+  - **Streak Freeze** is the only consumable. It adds to `profiles.streak_freezes` up to `economy_config.streak_freezes_max`, with no `user_items` row. Undo gives back freezes as a capped delta (#69), so a freeze bought after a completion survives undoing it.
+  - Spending never touches `lifetime_points`, so a purchase can't lower your level.
+- **S2. The catalogue is a migration** (`20261125000100_shop.sql`), so production gets it too; `seed.sql` stays for demo data. Prices sit inside the plan's rarity bands, apart from the 400-point Streak Freeze, which the plan prices separately. Some epic and legendary cosmetics also need levels 5, 10 or 20.
+- **S3. Cosmetic assets.**
+  - SVG layers live in `/public/cosmetics/<category>/<slug>.svg`. They're original flat-neon art on the shared 256×256 frame.
+  - Animated layers have their own `prefers-reduced-motion` rule inside the SVG, because an `<img>` doesn't inherit page CSS.
+  - Name colours and styles are CSS classes (`asset.css`), allowlisted by `assetCss` to `name-color-*` and `name-style-*`. Titles come from `asset.text`, capped at 40 characters.
+  - Every cosmetic was checked by eye at 64 px and 256 px.
+- **S4. The Shop** reads `items`, the user's own `user_items` and `equipped_cosmetics` through RLS. There's no read RPC.
+  - The preview shows the selected item on top of what's equipped.
+  - Buying always goes through a confirm sheet showing the balance after the purchase.
+  - Equipping is optimistic and rolls back on an error.
+  - The balance shown after a purchase is the RPC's `new_balance`; the client never works it out itself.
+- **S5. Profile.**
+  - It shows the equipped name colour and style, the title, level progress, freezes, and badges for the streak milestones earned.
+  - The 12-week heatmap is built from the user's own `daily_progress`. Its weeks start on Sunday and end in the user's current local week.
+  - Posts on the profile come in Phase 7.
+- **S6. The E2E credits points through SQL** (`tests/e2e/helpers/db.ts`, run with `docker exec` as postgres), because clients can never credit points. The credit goes through the ledger, so balance = sum(ledger) still holds.
+- **S7. Invariant walk.** `070_engine_invariants.sql` still spends through `admin_adjust`. `100_shop.sql` covers `purchase_item` directly, including balance = ledger after purchases. Swapping the walk's spend step over to `purchase_item` is left as a follow-up.

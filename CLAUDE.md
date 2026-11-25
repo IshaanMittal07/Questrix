@@ -36,15 +36,14 @@ pnpm exec supabase gen types typescript --local > lib/supabase/types.ts
 For each phase:
 
 1. Create a tracking issue (label `phase-N`, with its milestone).
-2. Run the `planner` subagent and post its plan as an issue comment.
-3. Create one issue per task.
+2. List the phase's tasks as a checklist on the tracking issue. Since Phase 6 there's one PR per phase, not per task (DECISIONS § Workflow).
 
-Then for **each task issue**, one at a time, starting from an up-to-date `main`:
+Then, starting from an up-to-date `main`:
 
-4. Branch `phase-N/<task-slug>`.
-5. Make Conventional Commits that reference the task issue (`refs #12`).
+4. Branch `phase-N/<slug>`.
+5. Make Conventional Commits that reference the tracking issue (`refs #12`).
 6. Run the `test-writer` subagent. Lint, typecheck, unit, db and build must all be green locally.
-7. Open a draft PR from the template with `Closes #<task>`. The phase's last PR also closes the tracking issue.
+7. Open a draft PR from the template with `Closes #<tracking issue>`.
 8. Run the `code-reviewer` subagent (plus `security-auditor` in Phases 2, 4, 6, 7 and 8) and post the review with `gh pr review --comment`.
 9. Fix every Blocking and Should-fix item, then re-review.
 10. Run `gh pr ready`, then wait for CI to go green.
