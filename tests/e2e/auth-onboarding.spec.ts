@@ -125,6 +125,12 @@ test("sign up with an email code → pick a username → land on Today", async (
   expect(titles.every(Boolean)).toBe(true);
   await page.getByRole("button", { name: "Add 2 habits" }).click();
 
+  // Step 3: notifications, skippable. On an iPhone outside the installed
+  // app it explains how to install instead of asking for permission.
+  await expect(page).toHaveURL(/\/onboarding\/notifications$/);
+  await expect(page.getByText("Step 3")).toBeVisible();
+  await page.getByRole("link", { name: "Continue" }).click();
+
   await expect(page).toHaveURL(/\/today$/);
   await expect(page.getByText(username).first()).toBeVisible();
   await expect(

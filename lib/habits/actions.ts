@@ -161,6 +161,38 @@ async function callHabitRpc(
   return { ok: true, data: undefined };
 }
 
+/**
+ * Turn one habit's reminders on or off (Settings, plan §12 Phase 5). Owner
+ * only by RLS; reminders_enabled is in the habits column grant and doesn't
+ * touch any snapshot.
+ */
+export async function setHabitReminders(
+  id: unknown,
+  enabled: unknown,
+): Promise<ActionResult> {
+  const parsedId = habitIdSchema.safeParse(id);
+  if (!parsedId.success) return invalid(parsedId.error);
+  if (typeof enabled !== "boolean") {
+    return fail("invalid", "Couldn't save. Try again.");
+  }
+  const session = await getVerifiedUser();
+  if (!session) return fail("signed_out", "You're signed out.");
+
+  const { data, error } = await session.supabase
+    .from("habits")
+    .update({ reminders_enabled: enabled })
+    .eq("id", parsedId.data)
+    .eq("user_id", session.userId)
+    .select("id");
+  if (error) return fromDb(error);
+  if (!data || data.length === 0) {
+    return fail("not_found", "That habit doesn't exist.");
+  }
+  revalidatePath("/settings");
+  revalidateHabits();
+  return { ok: true, data: undefined };
+}
+
 export async function archiveHabit(id: unknown) {
   return callHabitRpc("archive_habit", id);
 }

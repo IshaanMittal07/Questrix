@@ -45,8 +45,10 @@ export async function signUpAndOnboard(page: Page, testInfo: TestInfo) {
   return { email, username };
 }
 
-/** Onboarding step 2: skip picking habits and land on Today. */
+/** Onboarding steps 2 and 3: skip picking habits and notifications, land on Today. */
 export async function skipStarterHabits(page: Page) {
   await page.getByRole("link", { name: "Skip for now" }).click();
+  await expect(page).toHaveURL(/\/onboarding\/notifications$/);
+  await page.getByRole("link", { name: "Continue" }).click();
   await expect(page).toHaveURL(/\/today$/);
 }

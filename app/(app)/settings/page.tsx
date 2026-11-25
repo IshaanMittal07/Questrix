@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { EnableNotifications } from "@/components/push/EnableNotifications";
 import { SignOutButton } from "@/components/push/SignOutButton";
 import { Card } from "@/components/ui/Card";
 import { timezoneCooldownUntil } from "@/lib/profile/cooldown";
+import { listActiveHabits } from "@/lib/habits/queries";
 import { getMyProfile } from "@/lib/profile/queries";
 import { createClient } from "@/lib/supabase/server";
+import { NotificationsCard } from "./NotificationsCard";
 import { TimezoneForm } from "./TimezoneForm";
 
 export const metadata: Metadata = { title: "Settings" };
@@ -35,20 +36,29 @@ async function timezoneLock(profile: {
 async function SettingsContent() {
   const me = await getMyProfile();
   if (!me) return null;
-  const lockedUntil = await timezoneLock(me.profile);
+  const [lockedUntil, habits] = await Promise.all([
+    timezoneLock(me.profile),
+    listActiveHabits(),
+  ]);
   return (
     <>
       <Card>
         <TimezoneForm current={me.profile.timezone} lockedUntil={lockedUntil} />
       </Card>
-      <Card className="flex flex-col gap-3">
-        <div>
-          <h2 className="font-semibold">Notifications</h2>
-          <p className="text-muted text-sm">
-            Reminders for your habits on this device.
-          </p>
-        </div>
-        <EnableNotifications />
+      <Card>
+        <NotificationsCard
+          prefs={{
+            push_enabled: me.profile.push_enabled,
+            streak_saver_enabled: me.profile.streak_saver_enabled,
+          }}
+          habits={habits.map((h) => ({
+            id: h.id,
+            title: h.title,
+            icon: h.icon,
+            reminderTimes: h.reminder_times,
+            remindersEnabled: h.reminders_enabled,
+          }))}
+        />
       </Card>
       <Card className="flex items-center justify-between gap-4">
         <div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import {
   activeRegistration,
@@ -64,6 +64,8 @@ async function detect(
       note: "Couldn't link this device's notifications to your account. Turn them off and on again.",
     };
   }
+  // "none": the subscription vanished between the two checks.
+  if (claim === "none") return { state: { kind: "off" } };
   return { state: { kind: "on" } };
 }
 
@@ -79,16 +81,24 @@ export function EnableNotifications({
 }) {
   const [state, setState] = useState<State>({ kind: "checking" });
   const [busy, setBusy] = useState(false);
+  // Read by the re-check: an action in progress owns the state and message.
+  const busyRef = useRef(false);
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
-    const run = () =>
+    const run = () => {
+      if (busyRef.current) return;
       void detect(publicKey).then(({ state: next, note }) => {
-        if (!live) return;
+        if (!live || busyRef.current) return;
         setState(next);
-        if (note) setMessage(note);
+        // A fresh check replaces any earlier note.
+        setMessage(note ?? null);
       });
+    };
     run();
     // The worker may finish installing after the first check.
     const sw =
