@@ -7,6 +7,7 @@ import {
   type FormEvent,
 } from "react";
 import { Button } from "@/components/ui/Button";
+import { clearOfflinePages } from "@/lib/offline/pages";
 import { unsubscribe } from "@/lib/push/client";
 
 function noopSubscribe() {
@@ -43,12 +44,18 @@ export function SignOutButton() {
     e.preventDefault();
     const form = e.currentTarget;
     setBusy(true);
+    // In parallel: drop the offline copy of Today, which holds this user's
+    // data (DECISIONS H11, capped at 1 s), and unsubscribe this device.
+    const pending: Promise<unknown>[] = [clearOfflinePages()];
     if ("serviceWorker" in navigator && "PushManager" in window) {
-      await Promise.race([
-        unsubscribe(),
-        new Promise((r) => setTimeout(r, UNSUBSCRIBE_TIMEOUT_MS)),
-      ]);
+      pending.push(
+        Promise.race([
+          unsubscribe(),
+          new Promise((r) => setTimeout(r, UNSUBSCRIBE_TIMEOUT_MS)),
+        ]),
+      );
     }
+    await Promise.all(pending);
     form.submit();
   }
 

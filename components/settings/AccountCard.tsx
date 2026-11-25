@@ -5,6 +5,7 @@ import { useState, useTransition } from "react";
 import { setPrivate } from "@/app/(app)/settings/actions";
 import { Button } from "@/components/ui/Button";
 import { Switch } from "@/components/ui/Switch";
+import { clearOfflinePages } from "@/lib/offline/pages";
 
 /** Privacy, data export and account deletion (plan §9 Settings). */
 export function AccountCard({
@@ -64,6 +65,12 @@ export function AccountCard({
         <form
           method="post"
           action="/api/account/delete"
+          onSubmit={(e) => {
+            // Clear the offline copy of Today first (DECISIONS H11).
+            e.preventDefault();
+            const form = e.currentTarget;
+            void clearOfflinePages().then(() => form.submit());
+          }}
           className="mt-3 flex flex-col gap-3"
         >
           <p className="text-muted text-sm">
