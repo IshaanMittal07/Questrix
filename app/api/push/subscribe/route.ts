@@ -2,6 +2,9 @@ import { isSameOriginRequest } from "@/lib/http/same-origin";
 import { createClient } from "@/lib/supabase/server";
 import { subscribeSchema, unsubscribeSchema } from "@/lib/validation/push";
 
+/** save_push_subscription's hint for the 10-device cap (migration 20261123000200). */
+const DEVICE_CAP_HINT = "Turn notifications off on a device you no longer use.";
+
 /** Bodies are small JSON; anything bigger is refused before parsing. */
 const MAX_BODY = 4096;
 
@@ -18,7 +21,7 @@ class BadBody extends Error {
  */
 async function readJson(request: Request): Promise<unknown> {
   const type = request.headers.get("content-type") ?? "";
-  if (!/^application\/json\b/i.test(type)) throw new BadBody(415);
+  if (!/^application\/json\s*(;|$)/i.test(type)) throw new BadBody(415);
   const declared = Number(request.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MAX_BODY) throw new BadBody(400);
   const chunks: Uint8Array[] = [];
@@ -103,8 +106,9 @@ export async function POST(request: Request) {
   });
   if (error) {
     if (error.code === "QX001") {
-      // QX001 covers several limits (P5): tell them apart by the hint.
-      const devices = /device/i.test(`${error.hint ?? ""} ${error.message}`);
+      // QX001 covers several limits (P5): the device cap is told apart by
+      // its exact hint, so another limit can never read as it.
+      const devices = error.hint === DEVICE_CAP_HINT;
       return Response.json(
         devices
           ? {

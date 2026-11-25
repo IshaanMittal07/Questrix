@@ -40,7 +40,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("EnableNotifications", () => {
   it("never asks for permission or subscribes on mount", async () => {
@@ -150,6 +153,8 @@ describe("EnableNotifications", () => {
   });
 
   it("says unavailable without a VAPID public key and has no button", async () => {
+    // CI builds with a dummy key in the env; this case has none at all.
+    vi.stubEnv("NEXT_PUBLIC_VAPID_PUBLIC_KEY", "");
     render(<EnableNotifications publicKey={undefined} />);
     expect(
       await screen.findByText("Notifications are unavailable."),
