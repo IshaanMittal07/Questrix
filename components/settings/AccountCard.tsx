@@ -18,6 +18,7 @@ export function AccountCard({
   const [priv, setPriv] = useState(isPrivate);
   const [error, setError] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
   const [, start] = useTransition();
   const params = useSearchParams();
   const deleteState = params.get("delete");
@@ -68,6 +69,8 @@ export function AccountCard({
           onSubmit={(e) => {
             // Clear the offline copy of Today first (DECISIONS H11).
             e.preventDefault();
+            if (deleting) return;
+            setDeleting(true);
             const form = e.currentTarget;
             void clearOfflinePages().then(() => form.submit());
           }}
@@ -99,9 +102,12 @@ export function AccountCard({
           <Button
             type="submit"
             variant="danger"
-            disabled={confirm.trim().toLowerCase() !== username.toLowerCase()}
+            disabled={
+              deleting ||
+              confirm.trim().toLowerCase() !== username.toLowerCase()
+            }
           >
-            Delete my account forever
+            {deleting ? "Deleting…" : "Delete my account forever"}
           </Button>
         </form>
       </details>
