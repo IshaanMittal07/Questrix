@@ -305,7 +305,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - `(reason, ref_id)` is unique for completion, milestone, undo and refund entries, so a retry can't book anything twice. Purchases aren't covered, because a consumable can be bought again with the same item.
     - Engine entries must carry a `ref_id` (CHECK), so a null can't slip past the index.
     - `ref_id` points at the completion, milestone or `user_items` row.
-  - **Points formula.** A CHECK pins `points_awarded = floor(base_points × multiplier)`.
+  - **Points formula.** A CHECK pins `points_awarded = floor(base_points × multiplier)`. Since H13 (the daily cap) it's `≤`.
   - **Sequences.** Supabase's default privileges give `anon` and `authenticated` USAGE and UPDATE on new sequences. A client could then `setval` the ledger's id and break every later insert. The migration revokes that for the ledger sequence and for future sequences.
   - **Config and CHECKs.**
     - Two CHECKs still limit config values: `profiles.streak_freezes` (0..2) caps `streak_freezes_max`, and `multiplier` (at most 9.99) caps the multiplier. ECONOMY.md says so.
@@ -370,7 +370,7 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
     - Rules 0 and 1 share one branch: a day on or before `last_streak_date` changes nothing.
     - A gap longer than `streak_lookback_days` breaks the streak without spending freezes, even if every day in it was a rest day (for example, every habit archived for a holiday). Tests pin this. Changing it means changing the gap check before `streak_missed_days`, and the matching per-habit check.
     - A missing snapshot row is a missed day (D2), through `streak_missed_days`.
-  - **Points.** The multiplier is rounded to 2 dp before `floor(base × multiplier)`, so the stored value reproduces the award (formula CHECK).
+  - **Points.** The multiplier is rounded to 2 dp before `floor(base × multiplier)`, so the stored value reproduces the award (formula CHECK; since H13 the award can be less, cut by the daily cap).
   - **Per-habit streak.**
     - It advances when the day's count first reaches the snapshotted target. A day in the habit's snapshot without that, or a missing day, is a miss (`habit_missed_days`). Days the habit wasn't scheduled are skipped.
     - Every completion of the day stores the same pre-day state, so undoing any of them restores it exactly. #69 enforces this after a move west too: when the streak advances, the day's completions are rewritten to the pre-advance state.
@@ -649,4 +649,4 @@ Pinned before coding, from the planner (#65). Each task records refinements belo
   - **Privacy.** The copy holds the user's own data. Sign-out and account deletion clear it from the page, alongside the push unsubscribe and capped at 1 s. The service worker also drops it whenever `/today` redirects (a signed-out or not-onboarded session).
   - Client-side navigation while offline still needs the network, so other tabs show the offline page. That's accepted: the plan asks for Today.
 - **H12. Production (2026-11-26).** Hosted on Vercel at `https://questrix.vercel.app` with a Supabase project in us-east-2 under a separate account (the original org was at its free-project limit). Auth email goes through custom SMTP, which Supabase requires before templates can be edited. `robots.txt` is served without a session and allows only `/login`.
-- **H13. Daily points cap (#116, owner request 2026-11-26).** Completion points per local day are capped at `daily_points_cap` (200), so stacking habits can't buy the shop on day one. Past the cap, completions still count for streaks and milestones and earn 0. Milestones stay uncapped. See ECONOMY § Daily points cap.
+- **H13. Daily points cap (#116, owner request 2026-11-26).** Completion points per local day are capped at `daily_points_cap` (200), so stacking habits can't buy the shop on day one. Past the cap, completions still count for streaks and milestones and earn 0. Milestones stay uncapped. See ECONOMY § Daily points cap. The #79 rate limit now also counts engine calls (`engine_rate`, 30 a minute), because a capped-out completion and its undo write no ledger row. Timezone hopping can add one or two extra caps over an account's life (reachable local dates span only 26 hours; moving west relives dates that share their cap). It isn't repeatable, so it's accepted.
