@@ -9,6 +9,7 @@ Plan §6 ([BUILD_PLAN.md](BUILD_PLAN.md)) is the source of truth for the formula
 | Base points       | easy 10 · medium 20 · hard 35 (`base_points`)                                             |
 | Multiplier        | `round(1 + multiplier_step × min(max(streak_after_today, 1), multiplier_cap), 2)`         |
 | Points            | `floor(base × multiplier)`; the stored multiplier reproduces the award (formula CHECK)    |
+| Daily cap         | `min(formula, daily_points_cap − points already earned that local day)`, down to 0        |
 | Level             | `floor(sqrt(lifetime_points / 50)) + 1`, so level L starts at `50 × (L − 1)²` points      |
 | Streak milestones | 3→25 · 7→75 · 14→150 · 30→400 · 60→800 · 100→1,500 · 180→3,000 · 365→5,000 (`milestones`) |
 
@@ -29,6 +30,7 @@ Values are validated by `economy_config_value_valid`. Unknown keys are rejected.
 | `streak_freezes_max`            | `2`                                 | whole number, 0–2                            | the cap when undo gives freezes back; Phase 6 `purchase_item` caps purchases with it too |
 | `schedule_max_habits`           | `20`                                | whole number, 1–50                           | habits in one day's snapshot                                                             |
 | `habit_create_limits`           | `{"per_day":30,"per_30_days":100}`  | whole numbers, 1–1,000 / 1–10,000            | the habits trigger                                                                       |
+| `daily_points_cap`              | `200`                               | whole number, 1–100,000                      | completion points per local day; milestones aren't capped (#116)                         |
 | `timezone_change_cooldown_days` | `7`                                 | whole number, 0–365                          | timezone changes after onboarding (#28)                                                  |
 
 Two keys are also bounded by CHECK constraints, so raise the constraint before raising the key:
@@ -47,6 +49,15 @@ Two keys are also bounded by CHECK constraints, so raise the constraint before r
 - **Timezones.** Moving east keeps the streak without gaining a day (#28). Moving west relives earlier days. A relived day that was already counted changes nothing. One that wasn't (a missed day) earns points at the base multiplier but never counts, so it stays missed (#81). Changes after onboarding are limited by `timezone_change_cooldown_days`.
 - **`get_today`** reports the streak as the next completion would see it. A streak that would reset reads 0, though the stored value only changes on that completion. `freezes_needed` says how many freezes the next completion will spend.
 - **At risk** (`get_today.at_risk`): the day requires habits, there's a live streak, today isn't counted yet, and it's 18:00 or later local time.
+
+## Daily points cap (#116)
+
+- **Why.** Without a cap, 20 habits at target 5 could earn about 3,500 a day and empty the shop in a week. At 200 a day, a typical 5-habit day (about 120) is never capped, day one buys at most one cheap item, and the top items take weeks.
+- **How.** Each completion pays `min(formula, cap − earned today)`. The stored base and multiplier still show the uncapped award, so the CHECK is `points_awarded ≤ floor(base × multiplier)`.
+- **Past the cap** a completion still counts for the day, the streak, habit streaks and milestones. It earns 0 and writes no ledger entry, because ledger deltas are never 0.
+- **Milestones aren't capped.** They need consecutive days, so they can't be farmed.
+- **Undo** reverses only what was awarded, so it frees that much room. Completions that were already capped aren't topped up later.
+- `get_today` reports `points_today` and `daily_points_cap`, and the completion result adds `points_capped`, `points_today` and `daily_points_cap`.
 
 ## Undo
 
@@ -67,8 +78,8 @@ Two keys are also bounded by CHECK constraints, so raise the constraint before r
 ## Invariants (pgTAP `070_engine_invariants`, after every step of a randomized sequence)
 
 - `points_balance = sum(points_ledger.delta)`, and `lifetime_points = sum(delta)` over `completion`, `streak_milestone` and `undo` entries.
-- Every completion has its ledger entry. Every removed completion or milestone is reversed exactly once.
+- Every paying completion has its ledger entry, and a 0-point (capped-out) one has none. Every removed completion or milestone is reversed exactly once.
 - `daily_progress.completed_count` matches the completions, and no empty day is counted.
-- Every award follows the formula, and occurrences stay within the snapshotted target.
+- No award exceeds the formula, no day passes the daily cap, and occurrences stay within the snapshotted target. The walk runs with a cap of 60, so it is exercised.
 - Every streak ends on a day with a completion, except after eastward inheritance (#28). Every habit streak ends on a day that reached its target.
 - Every milestone has its ledger entry and a completed day.
