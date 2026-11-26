@@ -88,9 +88,9 @@ select throws_ok($$select pg_temp.today('30000009-0000-0000-0000-000000000000', 
 create temp table r (n text primary key, j jsonb);
 insert into r select 'g1a', pg_temp.today('30000001-0000-0000-0000-000000000000', 1);
 select is((select array_agg(k order by k) from r, jsonb_object_keys(r.j) k where n = 'g1a'),
-  array['at_risk', 'completed_count', 'counted_today', 'current_streak', 'display_name', 'freezes_needed',
-        'habits', 'level', 'lifetime_points', 'local_date', 'local_hour', 'longest_streak', 'points_balance',
-        'relived', 'scheduled_count', 'streak_freezes', 'timezone', 'undo_window_minutes', 'username'],
+  array['at_risk', 'completed_count', 'counted_today', 'current_streak', 'daily_points_cap', 'display_name',
+        'freezes_needed', 'habits', 'level', 'lifetime_points', 'local_date', 'local_hour', 'longest_streak',
+        'points_balance', 'points_today', 'relived', 'scheduled_count', 'streak_freezes', 'timezone', 'undo_window_minutes', 'username'],
   'the JSON has exactly the documented keys');
 select is((select array_agg(k order by k) from r, jsonb_object_keys(pg_temp.habit(r.j, 'A')) k where n = 'g1a'),
   array['category', 'color', 'completions', 'difficulty', 'done', 'habit_streak', 'icon', 'id', 'joined_late', 'target', 'title'],
@@ -501,11 +501,12 @@ select ok((select not exists (select 1 from jsonb_array_elements(j -> 'habits') 
 -- ── JSON value types (on G1's day with completions) ─────────────────────────
 select is((select array_agg(k || ':' || jsonb_typeof(j -> k) order by k) from r, jsonb_object_keys(r.j) k where n = 'g1b'),
   array['at_risk:boolean', 'completed_count:number', 'counted_today:boolean', 'current_streak:number',
+        'daily_points_cap:number',
         'display_name:' || jsonb_typeof(coalesce(to_jsonb((select display_name from public.profiles
                                                             where id = '30000001-0000-0000-0000-000000000000')), 'null')),
         'freezes_needed:number', 'habits:array', 'level:number', 'lifetime_points:number',
         'local_date:string', 'local_hour:number', 'longest_streak:number', 'points_balance:number',
-        'relived:boolean', 'scheduled_count:number', 'streak_freezes:number', 'timezone:string', 'undo_window_minutes:number',
+        'points_today:number', 'relived:boolean', 'scheduled_count:number', 'streak_freezes:number', 'timezone:string', 'undo_window_minutes:number',
         'username:string'],
   'top-level JSON types (dates as strings, counts as numbers, flags as booleans)');
 select ok((select j ->> 'local_date' ~ '^\d{4}-\d{2}-\d{2}$' and (j -> 'local_hour')::text ~ '^\d+$'

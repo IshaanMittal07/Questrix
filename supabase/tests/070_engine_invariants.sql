@@ -10,7 +10,7 @@
 -- exists (DECISIONS: "Spending before Phase 6"); Phase 6 re-runs this with it.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(21);
+select plan(23);
 
 -- Users 4000000{1..4}; users 2 and 4 start with two freezes.
 insert into auth.users (id, email)
@@ -28,6 +28,8 @@ from generate_series(1, 4) as g, generate_series(1, 4) as k;
 update public.profiles set onboarded_at = now() - interval '40 days' where id::text like '4000000%';
 update public.profiles set streak_freezes = 2
  where id in ('40000002-0000-0000-0000-000000000000', '40000004-0000-0000-0000-000000000000');
+-- #116: a full day here is worth 105, so a cap of 60 bites on most days.
+update public.economy_config set value = '60' where key = 'daily_points_cap';
 
 create function pg_temp.mine(p_uid uuid) returns boolean language sql as $$
   select left(p_uid::text, 7) = '4000000' $$;
@@ -59,9 +61,14 @@ create function pg_temp.violations() returns text[] language sql as $$
       select 1 from public.daily_progress d where pg_temp.mine(d.user_id)
         and d.counted_for_streak and d.completed_count = 0)
     union all
-    select 'every award follows the formula' where exists (
+    select 'no award exceeds the formula' where exists (
       select 1 from public.habit_completions c where pg_temp.mine(c.user_id)
-        and c.points_awarded <> floor(c.base_points * c.multiplier))
+        and c.points_awarded > floor(c.base_points * c.multiplier))
+    union all
+    select 'no day passes the daily points cap' where exists (
+      select 1 from public.habit_completions c where pg_temp.mine(c.user_id)
+      group by c.user_id, c.local_date
+      having sum(c.points_awarded) > (public.economy_value('daily_points_cap'))::int)
     union all
     select 'occurrences stay within the snapshotted target' where exists (
       select 1 from public.habit_completions c
@@ -85,10 +92,16 @@ create function pg_temp.violations() returns text[] language sql as $$
              or (select count(*) from public.habit_completions c
                  where c.habit_id = hs.habit_id and c.local_date = hs.last_date) < sh.target_per_day))
     union all
-    select 'every completion has its ledger entry' where exists (
+    select 'every paying completion has its ledger entry' where exists (
       select 1 from public.habit_completions c where pg_temp.mine(c.user_id)
+        and c.points_awarded > 0
         and not exists (select 1 from public.points_ledger l
                         where l.reason = 'completion' and l.ref_id = c.id and l.delta = c.points_awarded))
+    union all
+    select 'a capped-out completion has no ledger entry' where exists (
+      select 1 from public.habit_completions c
+      join public.points_ledger l on l.reason = 'completion' and l.ref_id = c.id
+      where pg_temp.mine(c.user_id) and c.points_awarded = 0)
     union all
     select 'every removed award was reversed exactly once' where exists (
       select 1 from public.points_ledger l
@@ -331,6 +344,13 @@ select lives_ok($$select pg_temp.simulate(800)$$, 'an 800-step random sequence r
 select is((select coalesce(array_agg(step || ': ' || array_to_string(what, ', ')), '{}') from failures), '{}'::text[],
   'every invariant held after every step');
 select is(pg_temp.violations(), '{}'::text[], 'and at the end');
+-- #116: the walk really exercised the cap, both partly and fully.
+select ok(exists (select 1 from public.habit_completions c where pg_temp.mine(c.user_id)
+                  and c.points_awarded between 1 and floor(c.base_points * c.multiplier) - 1),
+  'the walk cut some award down to what was left of the daily cap');
+select ok(exists (select 1 from public.habit_completions c where pg_temp.mine(c.user_id)
+                  and c.points_awarded = 0),
+  'and capped some completions out entirely (0 points, still a completion)');
 select is((select coalesce(array_agg(step || ': ' || what order by step), '{}') from mismatches), '{}'::text[],
   'get_today predicted every completion (streak, freezes, habit streak, listing) and every refusal');
 select cmp_ok(pg_temp.stat('get_today checked'), '>=', 300, 'get_today was checked before at least 300 completion attempts');
