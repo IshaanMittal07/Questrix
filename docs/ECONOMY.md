@@ -57,6 +57,8 @@ Two keys are also bounded by CHECK constraints, so raise the constraint before r
 - **Past the cap** a completion still counts for the day, the streak, habit streaks and milestones. It earns 0 and writes no ledger entry, because ledger deltas are never 0.
 - **Milestones aren't capped.** They need consecutive days, so they can't be farmed.
 - **Undo** reverses only what was awarded, so it frees that much room. Completions that were already capped aren't topped up later.
+- **Timezones.** The cap is per local date. A relived date (after a move west) shares its cap. Moving east can reach a new date early, which is worth at most one or two extra caps over an account's life.
+- **Rate limit.** A capped-out call writes no ledger row, so engine calls are also counted per call (`engine_rate`, 30 a minute, QX109).
 - `get_today` reports `points_today` and `daily_points_cap`, and the completion result adds `points_capped`, `points_today` and `daily_points_cap`.
 
 ## Undo
