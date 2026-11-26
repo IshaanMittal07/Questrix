@@ -45,6 +45,50 @@ insert into public.economy_config (key, value) values ('daily_points_cap', '200'
 alter table public.economy_config add constraint economy_config_value_valid
   check (public.economy_config_value_valid(key, value));
 
+-- ── Engine rate limit per call (#79, review of #116) ────────────────────────
+-- The ledger trigger (hardening) counts ledger rows, but a capped-out
+-- completion and its undo write none, so a complete/undo loop past the cap
+-- would go unlimited. This counts calls instead: both engine functions call
+-- it while holding the profile lock, so it's serialised per user. A fixed
+-- one-minute window; the ledger trigger stays as a backstop. Internal only:
+-- RLS on, no grants to clients.
+create table public.engine_rate (
+  user_id uuid primary key references public.profiles (id) on delete cascade,
+  window_start timestamptz not null,
+  calls int not null constraint engine_rate_calls_positive check (calls > 0)
+);
+alter table public.engine_rate enable row level security;
+revoke all on table public.engine_rate from public, anon, authenticated, service_role;
+
+create function public.engine_rate_limit(p_uid uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_calls int;
+begin
+  -- Only signed-in client requests (a JWT), as in ledger_rate_limit:
+  -- pgTAP walks, cron and service jobs make many calls in one transaction.
+  if coalesce(current_setting('request.jwt.claims', true), '') in ('', '{}') then
+    return;
+  end if;
+  insert into public.engine_rate as r (user_id, window_start, calls)
+  values (p_uid, now(), 1)
+  on conflict (user_id) do update
+    set window_start = case when r.window_start <= now() - interval '1 minute'
+                            then now() else r.window_start end,
+        calls = case when r.window_start <= now() - interval '1 minute'
+                     then 1 else r.calls + 1 end
+  returning calls into v_calls;
+  if v_calls > 30 then
+    raise exception 'Too fast. Wait a minute and try again.' using errcode = 'QX109';
+  end if;
+end;
+$$;
+revoke all on function public.engine_rate_limit(uuid) from public, anon, authenticated, service_role;
+
 -- A capped completion earns less than the formula (down to 0); the stored
 -- base and multiplier still show what it would have earned.
 alter table public.habit_completions drop constraint habit_completions_points_formula;
@@ -109,6 +153,8 @@ begin
   if not found then
     raise exception 'Profile not found' using errcode = 'P0002';
   end if;
+  -- #116 review: counted per call (a capped-out call writes no ledger row).
+  perform public.engine_rate_limit(p_uid);
   if p.onboarded_at is null then
     raise exception 'Finish onboarding first' using errcode = 'QX107';
   end if;
@@ -394,6 +440,8 @@ begin
   if not found then
     raise exception 'Profile not found' using errcode = 'P0002';
   end if;
+  -- #116 review: counted per call (a capped-out call writes no ledger row).
+  perform public.engine_rate_limit(p_uid);
 
   select * into c from public.habit_completions
   where id = p_completion_id and user_id = p_uid
