@@ -8,7 +8,8 @@ const OFFLINE_URL = "/offline.html";
 const PRECACHE = [OFFLINE_URL, "/icons/icon-192.png"];
 // The last Today page loaded online, for viewing offline (plan §9). Cleared
 // on sign-out and account deletion by the page, and dropped here whenever
-// /today redirects (signed out or not onboarded).
+// /today answers with anything but a good page (a redirect to /login or
+// onboarding, or an error).
 const PAGES = "questrix-pages";
 const PAGE_PATHS = ["/today"];
 // Hashed build assets the cached page needs (CSS, JS, fonts): immutable, so
@@ -48,31 +49,46 @@ async function trimStatic(cache) {
   );
 }
 
-async function staticFirst(request) {
+// Cache writes go to waitUntil so a response is never held back while its
+// clone is stored (Today streams behind Suspense).
+async function staticFirst(event) {
+  const request = event.request;
   const cache = await caches.open(STATIC);
   const hit = await cache.match(request);
-  if (hit) return hit;
+  if (hit) {
+    // Re-put on a hit so the trim (oldest first) keeps chunks still in use.
+    event.waitUntil(cache.put(request, hit.clone()).catch(() => {}));
+    return hit;
+  }
   const res = await fetch(request);
   if (res.ok && res.type === "basic") {
-    await cache.put(request, res.clone());
-    await trimStatic(cache);
+    event.waitUntil(
+      cache
+        .put(request, res.clone())
+        .then(() => trimStatic(cache))
+        .catch(() => {}),
+    );
   }
   return res;
 }
 
 /** Network-first; keeps Today's last good copy; offline falls back to it. */
-async function navigate(request, path) {
+async function navigate(event, path) {
   const keep = PAGE_PATHS.includes(path);
   try {
-    const res = await fetch(request);
+    const res = await fetch(event.request);
     if (keep) {
       const cache = await caches.open(PAGES);
-      // Only a real, signed-in Today: a redirect means the session is gone.
-      if (res.ok && !res.redirected && res.type === "basic") {
-        await cache.put(path, res.clone());
-      } else if (res.redirected) {
-        await cache.delete(path);
-      }
+      // Only a real, signed-in Today is kept. Anything else drops the copy:
+      // navigations fetch with redirect "manual", so the proxy's redirect to
+      // /login arrives as an "opaqueredirect" (session gone), and an error
+      // page shouldn't leave stale data behind either.
+      const good = res.ok && res.type === "basic" && !res.redirected;
+      event.waitUntil(
+        (good ? cache.put(path, res.clone()) : cache.delete(path)).catch(
+          () => {},
+        ),
+      );
     }
     return res;
   } catch {
@@ -97,11 +113,11 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (url.pathname.startsWith("/_next/static/")) {
-    event.respondWith(staticFirst(event.request));
+    event.respondWith(staticFirst(event));
     return;
   }
   if (event.request.mode !== "navigate") return;
-  event.respondWith(navigate(event.request, url.pathname));
+  event.respondWith(navigate(event, url.pathname));
 });
 
 // ── Push ─────────────────────────────────────────────────────────────────────
