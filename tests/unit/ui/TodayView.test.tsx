@@ -419,6 +419,32 @@ describe("TodayView", () => {
     unmount();
     renderView(day({ points_today: 200, daily_points_cap: 200 }));
     expect(screen.getByTestId("points-today")).toHaveClass("text-warning");
+    expect(screen.getByTestId("points-today")).toHaveAccessibleName(
+      "200 of 200 daily points earned",
+    );
+  });
+
+  it("doesn't repeat the cap toast once the day is already capped", async () => {
+    const user = userEvent.setup();
+    completeHabit.mockResolvedValue({
+      ok: true,
+      // Already at 200 before this completion.
+      event: event({
+        points_awarded: 0,
+        points_capped: true,
+        points_today: 200,
+        daily_points_cap: 200,
+      }),
+      today: day({ points_today: 200, daily_points_cap: 200 }),
+    });
+    renderView(day({ points_today: 200, daily_points_cap: 200 }));
+    await user.click(
+      screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+    );
+    await vi.waitFor(() =>
+      expect(live()).toHaveTextContent("Daily points cap reached (200)"),
+    );
+    expect(screen.queryByText("Daily points cap reached")).toBeNull();
   });
 
   it("hides the cap chip when the server doesn't send it", () => {
@@ -431,7 +457,7 @@ describe("TodayView", () => {
     completeHabit.mockResolvedValue({
       ok: true,
       event: event({
-        points_awarded: 0,
+        points_awarded: 5,
         points_capped: true,
         points_today: 200,
         daily_points_cap: 200,
@@ -446,7 +472,7 @@ describe("TodayView", () => {
       await screen.findByText("Daily points cap reached"),
     ).toBeInTheDocument();
     expect(live()).toHaveTextContent(
-      "+0 points. 3-day streak. Daily points cap reached (200). Your streak still counts.",
+      "+5 points. 3-day streak. Daily points cap reached (200). Your streak still counts.",
     );
   });
 

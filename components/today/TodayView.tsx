@@ -322,10 +322,12 @@ export function TodayView({
       // #116: the daily cap cut this award. The completion still counts.
       if (e.points_capped) {
         msg += ` Daily points cap reached (${e.daily_points_cap ?? ""}). Your streak still counts.`;
-        if (e.points_awarded === 0) {
+        // Toast once: on the completion that reached the cap, not each one after.
+        const before = (e.points_today ?? 0) - e.points_awarded;
+        if (e.daily_points_cap === undefined || before < e.daily_points_cap) {
           toast({
             title: "Daily points cap reached",
-            description: "Keep going: completions still build your streak.",
+            description: "Completions still build your streak.",
             tone: "info",
           });
         }
@@ -409,6 +411,7 @@ export function TodayView({
             today.points_today !== undefined ? (
               <span
                 data-testid="points-today"
+                aria-label={`${today.points_today} of ${today.daily_points_cap} daily points earned`}
                 className={cn(
                   "text-muted",
                   today.points_today >= today.daily_points_cap &&
@@ -416,7 +419,6 @@ export function TodayView({
                 )}
               >
                 {today.points_today}/{today.daily_points_cap} today
-                <span className="sr-only"> (daily points cap)</span>
               </span>
             ) : null}
             {today.streak_freezes > 0 ? (
