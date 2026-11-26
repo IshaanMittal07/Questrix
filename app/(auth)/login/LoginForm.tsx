@@ -25,7 +25,7 @@ function orReload<T>(p: Promise<T>): Promise<T> {
 }
 const supabase = async () => (await orReload(loadClient())).createClient();
 const emailSchema = async () => (await orReload(loadValidation())).emailSchema;
-/** Warm both chunks once the page is idle, so a submit rarely waits on them. */
+/** Warm both chunks early, so a submit rarely waits on them. */
 function prefetchLoginChunks() {
   void loadClient().catch(() => {});
   void loadValidation().catch(() => {});
@@ -49,16 +49,20 @@ function callbackUrl() {
 
 export function LoginForm() {
   useEffect(() => {
-    // When the browser is idle (after first paint and hydration); a timer
-    // where requestIdleCallback is missing (Safari).
-    if ("requestIdleCallback" in window) {
-      const id = window.requestIdleCallback(prefetchLoginChunks, {
-        timeout: 4000,
-      });
-      return () => window.cancelIdleCallback(id);
-    }
-    const id = setTimeout(prefetchLoginChunks, 1500);
-    return () => clearTimeout(id);
+    // On the first focus, tap or key press, not when the browser goes idle:
+    // evaluating supabase-js then still blocked the main thread inside
+    // Lighthouse's window (mobile TBT, #110). Typing an email takes longer
+    // than the chunks take to load.
+    const events = ["focusin", "pointerdown", "keydown"] as const;
+    const warm = () => {
+      events.forEach((t) => window.removeEventListener(t, warm, true));
+      prefetchLoginChunks();
+    };
+    events.forEach((t) =>
+      window.addEventListener(t, warm, { capture: true, passive: true }),
+    );
+    return () =>
+      events.forEach((t) => window.removeEventListener(t, warm, true));
   }, []);
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
