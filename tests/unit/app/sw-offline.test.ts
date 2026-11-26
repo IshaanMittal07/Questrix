@@ -23,7 +23,9 @@ function fakeCaches() {
     const m = store.get(name)!;
     return {
       match: async (r: Request | string) => m.get(key(r))?.clone(),
+      // Like the Cache API, a put replaces the entry and moves it to the end.
       put: async (r: Request | string, res: Response) => {
+        m.delete(key(r));
         m.set(key(r), res);
       },
       delete: async (r: Request | string) => m.delete(key(r)),
@@ -70,6 +72,7 @@ async function request(
   init: { mode?: string; method?: string } = {},
 ): Promise<Response | null> {
   let responded: Promise<Response> | null = null;
+  const pending: Promise<unknown>[] = [];
   h.get("fetch")!({
     request: {
       url: ORIGIN + path,
@@ -79,8 +82,14 @@ async function request(
     respondWith: (p: Promise<Response>) => {
       responded = p;
     },
+    waitUntil: (p: Promise<unknown>) => {
+      pending.push(p);
+    },
   });
-  return responded ? await responded : null;
+  if (!responded) return null;
+  const res = await responded;
+  await Promise.all(pending);
+  return res;
 }
 
 type FakeRes = {
@@ -122,21 +131,48 @@ describe("service worker offline Today", () => {
     );
   });
 
-  it("drops the copy when Today redirects (signed out)", async () => {
-    let mode: "ok" | "redirect" | "offline" = "ok";
+  // Navigations fetch with redirect "manual": a session that ended without
+  // Sign out (expired, revoked) shows up as an opaque redirect to /login.
+  it.each([
+    [
+      "an opaque redirect (signed out)",
+      { type: "opaqueredirect", ok: false, status: 0 },
+    ],
+    ["a followed redirect", { redirected: true }],
+    ["a server error", { ok: false, status: 500 }],
+  ])("drops the copy when Today answers with %s", async (_, extra) => {
+    let mode: "ok" | "bad" | "offline" = "ok";
     const sw = load(async () => {
       if (mode === "offline") throw new TypeError("offline");
-      return mode === "ok"
-        ? page("today")
-        : page("login", { redirected: true });
+      return mode === "ok" ? page("today") : page("login", extra);
     });
     await request(sw.handlers, "/today");
-    mode = "redirect";
+    expect(sw.store.get("questrix-pages")?.has("/today")).toBe(true);
+    mode = "bad";
     await request(sw.handlers, "/today");
     mode = "offline";
     // No copy left: the offline page (not precached in the fake) or an error.
     const res = await request(sw.handlers, "/today");
     expect(res!.type).toBe("error");
+  });
+
+  it("never caches an RSC fetch of /today", async () => {
+    const sw = load(async () => page("rsc payload"));
+    expect(await request(sw.handlers, "/today", { mode: "cors" })).toBeNull();
+    expect(sw.store.get("questrix-pages")?.has("/today") ?? false).toBe(false);
+  });
+
+  it("keeps static chunks that are still used when trimming", async () => {
+    const sw = load(async () => page("js"));
+    const get = (p: string) => request(sw.handlers, p, { mode: "no-cors" });
+    await get("/_next/static/chunks/shared.js");
+    for (let i = 0; i < 199; i++) await get(`/_next/static/chunks/c${i}.js`);
+    await get("/_next/static/chunks/shared.js"); // a hit moves it to the end
+    await get("/_next/static/chunks/new.js"); // one over the cap
+    const keys = sw.store.get("questrix-static")!;
+    expect(keys.size).toBe(200);
+    expect(keys.has("/_next/static/chunks/shared.js")).toBe(true);
+    expect(keys.has("/_next/static/chunks/c0.js")).toBe(false);
   });
 
   it("never caches other pages", async () => {
