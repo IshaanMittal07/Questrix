@@ -3,7 +3,7 @@
 -- and writes no ledger entry; undo frees room again; milestones are uncapped.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(24);
+select plan(31);
 
 create function pg_temp.t(k int, m numeric default 0) returns timestamptz language sql as $$
   select (date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')
@@ -22,7 +22,8 @@ create function pg_temp.ledger_ok(p_uid uuid) returns boolean language sql as $$
 -- K2: one easy habit, for the uncapped milestone.
 insert into auth.users (id, email) values
   ('70000001-0000-0000-0000-000000000000', 'cap1@example.com'),
-  ('70000002-0000-0000-0000-000000000000', 'cap2@example.com');
+  ('70000002-0000-0000-0000-000000000000', 'cap2@example.com'),
+  ('70000003-0000-0000-0000-000000000000', 'cap3@example.com');
 update public.profiles set onboarded_at = now() - interval '30 days'
  where id::text like '7000000%';
 insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at) values
@@ -31,7 +32,12 @@ insert into public.habits (id, user_id, title, category, difficulty, days_of_wee
   ('7a000000-0000-0000-0000-000000000002', '70000001-0000-0000-0000-000000000000',
    'Lift', 'fitness', 'hard', '{0,1,2,3,4,5,6}', 5, now() - interval '30 days'),
   ('7b000000-0000-0000-0000-000000000001', '70000002-0000-0000-0000-000000000000',
-   'Read', 'mind', 'easy', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days');
+   'Read', 'mind', 'easy', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'),
+  -- K3: the rate-limit loop.
+  ('7c000000-0000-0000-0000-000000000001', '70000003-0000-0000-0000-000000000000',
+   'A', 'mind', 'easy', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days'),
+  ('7c000000-0000-0000-0000-000000000002', '70000003-0000-0000-0000-000000000000',
+   'B', 'mind', 'easy', '{0,1,2,3,4,5,6}', 1, now() - interval '30 days');
 
 -- ── Config ──────────────────────────────────────────────────────────────────
 select is((public.economy_value('daily_points_cap'))::int, 200, 'the default cap is 200 a day');
@@ -102,6 +108,51 @@ create temp table m3 as
 select is((select (j ->> 'points_awarded') || '+' || (j ->> 'milestone_points') from m3), '5+25',
   'a capped day still pays the 3-day milestone in full');
 select ok(pg_temp.ledger_ok('70000002-0000-0000-0000-000000000000'), 'and the ledger matches (15 + 25)');
+
+-- ── A relived day shares its date's cap (a move west) ──────────────────────
+-- K1 reached day 1, so day 0 is relived now (the time seam runs backwards).
+create temp table rv as
+  select pg_temp.done('70000001-0000-0000-0000-000000000000', '7a000000-0000-0000-0000-000000000002', 0, 30) as j;
+select is((select (j ->> 'points_awarded')::int || ':' || (j ->> 'points_capped') from rv), '0:true',
+  'a relived day already at its cap pays 0');
+select is((select sum(points_awarded)::int from public.habit_completions
+           where user_id = '70000001-0000-0000-0000-000000000000'
+             and local_date = (pg_temp.t(0) at time zone 'UTC')::date), 200,
+  'and the date stays at the cap whichever timezone earned it');
+
+-- ── A late joiner past the cap ──────────────────────────────────────────────
+-- Added now, so it joins today's (day 0's) snapshot late; K2 is already at
+-- its cap of 5 there.
+insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at) values
+  ('7b000000-0000-0000-0000-000000000002', '70000002-0000-0000-0000-000000000000',
+   'Late', 'mind', 'hard', '{0,1,2,3,4,5,6}', 1, now());
+select is((select (pg_temp.done('70000002-0000-0000-0000-000000000000',
+                                '7b000000-0000-0000-0000-000000000002', 0, 30) ->> 'points_awarded')::int),
+  0, 'a habit that joined the day late is capped like any other');
+
+-- ── The engine rate limit counts calls, not ledger rows ────────────────────
+select ok(not has_table_privilege('authenticated', 'public.engine_rate', 'select'), 'users can''t read the rate counter');
+select ok(not has_function_privilege('authenticated', 'public.engine_rate_limit(uuid)', 'execute'),
+  'or call the limiter directly');
+-- K3 caps out on A (cap 5), then loops B: each call earns 0 and writes no
+-- ledger row, so only the per-call counter can stop it.
+select pg_temp.done('70000003-0000-0000-0000-000000000000', '7c000000-0000-0000-0000-000000000001', 0, 1);
+select set_config('request.jwt.claims', '{"sub":"70000003-0000-0000-0000-000000000000","role":"authenticated"}', true);
+select lives_ok($$
+  do $do$
+  declare v jsonb;
+  begin
+    for i in 1..15 loop
+      v := public.complete_habit_at('70000003-0000-0000-0000-000000000000',
+                                    '7c000000-0000-0000-0000-000000000002', pg_temp.t(0, 2 + i));
+      perform public.undo_completion_at('70000003-0000-0000-0000-000000000000',
+                                        (v ->> 'completion_id')::uuid, pg_temp.t(0, 2.5 + i));
+    end loop;
+  end $do$ $$, '30 capped-out calls in a minute are allowed');
+select throws_ok($$select public.complete_habit_at('70000003-0000-0000-0000-000000000000',
+                    '7c000000-0000-0000-0000-000000000002', pg_temp.t(0, 20))$$,
+  'QX109', null, 'the 31st is refused, though it writes no ledger row');
+select set_config('request.jwt.claims', '', true);
 
 select * from finish();
 rollback;
