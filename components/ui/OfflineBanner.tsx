@@ -25,11 +25,10 @@ export function OfflineBanner() {
   return (
     <p
       role="status"
-      aria-live="polite"
       data-testid="offline-banner"
       className={
         offline
-          ? "bg-warning text-bg sticky top-0 z-40 px-4 py-2 text-center text-sm font-semibold"
+          ? "bg-warning text-bg sticky top-0 z-40 px-4 pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 text-center text-sm font-semibold"
           : "sr-only"
       }
     >
