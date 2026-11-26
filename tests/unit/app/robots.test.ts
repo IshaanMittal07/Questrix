@@ -6,6 +6,7 @@ import { config } from "@/proxy";
 // #110: robots.txt was redirected to /login, which Lighthouse flagged as an
 // invalid robots file.
 describe("robots.txt", () => {
+  // Approximates Next's matcher compilation; fine for this pattern.
   const matches = (path: string) =>
     config.matcher.some((m) => new RegExp(`^${m}$`).test(path));
 
@@ -14,12 +15,12 @@ describe("robots.txt", () => {
     expect(matches("/today")).toBe(true);
   });
 
-  it("allows only the sign-in page and keeps API and auth routes out", () => {
+  it("allows only the sign-in page", () => {
     const { rules } = robots();
     expect(rules).toEqual({
       userAgent: "*",
       allow: "/login",
-      disallow: ["/api/", "/auth/"],
+      disallow: "/",
     });
   });
 });
