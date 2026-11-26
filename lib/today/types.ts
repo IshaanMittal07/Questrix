@@ -52,6 +52,10 @@ export const todaySchema = z.object({
   completed_count: z.number().int(),
   at_risk: z.boolean(),
   undo_window_minutes: z.number().int(),
+  // #116: completion points earned today and the daily cap. Optional so a
+  // client deployed before the migration still parses.
+  points_today: z.number().int().optional(),
+  daily_points_cap: z.number().int().optional(),
   habits: z.array(todayHabitSchema),
 });
 
@@ -61,6 +65,10 @@ export const completeEventSchema = z.object({
   target: z.number().int(),
   points_awarded: z.number().int(),
   multiplier: z.number(),
+  // #116: the award was cut by the daily cap (down to 0).
+  points_capped: z.boolean().optional(),
+  points_today: z.number().int().optional(),
+  daily_points_cap: z.number().int().optional(),
   current_streak: z.number().int(),
   habit_streak: z.number().int(),
   milestone: z.number().int().nullable(),

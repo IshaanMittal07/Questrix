@@ -313,12 +313,23 @@ export function TodayView({
       }
       showFloat(
         h.id,
-        e.multiplier > 1
+        e.multiplier > 1 && e.points_awarded > 0
           ? `+${e.points_awarded} ×${e.multiplier.toFixed(2)}`
           : `+${e.points_awarded}`,
       );
       const streak = res.today?.current_streak ?? e.current_streak;
       let msg = `${h.title}: ${e.occurrence} of ${e.target} done. +${e.points_awarded} points. ${streak}-day streak.`;
+      // #116: the daily cap cut this award. The completion still counts.
+      if (e.points_capped) {
+        msg += ` Daily points cap reached (${e.daily_points_cap ?? ""}). Your streak still counts.`;
+        if (e.points_awarded === 0) {
+          toast({
+            title: "Daily points cap reached",
+            description: "Keep going: completions still build your streak.",
+            tone: "info",
+          });
+        }
+      }
       if (e.milestone !== null) {
         msg += ` ${e.milestone}-day milestone, +${e.milestone_points ?? 0} bonus points!`;
         setConfetti((c) => c + 1);
@@ -394,6 +405,20 @@ export function TodayView({
             <span data-testid="balance" className="text-muted">
               {today.points_balance.toLocaleString("en")} pts
             </span>
+            {today.daily_points_cap !== undefined &&
+            today.points_today !== undefined ? (
+              <span
+                data-testid="points-today"
+                className={cn(
+                  "text-muted",
+                  today.points_today >= today.daily_points_cap &&
+                    "text-warning",
+                )}
+              >
+                {today.points_today}/{today.daily_points_cap} today
+                <span className="sr-only"> (daily points cap)</span>
+              </span>
+            ) : null}
             {today.streak_freezes > 0 ? (
               <span className="text-cyan">
                 <span aria-hidden="true">❄️</span>{" "}

@@ -408,6 +408,48 @@ describe("TodayView", () => {
     expect(completeHabit).toHaveBeenCalledTimes(3);
   });
 
+  it("shows today's points against the daily cap (#116)", () => {
+    const { unmount } = renderView(
+      day({ points_today: 120, daily_points_cap: 200 }),
+    );
+    expect(screen.getByTestId("points-today")).toHaveTextContent(
+      "120/200 today",
+    );
+    expect(screen.getByTestId("points-today")).not.toHaveClass("text-warning");
+    unmount();
+    renderView(day({ points_today: 200, daily_points_cap: 200 }));
+    expect(screen.getByTestId("points-today")).toHaveClass("text-warning");
+  });
+
+  it("hides the cap chip when the server doesn't send it", () => {
+    renderView(day());
+    expect(screen.queryByTestId("points-today")).toBeNull();
+  });
+
+  it("says when the daily cap cut an award, and that the streak still counts", async () => {
+    const user = userEvent.setup();
+    completeHabit.mockResolvedValue({
+      ok: true,
+      event: event({
+        points_awarded: 0,
+        points_capped: true,
+        points_today: 200,
+        daily_points_cap: 200,
+      }),
+      today: day({ points_today: 200, daily_points_cap: 200 }),
+    });
+    renderView(day());
+    await user.click(
+      screen.getByRole("button", { name: "Complete Read, 0 of 1 done" }),
+    );
+    expect(
+      await screen.findByText("Daily points cap reached"),
+    ).toBeInTheDocument();
+    expect(live()).toHaveTextContent(
+      "+0 points. 3-day streak. Daily points cap reached (200). Your streak still counts.",
+    );
+  });
+
   it("refreshes when the action returns no snapshot", async () => {
     const user = userEvent.setup();
     completeHabit.mockResolvedValue({ ok: true, event: event(), today: null });
