@@ -375,14 +375,16 @@ end $$;
 create temp table m7 as select pg_temp.reach(7, 40) as j;
 select is((select j - 'completion_id' - 'local_date' from m7),
   jsonb_build_object('occurrence', 1, 'target', 1, 'points_awarded', 21, 'multiplier', 1.07,
+                     'points_capped', false, 'points_today', 21, 'daily_points_cap', 200,
                      'current_streak', 7, 'habit_streak', 1, 'milestone', 7, 'milestone_points', 75,
                      'new_balance', 96, 'lifetime_points', 96, 'level', 2),
   'streak 7: the 7-day milestone (75) is awarded, and the result counts it in balance, lifetime and level');
 select is((select array_agg(k || ':' || jsonb_typeof(j -> k) order by k) from m7, jsonb_object_keys(j) as k),
-  array['completion_id:string', 'current_streak:number', 'habit_streak:number', 'level:number',
+  array['completion_id:string', 'current_streak:number', 'daily_points_cap:number',
+        'habit_streak:number', 'level:number',
         'lifetime_points:number', 'local_date:string', 'milestone:number', 'milestone_points:number',
         'multiplier:number', 'new_balance:number', 'occurrence:number', 'points_awarded:number',
-        'target:number'],
+        'points_capped:boolean', 'points_today:number', 'target:number'],
   'the result has exactly these keys, with these JSON types');
 select is((select (j ->> 'local_date')::date from m7), pg_temp.day(40), 'local_date is the completion''s local day');
 select ok(exists (select 1 from m7 join public.habit_completions c on c.id = (j ->> 'completion_id')::uuid
