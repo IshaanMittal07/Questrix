@@ -300,8 +300,16 @@ begin
   --    state (the pin below is a backstop; relived days no longer advance it, #85), so undoing
   --    any one of them restores it exactly.
   select * into hs from public.habit_streaks where habit_id = p_habit_id;
-  -- Reported as-is unless the target is reached below.
-  v_hcur := coalesce(hs.current, 0);
+  -- Unless the target is reached below, reported as get_today shows it: 0
+  -- when a missed scheduled day already broke it. A relived day (#85) never
+  -- advances it, so otherwise the event would echo a stale stored value.
+  v_hcur := case
+              when hs.last_date is null then 0
+              when hs.last_date >= v_today - 1 then hs.current
+              when v_today - hs.last_date - 1 > v_lookback then 0
+              when public.habit_missed_days(p_uid, p_habit_id, hs.last_date, v_today) > 0 then 0
+              else hs.current
+            end;
   v_hlong := coalesce(hs.longest, 0);
   v_hlast := hs.last_date;
 
@@ -329,7 +337,7 @@ begin
        or public.habit_missed_days(p_uid, p_habit_id, v_hlast, v_today) > 0 then
       v_hcur := 1;
     else
-      v_hcur := v_hcur + 1;
+      v_hcur := hs.current + 1;
     end if;
     insert into public.habit_streaks as t (habit_id, user_id, current, longest, last_date)
     values (p_habit_id, p_uid, v_hcur, greatest(v_hlong, v_hcur), v_today)
