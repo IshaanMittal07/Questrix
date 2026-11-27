@@ -313,7 +313,8 @@ export function TodayView({
       }
       showFloat(
         h.id,
-        e.multiplier > 1 && e.points_awarded > 0
+        // A capped award isn't what the multiplier produced, so no "×".
+        e.multiplier > 1 && e.points_awarded > 0 && !e.points_capped
           ? `+${e.points_awarded} ×${e.multiplier.toFixed(2)}`
           : `+${e.points_awarded}`,
       );
@@ -411,14 +412,21 @@ export function TodayView({
             today.points_today !== undefined ? (
               <span
                 data-testid="points-today"
-                aria-label={`${today.points_today} of ${today.daily_points_cap} daily points earned`}
                 className={cn(
                   "text-muted",
                   today.points_today >= today.daily_points_cap &&
                     "text-warning",
                 )}
               >
-                {today.points_today}/{today.daily_points_cap} today
+                {/* aria-label isn't allowed on a plain span, so screen
+                    readers get the words and skip the "120/200". */}
+                <span aria-hidden="true">
+                  {today.points_today}/{today.daily_points_cap} today
+                </span>
+                <span className="sr-only">
+                  {today.points_today} of {today.daily_points_cap} daily points
+                  earned
+                </span>
               </span>
             ) : null}
             {today.streak_freezes > 0 ? (
