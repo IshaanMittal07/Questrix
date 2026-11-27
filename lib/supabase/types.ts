@@ -324,6 +324,47 @@ export type Database = {
         };
         Relationships: [];
       };
+      engine_rate: {
+        Row: {
+          calls: number;
+          user_id: string;
+          window_start: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          calls: number;
+          user_id: string;
+          window_start: string;
+        };
+        Update: {
+          calls?: number;
+          user_id?: string;
+          window_start?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "engine_rate_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "leaderboard_weekly";
+            referencedColumns: ["user_id"];
+          },
+          {
+            foreignKeyName: "engine_rate_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "engine_rate_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: true;
+            referencedRelation: "public_profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       equipped_cosmetics: {
         Row: {
           accessory_id: string | null;
@@ -1446,6 +1487,7 @@ export type Database = {
         Returns: boolean;
       };
       economy_value: { Args: { p_key: string }; Returns: Json };
+      engine_rate_limit: { Args: { p_uid: string }; Returns: undefined };
       ensure_daily_schedule: {
         Args: { p_now: string; p_uid: string };
         Returns: string;
