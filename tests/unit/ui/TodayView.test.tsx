@@ -419,8 +419,16 @@ describe("TodayView", () => {
     unmount();
     renderView(day({ points_today: 200, daily_points_cap: 200 }));
     expect(screen.getByTestId("points-today")).toHaveClass("text-warning");
-    expect(screen.getByTestId("points-today")).toHaveAccessibleName(
-      "200 of 200 daily points earned",
+    // Words for screen readers; the visible fraction is hidden from them.
+    expect(screen.getByText("200 of 200 daily points earned")).toHaveClass(
+      "sr-only",
+    );
+    expect(screen.getByText("200/200 today")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    expect(screen.getByTestId("points-today")).not.toHaveAttribute(
+      "aria-label",
     );
   });
 
@@ -474,6 +482,8 @@ describe("TodayView", () => {
     expect(live()).toHaveTextContent(
       "+5 points. 3-day streak. Daily points cap reached (200). Your streak still counts.",
     );
+    // The cap cut it, so the floating award doesn't credit the multiplier.
+    expect(screen.queryByText(/×1\.20/)).toBeNull();
   });
 
   it("refreshes when the action returns no snapshot", async () => {
