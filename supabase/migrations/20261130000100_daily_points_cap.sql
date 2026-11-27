@@ -82,6 +82,9 @@ begin
         calls = case when r.window_start <= now() - interval '1 minute'
                      then 1 else r.calls + 1 end
   returning calls into v_calls;
+  -- Over the limit: raising rolls this increment back with the caller's
+  -- transaction, so refused calls (this one or any later engine refusal)
+  -- never use up the budget. Only committed calls count.
   if v_calls > 30 then
     raise exception 'Too fast. Wait a minute and try again.' using errcode = 'QX109';
   end if;

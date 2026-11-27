@@ -3,7 +3,7 @@
 -- and writes no ledger entry; undo frees room again; milestones are uncapped.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(31);
+select plan(35);
 
 create function pg_temp.t(k int, m numeric default 0) returns timestamptz language sql as $$
   select (date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')
@@ -137,6 +137,8 @@ select ok(not has_function_privilege('authenticated', 'public.engine_rate_limit(
 -- K3 caps out on A (cap 5), then loops B: each call earns 0 and writes no
 -- ledger row, so only the per-call counter can stop it.
 select pg_temp.done('70000003-0000-0000-0000-000000000000', '7c000000-0000-0000-0000-000000000001', 0, 1);
+select ok(not exists (select 1 from public.engine_rate where user_id = '70000003-0000-0000-0000-000000000000'),
+  'a call without a JWT (cron, service jobs, tests) isn''t counted');
 select set_config('request.jwt.claims', '{"sub":"70000003-0000-0000-0000-000000000000","role":"authenticated"}', true);
 select lives_ok($$
   do $do$
@@ -152,6 +154,17 @@ select lives_ok($$
 select throws_ok($$select public.complete_habit_at('70000003-0000-0000-0000-000000000000',
                     '7c000000-0000-0000-0000-000000000002', pg_temp.t(0, 20))$$,
   'QX109', null, 'the 31st is refused, though it writes no ledger row');
+select is((select calls from public.engine_rate where user_id = '70000003-0000-0000-0000-000000000000'), 30,
+  'a refused call rolls back its own count');
+-- A minute later the window starts again (now() is fixed in a transaction,
+-- so the window is moved back instead).
+update public.engine_rate set window_start = now() - interval '61 seconds'
+ where user_id = '70000003-0000-0000-0000-000000000000';
+select lives_ok($$select public.complete_habit_at('70000003-0000-0000-0000-000000000000',
+                   '7c000000-0000-0000-0000-000000000002', pg_temp.t(0, 21))$$,
+  'after a minute calls are allowed again');
+select is((select calls from public.engine_rate where user_id = '70000003-0000-0000-0000-000000000000'), 1,
+  'and the window starts again from 1');
 select set_config('request.jwt.claims', '', true);
 
 select * from finish();
