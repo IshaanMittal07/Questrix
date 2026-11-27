@@ -7,7 +7,7 @@
 -- profiles_validate would, then "now" runs back. R5 makes a real change.
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(55);
+select plan(56);
 
 create function pg_temp.as_user(p_uid uuid) returns void language plpgsql as $$
 begin
@@ -48,15 +48,15 @@ create function pg_temp.balance_ok(n int) returns boolean language sql as $$
 -- R1 the exploit, no freezes · R2 with a freeze · R3 first completion ever ·
 -- R4 undo on a relived day · R5 a real UTC+14 → UTC-12 change ·
 -- R6 target 2: a relived day, then the reached day and its undo ·
--- R7 target 2: a relived day half done.
+-- R7 target 2: a relived day half done · R9 a relived day after a missed one.
 insert into auth.users (id, email)
-select pg_temp.u(g), 'r' || g || '@example.com' from generate_series(1, 8) as g;
+select pg_temp.u(g), 'r' || g || '@example.com' from generate_series(1, 9) as g;
 insert into public.habits (id, user_id, title, category, difficulty, days_of_week, target_per_day, created_at)
 select pg_temp.h(g), pg_temp.u(g), 'Daily', 'mind', 'medium', '{0,1,2,3,4,5,6}', case when g in (1, 6, 7) then 2 else 1 end, now() - interval '30 days'
-from generate_series(1, 8) as g;
+from generate_series(1, 9) as g;
 update public.profiles set timezone = 'Pacific/Kiritimati' where id = pg_temp.u(5);
 update public.profiles set onboarded_at = now() - interval '30 days'
-  where id in (select pg_temp.u(g) from generate_series(1, 8) as g);
+  where id in (select pg_temp.u(g) from generate_series(1, 9) as g);
 
 -- ── R1: missed day 3, reached day 4, then back on day 3 ─────────────────────
 select pg_temp.done(1, 1);
@@ -253,6 +253,20 @@ create temp table r8 as select pg_temp.done(8, 2, 719.5) as j;
 select ok(((select j from r8) ->> 'current_streak')::int = 3 and pg_temp.counted(8, pg_temp.day(2))
           and ((select j from r8) ->> 'milestone')::int = 3,
   'R8: a later snapshot alone never makes a day relived (only a move west does)');
+
+-- ── R9: a relived day reports a broken habit streak as 0 ──────────────────
+-- Done on day 1, missed on day 2, reached day 4, then day 3 relived. The
+-- relived completion doesn't advance the habit streak (#85), and its event
+-- reports it as get_today does: broken by day 2, so 0, not the stored 1.
+select pg_temp.done(9, 1);
+select pg_temp.today(9, 4);
+select pg_temp.west(9, 4);
+create temp table gt9 as select pg_temp.today(9, 3) as j;
+create temp table r9 as select pg_temp.done(9, 3) as j;
+select ok((select (j ->> 'relived')::boolean and (j -> 'habits' -> 0 ->> 'habit_streak')::int = 0 from gt9)
+          and ((select j from r9) ->> 'habit_streak')::int = 0
+          and (select current = 1 and last_date = pg_temp.day(1) from public.habit_streaks where habit_id = pg_temp.h(9)),
+  'R9: a relived completion reports a broken habit streak as 0, as get_today does, and stores nothing');
 
 -- ── The floor is server-only ────────────────────────────────────────────────
 select column_privs_are('public', 'profiles', 'engine_floor_date', 'authenticated', array['SELECT'],
