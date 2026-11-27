@@ -2,15 +2,22 @@
 -- complete / undo / spend / time steps, checked after every step (plan §10).
 --
 -- The seed fixes every choice (candidate rows are ordered before a random
--- pick on unique, seed-determined columns, so the heap order can't shift it); the calendar dates move with now(), so the
--- weekday-scheduled habit lands on different days from run to run. That's
--- deliberate: the invariants must hold for any schedule.
+-- pick on unique, seed-determined columns, so the heap order can't shift it), and the
+-- dates are anchored to a Monday (pg_temp.anchor), so every run walks the same
+-- weekday layout. The walk used to follow now(), which moved the
+-- weekday-scheduled habit and made the coverage floors below fail on some
+-- dates (#116 review). All 7 weekday offsets were checked: the invariants and
+-- the get_today parity held at every one.
 --
 -- Spending uses a postgres-only admin_adjust entry until purchase_item
 -- exists (DECISIONS: "Spending before Phase 6"); Phase 6 re-runs this with it.
 begin;
 create extension if not exists pgtap with schema extensions;
 select plan(23);
+
+-- Midnight UTC on the Monday 30 to 36 days ago. The walk starts there.
+create function pg_temp.anchor() returns timestamptz language sql as $$
+  select date_trunc('week', (now() at time zone 'UTC') - interval '30 days') at time zone 'UTC' $$;
 
 -- Users 4000000{1..4}; users 2 and 4 start with two freezes.
 insert into auth.users (id, email)
@@ -23,9 +30,9 @@ select ('f' || g || '00000' || k || '-0000-0000-0000-000000000000')::uuid,
        (array['medium', 'easy', 'hard', 'easy'])[k]::public.habit_difficulty,
        (array[1, 2, 1, 3])[k],
        case when k = 3 then '{1,3,5,6}'::smallint[] else '{0,1,2,3,4,5,6}'::smallint[] end,
-       now() - interval '40 days'
+       pg_temp.anchor() - interval '10 days'
 from generate_series(1, 4) as g, generate_series(1, 4) as k;
-update public.profiles set onboarded_at = now() - interval '40 days' where id::text like '4000000%';
+update public.profiles set onboarded_at = pg_temp.anchor() - interval '10 days' where id::text like '4000000%';
 update public.profiles set streak_freezes = 2
  where id in ('40000002-0000-0000-0000-000000000000', '40000004-0000-0000-0000-000000000000');
 -- #116: a full day here is worth 105, so a cap of 60 bites on most days.
@@ -184,13 +191,14 @@ create function pg_temp.disagreement(p_gt jsonb, p_listed jsonb, p_c jsonb, p_la
     -- undo, so the count decides, not the occurrence number).
     when (p_listed ->> 'done')::int + 1 = (p_listed ->> 'target')::int
          and (p_c ->> 'habit_streak')::int - (p_listed ->> 'habit_streak')::int
-             <> case when p_hlast >= (p_c ->> 'local_date')::date then 0 else 1 end then 'habit_streak'
+             <> case when p_hlast >= (p_c ->> 'local_date')::date
+                          -- #85: a relived day never advances the habit streak.
+                          or (p_gt ->> 'relived')::boolean then 0 else 1 end then 'habit_streak'
   end $$;
 
 create function pg_temp.simulate(p_steps int) returns void language plpgsql as $$
 declare
-  v_now timestamptz := (date_trunc('day', now() at time zone 'UTC') at time zone 'UTC')
-                       - interval '30 days' + interval '8 hours';
+  v_now timestamptz := pg_temp.anchor() + interval '8 hours';
   v_uid uuid;
   v_habit uuid;
   v_completion uuid;
